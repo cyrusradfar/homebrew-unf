@@ -1,8 +1,8 @@
 cask "unfudged" do
-  version "0.14.0"
-  sha256 "8c927c1d807b9af23cc1f5a6beacfc950965856267b5a6327534c589a7a931ef"
+  version "0.16.2"
+  sha256 "6277bf1ca98d2052099af28f8be4dea3ba9a84a164b28c08e827398716f57543"
 
-  url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.14.0/UNFUDGED-v0.14.0-universal.dmg"
+  url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.16.2/UNFUDGED-v0.16.2-universal.dmg"
   name "UNFUDGED"
   desc "High-resolution filesystem flight recorder - desktop app"
   homepage "https://github.com/cyrusradfar/unfudged"
