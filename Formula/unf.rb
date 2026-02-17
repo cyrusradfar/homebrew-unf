@@ -6,17 +6,17 @@ class Unf < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/cyrusradfar/unfudged/releases/download/v0.14.0/unf-v0.14.0-aarch64-apple-darwin.tar.gz"
-      sha256 "55ff6432d04aad444e24379ad4aa265db3cb65e34da43c9e49450defc055cfef"
+      url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.14.0/unf-v0.14.0-aarch64-apple-darwin.tar.gz"
+      sha256 "1c623f912334f20f7ab94ee699f356a7faddcacda302cd4be8ca67a45691e4bd"
     else
-      url "https://github.com/cyrusradfar/unfudged/releases/download/v0.14.0/unf-v0.14.0-x86_64-apple-darwin.tar.gz"
-      sha256 "944a5aae290c1130623ad3bda18acba34bf07834beaa7e6090848f0f850ecc18"
+      url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.14.0/unf-v0.14.0-x86_64-apple-darwin.tar.gz"
+      sha256 "48930d800e034c075a7ea332c77bb4517699268f9b539e2b797b5f505ff2de21"
     end
   end
 
   on_linux do
-    url "https://github.com/cyrusradfar/unfudged/releases/download/v0.14.0/unf-v0.14.0-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "dc4214eec175b3d3d982240a646cc8030d08c5171d4e22c837b2dc5e12ea77fd"
+    url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.14.0/unf-v0.14.0-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "e4a5a96b16cb582b0fd8a12c72714c2572011abb83423b19068695f04bf5b0cd"
   end
 
   def install
