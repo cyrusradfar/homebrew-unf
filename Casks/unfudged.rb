@@ -1,6 +1,6 @@
 cask "unfudged" do
   version "0.14.0"
-  sha256 "c5369263a96f9909b95421292b32559fcb245d5cb688ea1a8f76b2c9d649427a"
+  sha256 "8c927c1d807b9af23cc1f5a6beacfc950965856267b5a6327534c589a7a931ef"
 
   url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.14.0/UNFUDGED-v0.14.0-universal.dmg"
   name "UNFUDGED"
