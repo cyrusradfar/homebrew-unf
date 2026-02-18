@@ -7,7 +7,7 @@ cask "unfudged-staging" do
   desc "High-resolution filesystem flight recorder - staging build"
   homepage "https://github.com/cyrusradfar/unfudged"
 
-  conflicts_with cask: "unfudged", because: "both install UNFUDGED.app"
+  conflicts_with cask: "unfudged"
 
   depends_on formula: "cyrusradfar/unf/unf-staging"
   depends_on macos: ">= :catalina"
