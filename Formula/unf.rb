@@ -1,22 +1,22 @@
 class Unf < Formula
   desc "Filesystem flight recorder — never lose a file change again"
-  homepage "https://github.com/cyrusradfar/unfudged"
-  version "0.16.2"
+  homepage "https://unfudged.io"
+  version "0.17.3"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.16.2/unf-v0.16.2-aarch64-apple-darwin.tar.gz"
-      sha256 "928d9920ed3781ec971ef150e0efe900708930867cfcd26caa9a502c4d8b0ef5"
+      url "https://downloads.unfudged.io/releases/v0.17.3/unf-v0.17.3-aarch64-apple-darwin.tar.gz"
+      sha256 "52c46aea74498084aeaeec24daef85f71e3c5fc11ecf284273c9c577be2de706"
     else
-      url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.16.2/unf-v0.16.2-x86_64-apple-darwin.tar.gz"
-      sha256 "ec264d46c5abbbbbd1a1e278f2b3240279235f665d86db56ad19b2824377d846"
+      url "https://downloads.unfudged.io/releases/v0.17.3/unf-v0.17.3-x86_64-apple-darwin.tar.gz"
+      sha256 "f85f7eb878651dc2571cd91d54623f63b1635fd6e133e24b0c27e5690f1098e8"
     end
   end
 
   on_linux do
-    url "https://github.com/cyrusradfar/homebrew-unf/releases/download/v0.16.2/unf-v0.16.2-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "7c3601180c43d403a5cdfada061fd39d6c40d0732d06d78ba4dbea6f61398791"
+    url "https://downloads.unfudged.io/releases/v0.17.3/unf-v0.17.3-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "5cee3aeabb56e9472e89c81980622374b1eb77f22277e4fa84bafc8785aae8d5"
   end
 
   def install
