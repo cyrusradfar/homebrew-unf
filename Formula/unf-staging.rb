@@ -19,11 +19,20 @@ class UnfStaging < Formula
     sha256 "bb7419514e1aec5b77b0f12abbb204205276cc13e151f00506c072e648e58059"
   end
 
+  conflicts_with "unf", because: "both install an `unf` binary"
+
   def install
-    bin.install "unf" => "unf-staging"
+    bin.install "unf"
+  end
+
+  def caveats
+    <<~EOS
+      Staging build for pre-release testing.
+      Conflicts with production `unf` — uninstall one before installing the other.
+    EOS
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/unf-staging --version")
+    assert_match version.to_s, shell_output("#{bin}/unf --version")
   end
 end
