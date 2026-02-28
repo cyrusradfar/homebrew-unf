@@ -1,0 +1,10 @@
+Package: unf
+Version: VERSION_PLACEHOLDER
+Architecture: amd64
+Maintainer: Cyrus Radfar <cyrus@unfudged.io>
+Description: Filesystem flight recorder — never lose a file change again
+ UNFUDGED captures every text-based file change in real-time as a continuous
+ safety net for developers.
+Homepage: https://unfudged.io
+Section: utils
+Priority: optional

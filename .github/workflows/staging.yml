@@ -125,10 +125,25 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../unf-v${{ steps.version.outputs.VERSION }}-${{ matrix.target }}.tar.gz unf
+      - name: Build .deb package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          DEB_NAME="unf_${VERSION}_amd64"
+          mkdir -p "${DEB_NAME}/usr/bin" "${DEB_NAME}/DEBIAN"
+          sed "s/VERSION_PLACEHOLDER/${VERSION}/" packaging/debian/control > "${DEB_NAME}/DEBIAN/control"
+          cp target/${{ matrix.target }}/release/unf "${DEB_NAME}/usr/bin/unf"
+          chmod 755 "${DEB_NAME}/usr/bin/unf"
+          dpkg-deb --build "${DEB_NAME}"
       - uses: actions/upload-artifact@v4
         with:
           name: unf-v${{ steps.version.outputs.VERSION }}-${{ matrix.target }}
           path: unf-v${{ steps.version.outputs.VERSION }}-${{ matrix.target }}.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: unf_${{ steps.version.outputs.VERSION }}_amd64
+          path: unf_${{ steps.version.outputs.VERSION }}_amd64.deb
 
   build-tauri:
     name: Build Tauri DMG
@@ -228,7 +243,7 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          for f in unf-v${VERSION}-*.tar.gz UNFUDGED-v${VERSION}-universal.dmg; do
+          for f in unf-v${VERSION}-*.tar.gz unf_${VERSION}_amd64.deb UNFUDGED-v${VERSION}-universal.dmg; do
             aws s3 cp "$f" "s3://downloads.unfudged.io/staging/v${VERSION}/$f"
           done
           echo "Uploaded to https://downloads.unfudged.io/staging/v${VERSION}/"
@@ -289,11 +304,12 @@ jobs:
             --notes "Staging build for pre-release testing. Install with: brew install cyrusradfar/unf/unf-staging" \
             --prerelease \
             unf-v${VERSION}-*.tar.gz \
+            unf_${VERSION}_amd64.deb \
             UNFUDGED-v${VERSION}-universal.dmg \
             || echo "Release may already exist, attempting to upload assets..."
 
           # If release already existed, upload assets individually
-          for f in unf-v${VERSION}-*.tar.gz UNFUDGED-v${VERSION}-universal.dmg; do
+          for f in unf-v${VERSION}-*.tar.gz unf_${VERSION}_amd64.deb UNFUDGED-v${VERSION}-universal.dmg; do
             gh release upload "staging-v${VERSION}" "$f" --clobber || true
           done
 

@@ -48,7 +48,7 @@ jobs:
           echo "Downloading staging binaries for v${VERSION}..."
           aws s3 cp "s3://downloads.unfudged.io/staging/v${VERSION}/" . --recursive
           echo "Downloaded files:"
-          ls -la *.tar.gz *.dmg
+          ls -la *.tar.gz *.deb *.dmg
 
       - name: Verify all expected artifacts exist
         run: |
@@ -58,6 +58,7 @@ jobs:
             "unf-v${VERSION}-aarch64-apple-darwin.tar.gz" \
             "unf-v${VERSION}-x86_64-apple-darwin.tar.gz" \
             "unf-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            "unf_${VERSION}_amd64.deb" \
             "UNFUDGED-v${VERSION}-universal.dmg"; do
             if [ ! -f "$f" ]; then
               echo "::error::Missing staging artifact: $f"
@@ -78,7 +79,7 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          for f in unf-v${VERSION}-*.tar.gz UNFUDGED-v${VERSION}-universal.dmg; do
+          for f in unf-v${VERSION}-*.tar.gz unf_${VERSION}_amd64.deb UNFUDGED-v${VERSION}-universal.dmg; do
             aws s3 cp "$f" "s3://downloads.unfudged.io/releases/v${VERSION}/$f"
           done
           echo "Promoted to https://downloads.unfudged.io/releases/v${VERSION}/"
@@ -92,6 +93,7 @@ jobs:
             --title "UNFUDGED v${VERSION}" \
             --generate-notes \
             unf-v${VERSION}-*.tar.gz \
+            unf_${VERSION}_amd64.deb \
             UNFUDGED-v${VERSION}-universal.dmg
 
       - name: Generate Homebrew formula and cask
