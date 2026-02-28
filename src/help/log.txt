@@ -1,0 +1,19 @@
+Examples:
+  unf log                      Show all file changes
+  unf log src/main.rs          Show history for one file
+  unf log src/                 Show history for a directory
+  unf log --since 1h           Only changes in the last hour
+  unf log --group-by-file      Group output by file (tree view)
+  unf log --include "*.rs"     Only show Rust files
+  unf log --exclude "tests/*"  Hide test files
+  unf log --include "*.ts" -i  Case-insensitive glob matching
+  unf log --group-by-file --include "src/*.rs"
+                               Combine grouping and filtering
+
+Cross-project (global) mode:
+  unf log --global                           All changes across every project
+  unf log --global --since 5m               Last 5 minutes, all projects
+  unf log --global --include-project ~/.claude --include-project ~/code/myproject
+                                             See agent and project activity side by side
+  unf log --global --exclude-project ~/tmp   Exclude a project from global view
+  unf log --global --json                    Machine-readable cross-project output

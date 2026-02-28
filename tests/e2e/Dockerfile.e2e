@@ -1,0 +1,28 @@
+FROM ubuntu:24.04
+
+# Install base dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    procps \
+    file \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root linuxbrew user (Homebrew refuses to run as root)
+RUN useradd -m -s /bin/bash linuxbrew && \
+    echo "linuxbrew ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Switch to linuxbrew user for Homebrew installation
+USER linuxbrew
+WORKDIR /home/linuxbrew
+
+# Install Homebrew as linuxbrew user
+RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Set PATH to include Homebrew
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
+
+# Default command
+CMD ["/bin/bash"]

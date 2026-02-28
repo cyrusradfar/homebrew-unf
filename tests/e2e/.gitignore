@@ -1,0 +1,25 @@
+# Node.js dependencies
+node_modules/
+package-lock.json
+npm-debug.log
+yarn-lock.json
+
+# Test outputs
+screenshots/
+reports/
+*.log
+
+# IDE and OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# WebdriverIO cache
+wdio-logs/

@@ -1,0 +1,7 @@
+Examples:
+  unf restore --at 5m -y              Restore all files to 5 minutes ago
+  unf restore --at 5m src/main.rs -y  Restore a single file
+  unf restore --at 1h --dry-run       Preview what would be restored
+  unf restore --session -y            Restore to the start of last work session
+
+The -y flag skips the confirmation prompt (required for scripts and agents).

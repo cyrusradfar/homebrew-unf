@@ -1,0 +1,32 @@
+Filesystem flight recorder — never lose a file change again.
+
+UNF continuously captures every text-based file change in real-time.
+If something goes wrong, rewind to any point in time.
+
+Quick start:
+  unf watch                          Start watching the current directory
+  unf status                         Check watching status
+
+Investigate:
+  unf log                            Timeline of all file changes
+  unf log src/main.rs                History for a specific file
+  unf log --global                   Cross-project timeline (all registered projects)
+  unf log --global --since 5m        Recent activity across all projects
+  unf diff --at 5m                   What changed in the last 5 minutes
+  unf cat src/main.rs --at 10m       View file contents from 10 minutes ago
+
+Recover:
+  unf restore --at 5m -y             Restore all files to 5 minutes ago
+  unf restore --at 5m src/main.rs -y Restore a single file
+
+Admin:
+  unf list                           Show all registered projects
+  unf list -v                        Show detailed project info
+  unf prune                          Remove old snapshots and clean up storage
+  unf prune --all-projects           Prune all registered projects
+
+Global options:
+  --json                             Machine-readable JSON output
+  --project <PATH>                   Operate on a specific project directory
+
+Time formats: 5m (minutes), 2h (hours), 1d (days), or ISO 8601 timestamps

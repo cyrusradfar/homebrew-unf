@@ -1,0 +1,70 @@
+[package]
+name = "unfudged"
+version = "0.17.7"
+edition = "2021"
+description = "Filesystem flight recorder — never lose a file change again"
+license = "MIT"
+keywords = ["filesystem", "backup", "undo", "watcher", "recovery"]
+categories = ["command-line-utilities", "filesystem"]
+repository = "https://github.com/cyrusradfar/homebrew-unf"
+homepage = "https://github.com/cyrusradfar/homebrew-unf"
+
+[[bin]]
+name = "unf"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# File watching
+notify = "8"
+
+# Content hashing
+blake3 = "1"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Time handling
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+humantime = "2"
+
+# Diff output
+similar = "2"
+
+# .gitignore parsing
+ignore = "0.4"
+
+# Glob pattern matching
+globset = "0.4"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# JSON serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Home directory detection
+dirs = "6"
+
+# File locking (flock)
+fs2 = "0.4"
+
+# Graceful shutdown signal handling
+ctrlc = { version = "3", features = ["termination"] }
+
+# Signal handling for inter-process communication
+signal-hook = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+serde_json = "1"
+libc = "0.2"

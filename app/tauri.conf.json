@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicoverbruggen/tauri-v2-schema/main/schema.json",
+  "productName": "UNFUDGED",
+  "version": "0.17.5",
+  "identifier": "com.unfudged.app",
+  "build": {
+    "frontendDist": "./ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev --prefix ../ui",
+    "beforeBuildCommand": "npm run build --prefix ../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "UNFUDGED",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Cyrus Radfar (GB8D4MHX28)",
+      "minimumSystemVersion": "10.15"
+    }
+  }
+}

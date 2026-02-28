@@ -1,0 +1,6 @@
+Examples:
+  unf diff --at 5m                    Changes in the last 5 minutes
+  unf diff --at 2h src/main.rs        Changes to one file in last 2 hours
+  unf diff --from 2h --to 1h          Changes between 2 hours and 1 hour ago
+  unf diff --session                  Changes in the most recent work session
+  unf diff --session 2                Changes in the 2nd most recent session

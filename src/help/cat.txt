@@ -1,0 +1,5 @@
+Examples:
+  unf cat src/main.rs --at 10m        File contents from 10 minutes ago
+  unf cat src/main.rs --at 1h         File contents from 1 hour ago
+  unf cat src/main.rs --snapshot 42   File contents at a specific snapshot ID
+  unf cat .env --at 5m > .env         Pipe a lost file back to disk

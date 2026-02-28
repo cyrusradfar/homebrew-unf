@@ -1,0 +1,11 @@
+Examples:
+  unf list                           Show all registered projects
+  unf list -v                        Show detailed project info
+  unf --json list                    JSON output for scripting
+  unf --json list -v                 JSON output with verbose details
+
+Status meanings:
+  watching    Daemon is running and watching for changes
+  stopped     Daemon was cleanly stopped (unf stop)
+  crashed     Daemon exited unexpectedly
+  orphaned    Project directory no longer exists

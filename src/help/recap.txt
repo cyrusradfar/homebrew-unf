@@ -1,0 +1,16 @@
+Examples:
+  unf recap                      Summarize recent work sessions
+  unf recap --since 2h           Only sessions in the last 2 hours
+  unf recap --json               Machine-readable output for agents
+
+Cross-project mode:
+  unf recap --global             Recap all watched projects
+  unf recap --global --json      Agent-friendly cross-project context
+  unf recap --global --include-project ~/.claude --include-project ~/code/myproject
+                                 See agent and project activity together
+
+After a crash:
+  1. Run: unf recap --json
+  2. Read any recently-created .md files listed in the sessions
+  3. Check git state for uncommitted work
+  4. Use: unf diff --session  to see detailed changes

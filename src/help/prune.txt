@@ -1,0 +1,11 @@
+By default, prunes snapshots older than 7 days for the current project.
+After deleting snapshots, garbage-collects unreferenced blobs.
+
+Examples:
+  unf prune                          Prune current project (7-day default)
+  unf prune --older-than 30d         Keep only last 30 days
+  unf prune --dry-run                Preview what would be deleted
+  unf prune --all-projects           Prune every registered project
+  unf prune --all-projects --dry-run Preview for all projects
+
+Time formats: 5m (minutes), 2h (hours), 1d (days)
