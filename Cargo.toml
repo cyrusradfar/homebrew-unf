@@ -1,6 +1,6 @@
 [package]
 name = "unfudged"
-version = "0.17.7"
+version = "0.17.8"
 edition = "2021"
 description = "Filesystem flight recorder — never lose a file change again"
 license = "MIT"
