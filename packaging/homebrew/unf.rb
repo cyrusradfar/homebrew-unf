@@ -2,7 +2,7 @@ class Unf < Formula
   desc "Filesystem flight recorder — never lose a file change again"
   homepage "https://unfudged.io"
   version "VERSION_PLACEHOLDER"
-  license "MIT"
+  license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
@@ -15,8 +15,13 @@ class Unf < Formula
   end
 
   on_linux do
-    url "https://downloads.unfudged.io/releases/vVERSION_PLACEHOLDER/unf-vVERSION_PLACEHOLDER-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "SHA256_PLACEHOLDER_LINUX"
+    if Hardware::CPU.arm?
+      url "https://downloads.unfudged.io/releases/vVERSION_PLACEHOLDER/unf-vVERSION_PLACEHOLDER-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "SHA256_PLACEHOLDER_LINUX_ARM"
+    else
+      url "https://downloads.unfudged.io/releases/vVERSION_PLACEHOLDER/unf-vVERSION_PLACEHOLDER-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "SHA256_PLACEHOLDER_LINUX"
+    end
   end
 
   def install

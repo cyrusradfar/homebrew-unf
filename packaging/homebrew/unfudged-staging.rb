@@ -6,6 +6,7 @@ cask "unfudged-staging" do
   name "UNFUDGED (Staging)"
   desc "High-resolution filesystem flight recorder - staging build"
   homepage "https://unfudged.io"
+  license "MIT OR Apache-2.0"
 
   conflicts_with cask: "unfudged"
 

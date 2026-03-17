@@ -58,7 +58,9 @@ jobs:
             "unf-v${VERSION}-aarch64-apple-darwin.tar.gz" \
             "unf-v${VERSION}-x86_64-apple-darwin.tar.gz" \
             "unf-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            "unf-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz" \
             "unf_${VERSION}_amd64.deb" \
+            "unf_${VERSION}_arm64.deb" \
             "UNFUDGED-v${VERSION}-universal.dmg"; do
             if [ ! -f "$f" ]; then
               echo "::error::Missing staging artifact: $f"
@@ -79,7 +81,7 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          for f in unf-v${VERSION}-*.tar.gz unf_${VERSION}_amd64.deb UNFUDGED-v${VERSION}-universal.dmg; do
+          for f in unf-v${VERSION}-*.tar.gz unf_${VERSION}_amd64.deb unf_${VERSION}_arm64.deb UNFUDGED-v${VERSION}-universal.dmg; do
             aws s3 cp "$f" "s3://downloads.unfudged.io/releases/v${VERSION}/$f"
           done
           echo "Promoted to https://downloads.unfudged.io/releases/v${VERSION}/"
@@ -94,6 +96,7 @@ jobs:
             --generate-notes \
             unf-v${VERSION}-*.tar.gz \
             unf_${VERSION}_amd64.deb \
+            unf_${VERSION}_arm64.deb \
             UNFUDGED-v${VERSION}-universal.dmg
 
       - name: Generate Homebrew formula and cask
@@ -102,12 +105,14 @@ jobs:
           SHA_ARM=$(sha256sum unf-v${VERSION}-aarch64-apple-darwin.tar.gz | awk '{print $1}')
           SHA_X86=$(sha256sum unf-v${VERSION}-x86_64-apple-darwin.tar.gz | awk '{print $1}')
           SHA_LINUX=$(sha256sum unf-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')
+          SHA_LINUX_ARM=$(sha256sum unf-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz | awk '{print $1}')
           SHA_DMG=$(sha256sum UNFUDGED-v${VERSION}-universal.dmg | awk '{print $1}')
 
           sed -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
               -e "s/SHA256_PLACEHOLDER_ARM/${SHA_ARM}/g" \
               -e "s/SHA256_PLACEHOLDER_X86/${SHA_X86}/g" \
               -e "s/SHA256_PLACEHOLDER_LINUX/${SHA_LINUX}/g" \
+              -e "s/SHA256_PLACEHOLDER_LINUX_ARM/${SHA_LINUX_ARM}/g" \
               packaging/homebrew/unf.rb > /tmp/unf.rb
 
           sed -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \

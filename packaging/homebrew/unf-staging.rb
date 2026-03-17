@@ -2,7 +2,7 @@ class UnfStaging < Formula
   desc "Filesystem flight recorder — staging build for pre-release testing"
   homepage "https://unfudged.io"
   version "VERSION_PLACEHOLDER"
-  license "MIT"
+  license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
@@ -15,8 +15,13 @@ class UnfStaging < Formula
   end
 
   on_linux do
-    url "https://downloads.unfudged.io/staging/vVERSION_PLACEHOLDER/unf-vVERSION_PLACEHOLDER-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "SHA256_PLACEHOLDER_LINUX"
+    if Hardware::CPU.arm?
+      url "https://downloads.unfudged.io/staging/vVERSION_PLACEHOLDER/unf-vVERSION_PLACEHOLDER-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "SHA256_PLACEHOLDER_LINUX_ARM"
+    else
+      url "https://downloads.unfudged.io/staging/vVERSION_PLACEHOLDER/unf-vVERSION_PLACEHOLDER-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "SHA256_PLACEHOLDER_LINUX"
+    end
   end
 
   conflicts_with "unf", because: "both install an `unf` binary"

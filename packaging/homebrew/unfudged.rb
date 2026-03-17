@@ -6,6 +6,7 @@ cask "unfudged" do
   name "UNFUDGED"
   desc "High-resolution filesystem flight recorder - desktop app"
   homepage "https://unfudged.io"
+  license "MIT OR Apache-2.0"
 
   depends_on formula: "cyrusradfar/unf/unf"
   depends_on macos: ">= :catalina"
