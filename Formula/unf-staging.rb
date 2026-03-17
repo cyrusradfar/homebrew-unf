@@ -1,22 +1,22 @@
 class UnfStaging < Formula
   desc "Filesystem flight recorder — staging build for pre-release testing"
   homepage "https://unfudged.io"
-  version "0.17.4"
+  version "0.17.8"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://downloads.unfudged.io/staging/v0.17.4/unf-v0.17.4-aarch64-apple-darwin.tar.gz"
-      sha256 "368accb9ea3ba89a88be188657ee5aa6abd415b04d6db60eaaaaec8550d7071f"
+      url "https://downloads.unfudged.io/staging/v0.17.8/unf-v0.17.8-aarch64-apple-darwin.tar.gz"
+      sha256 "bec7415a208a61179ef4f08e9a35bc8688afa18de51d250b8d24852cadc9df70"
     else
-      url "https://downloads.unfudged.io/staging/v0.17.4/unf-v0.17.4-x86_64-apple-darwin.tar.gz"
-      sha256 "ed28193bdedcd7afe5e6d548225428896530683c09a37e889a0897622f3fbef4"
+      url "https://downloads.unfudged.io/staging/v0.17.8/unf-v0.17.8-x86_64-apple-darwin.tar.gz"
+      sha256 "61731271c6da6f31d9b7b63fba9de9bf45cbf2a7b09d8a2f21fc3291179ec086"
     end
   end
 
   on_linux do
-    url "https://downloads.unfudged.io/staging/v0.17.4/unf-v0.17.4-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "a76db23c300715baa554621b3673c0ee849184cc0bed56b03197968730c8d53c"
+    url "https://downloads.unfudged.io/staging/v0.17.8/unf-v0.17.8-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "476d377d8d6c9d0d90475130d0e79079392cc6e9e0f20809d816ced1b58825d2"
   end
 
   conflicts_with "unf", because: "both install an `unf` binary"
