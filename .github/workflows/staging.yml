@@ -320,4 +320,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/unf-staging.rb Casks/unfudged-staging.rb
           git diff --cached --quiet || git commit -m "Staging: unf v${VERSION}"
-          git push
+          git push origin HEAD:main
