@@ -3,6 +3,7 @@ name = "unfudged-app"
 version = "0.17.8"
 edition = "2021"
 description = "UNFUDGED Time-Travel Desktop App"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 tauri = { version = "2", features = [] }
