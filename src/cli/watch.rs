@@ -60,9 +60,14 @@ struct WatchOutput {
 pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     let storage_dir = storage::resolve_storage_dir(project_root)?;
 
-    // Remove stopped sentinel if it exists (re-activation)
+    // Remove stopped markers (re-activation).
+    // Per-project marker:
     let stopped_path = storage::stopped_path(&storage_dir);
     let _ = fs::remove_file(&stopped_path);
+    // Global marker (created by `unf stop`; blocks sentinel startup):
+    if let Ok(global_stopped) = storage::global_stopped_path() {
+        let _ = fs::remove_file(&global_stopped);
+    }
 
     // Initialize engine if needed
     let engine = if storage_dir.exists() {

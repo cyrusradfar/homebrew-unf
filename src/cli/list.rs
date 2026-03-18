@@ -59,6 +59,18 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
         return Ok(());
     }
 
+    // Auto-start sentinel if projects are registered but daemon isn't running.
+    // This handles the post-install case: clear the stopped marker (left by
+    // a previous `unf stop` or uninstall) and start the sentinel.
+    if !crate::sentinel::is_sentinel_alive() {
+        if let Ok(stopped_path) = storage::global_stopped_path() {
+            let _ = std::fs::remove_file(&stopped_path);
+        }
+        let _ = crate::sentinel::ensure_sentinel_running();
+        // Give sentinel time to start the daemon before we query status
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
     let mut infos = Vec::new();
 
     for entry in &reg.projects {

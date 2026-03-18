@@ -30,19 +30,6 @@ class UnfStaging < Formula
     bin.install "unf"
   end
 
-  def post_install
-    unf_home = Pathname.new(Dir.home)/".unfudged"
-    stopped = unf_home/"stopped"
-    stopped.delete if stopped.exist?
-  end
-
-  service do
-    run [opt_bin/"unf", "__sentinel"]
-    keep_alive true
-    log_path var/"log/unfudged-sentinel.log"
-    error_log_path var/"log/unfudged-sentinel.log"
-  end
-
   def caveats
     <<~EOS
       Staging build for pre-release testing.

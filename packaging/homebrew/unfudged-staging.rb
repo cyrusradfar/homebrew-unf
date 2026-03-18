@@ -13,8 +13,4 @@ cask "unfudged-staging" do
   depends_on macos: ">= :catalina"
 
   app "UNFUDGED.app"
-
-  postflight do
-    system_command "#{HOMEBREW_PREFIX}/bin/unf", args: ["restart"]
-  end
 end
