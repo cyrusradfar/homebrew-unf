@@ -1,22 +1,33 @@
 # UNFUDGED
 
-A filesystem flight recorder. Captures every text-based file change in real-time so you can rewind to any saved state in seconds.
+A filesystem flight recorder. Captures every text-based file change in real-time.
 
-Whether you fat-finger a delete, botch a refactor, or an AI agent mass-overwrites your files — `unf` has your back.
+**Recover from any mistake in seconds:** fat-finger deletes, botched refactors, AI agent chaos. If you saved it, `unf` has it.
 
-## Why
-
-- **Zero-commit workflow** — if you saved it, `unf` has it. No staging, no committing, no branches.
-- **AI safety net** — autonomous agents can wreck a codebase in seconds. `unf` gives you a hardware-level undo.
-- **Ghost file recovery** — recover files that were never tracked by git.
-- **High-resolution diffs** — see exactly what changed, minute by minute.
+- **Zero-commit workflow** — if you saved it, `unf` has it. No git overhead.
+- **Hardware-level undo** — recover from autonomous agent disasters in seconds.
+- **Ghost file recovery** — recover files never tracked by git.
+- **Minute-by-minute diffs** — see exactly what changed.
 
 ## Install
 
-### Homebrew (macOS / Linux)
+### Homebrew (macOS & Linux)
 
 ```bash
 brew install cyrusradfar/unf/unf
+```
+
+### Debian / Ubuntu
+
+```bash
+curl -fsSLO https://downloads.unfudged.io/releases/v0.17.8/unf_0.17.8_amd64.deb
+sudo dpkg -i unf_0.17.8_amd64.deb
+```
+
+For ARM64:
+```bash
+curl -fsSLO https://downloads.unfudged.io/releases/v0.17.8/unf_0.17.8_arm64.deb
+sudo dpkg -i unf_0.17.8_arm64.deb
 ```
 
 ### Desktop app (macOS)
@@ -65,49 +76,30 @@ unf restore --at "10m ago"   # Roll back to 10 minutes ago
 
 Time formats: `"5m"`, `"2h"`, `"1d"`, `"2025-06-15 14:30:00"`, or any `humantime` duration.
 
-## Architecture
+## How it works
 
-```
-unf watch
-  |
-  v
-[Daemon] -- FSEvents / inotify / ReadDirectoryChangesW
-  |
-  v
-[Engine] -- BLAKE3 hash --> Content-Addressable Store (flat files)
-         -- metadata   --> SQLite (WAL mode, ACID)
-```
+- **Daemon model** — `unf watch` starts a global daemon that watches all registered directories using OS-native APIs (FSEvents/inotify/ReadDirectoryChangesW).
+- **Content-Addressable Storage** — Files are hashed with BLAKE3. Identical content is stored once; snapshots reference it by hash.
+- **SQLite metadata** — Timestamps, paths, and hashes in SQLite with WAL mode for concurrent access.
+- **Smart batching** — 3-second debounce window prevents rapid saves from bloating storage.
+- **Text-only** — Binary files are detected and skipped. Only text snapshots are kept.
+- **Retention decay** — Every change for 24h, hourly for 7d, daily for 30d.
 
-- **Client-Daemon model** — `unf watch` starts a single global daemon that watches all registered directories. Each CLI command talks to the daemon or reads storage directly.
-- **Content-Addressable Storage** — file contents are hashed with BLAKE3 and stored as flat files. Identical content is stored once regardless of how many snapshots reference it.
-- **SQLite metadata** — snapshot timestamps, file paths, and content hashes are stored in SQLite with WAL mode for concurrent reads.
-- **Smart debounce** — 3-second debounce window batches rapid saves into a single snapshot.
-- **Text-only** — binary files are detected by magic number and skipped. Only text-based files are recorded.
-- **Retention decay** — snapshots thin out over time: every change for 24h, hourly for 7d, daily for 30d.
+Resource targets: <1% CPU, <100MB RAM. Local-first, zero data leaves the machine.
 
-Resource targets: <1% CPU, <100MB RAM. Local-first — no data leaves your machine.
+## Desktop app development
 
-## Desktop app
-
-The Tauri-based desktop app (macOS) provides a menu bar interface for quick status checks and controls. Source is in `app/`.
+The macOS app is Tauri-based. To build locally:
 
 ```bash
-cd app
-npm ci --prefix ui
+cd app && npm ci --prefix ui
 cargo install tauri-cli --locked
 cargo tauri dev
 ```
 
-## Development
+## Contributing
 
-```bash
-cargo build                # Debug build
-cargo test                 # Run all tests (~400)
-cargo clippy -- -D warnings # Lint (zero warnings policy)
-cargo fmt -- --check       # Format check
-just test                  # Run tests + clean up leaked test daemons
-just kill-test-daemons     # Kill stuck test daemons (safe — never touches production)
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and submission guidelines.
 
 ## License
 

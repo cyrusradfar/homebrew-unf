@@ -1,125 +1,100 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when contributing to this repository.
 
-## Project Vision
+## What is UNFUDGED?
 
-**UNFUDGED** (UNF\*) is a high-resolution "Flight Recorder" for the developer's filesystem. It captures every text-based file change in real-time as a continuous safety net. Whether it's a human error, a botched refactor, or an AI agent mass-overwriting files, UNF\* lets you rewind to a state of integrity in seconds.
+**UNFUDGED** (UNF\*) is a filesystem flight recorder. It captures every text-based file change in real-time so you can rewind to any saved state in seconds.
 
-**Key value props:**
-- Zero-Commit Workflow: If you saved it, UNF\* has it
-- AI Panic Room: Hardware-level Undo for autonomous agents
-- State Insurance: Recover "ghost files" never tracked by VCS
-- High-Resolution Diffs: Minute-by-minute file evolution
+**Use cases:**
+- Zero-commit recovery: recover from mistakes without git overhead
+- AI safety: hardware-level undo for agent-caused chaos
+- Ghost file recovery: recover files never tracked by git
+- Minute-by-minute diffs: see exactly what changed
 
 ## Architecture
 
 Client-Daemon model in Rust:
-- **Watcher** (daemon): FSEvents/inotify/ReadDirectoryChangesW with 3-second smart debounce, text-only filtering via magic-number binary detection
-- **Engine** (storage): Content-Addressable Storage using BLAKE3 hashing, SQLite metadata (ACID), flat-file object store
-- **CLI** (`unf`): Time-and-state oriented commands (not commit-oriented)
-- **AI Safety**: Burst analytics (50+ files in <1s triggers automatic "Pre-Burst" restoration point)
-- **Desktop App**: Tauri-based macOS menu bar app (source in `app/`)
+- **Daemon** (`src/daemon/`): OS-native watcher (FSEvents/inotify/ReadDirectoryChangesW). 3-second debounce. Magic-number binary detection.
+- **Engine** (`src/engine/`): Content-Addressable Storage with BLAKE3, SQLite metadata, flat-file objects.
+- **CLI** (`src/cli/`): Time-oriented commands (not commit-oriented).
+- **Desktop App** (`app/`): Tauri-based macOS menu bar app.
 
-Resource targets: <1% CPU, <100MB RAM. Local-first, no data leaves the machine. Append-only immutable logs.
+Resource targets: <1% CPU, <100MB RAM. Local-first, no data leaves the machine.
 
 ### Retention Decay
 - Phase 1 (24h): Every change preserved
 - Phase 2 (7d): Thinned to 1 snapshot/hour
 - Phase 3 (30d): Thinned to 1 snapshot/day
 
-### CLI Interface (`unf`)
-```
-unf watch                      # Start watching current directory (register + start daemon)
-unf unwatch                    # Stop watching current directory (deregister from daemon)
-unf status                     # Watcher status + recent snapshot stats
-unf log <file>                 # High-res timeline of file versions
-unf diff --at "5m"             # Changes since N minutes ago
-unf diff --include "*.rs"      # Filter diff to matching files
-unf restore --at TIME          # Restore files to a point in time
-unf restore --at TIME <file>   # Restore a specific file
-unf cat --at TIME <file>       # Print file contents at a point in time
-unf list --at TIME             # List tracked files at a point in time
-unf prune --before TIME        # Remove snapshots older than a threshold
-unf stop                       # Stop the global daemon
-unf restart                    # Restart the global daemon
-```
+### CLI Commands
+- `unf watch` — Start watching (register + start daemon)
+- `unf unwatch` — Stop watching
+- `unf status` — Watcher status and snapshot stats
+- `unf log <file>` — Timeline of file versions
+- `unf diff --at "5m"` — Changes in last 5 minutes
+- `unf restore --at TIME` — Restore to a point in time
+- `unf cat --at TIME <file>` — Print file contents at TIME
+- `unf list --at TIME` — List tracked files at TIME
+- `unf prune --before TIME` — Remove old snapshots
+- `unf stop`, `unf restart` — Daemon control
 
-Time formats: `"5m"`, `"2h"`, `"1d"`, `"2025-06-15 14:30:00"`, or any `humantime` duration.
+Time format: `"5m"`, `"2h"`, `"1d"`, or RFC3339 timestamp.
 
 ## Development
 
 ### Build & Test
 ```bash
-cargo build                    # Build debug
-cargo build --release          # Build release
-cargo test                     # Run all tests
-cargo test <test_name>         # Run single test
-cargo test -- --nocapture      # Run tests with stdout
-cargo clippy -- -D warnings    # Lint (zero warnings policy)
-cargo fmt                      # Format
-cargo fmt -- --check           # Check formatting without modifying
-just test                      # Run tests + auto-cleanup of leaked test daemons
-just kill-test-daemons         # Kill stuck test daemons (NEVER kills production)
+cargo build --release          # Release build
+cargo test                     # Run all tests (~490)
+cargo clippy -- -D warnings    # Zero warnings required
+cargo fmt -- --check           # Format check
+just test                      # Tests + cleanup leaked daemons
+just kill-test-daemons         # Kill stuck test processes
 ```
 
 ### Desktop App
 ```bash
-cd app
-npm ci --prefix ui
+cd app && npm ci --prefix ui
 cargo install tauri-cli --locked
 cargo tauri dev
 ```
 
 ### Daemon Safety
-- NEVER use `pkill -f 'target/debug/unf'` or broad patterns -- this kills the production daemon
-- Test daemons use `UNF_HOME` pointed at temp dirs, so they run as `__daemon --root /private/var/folders/...`
-- Use `just kill-test-daemons` to safely clean up stuck test processes
-- If the production daemon is accidentally killed: `unf restart`
+Never use broad `pkill -f 'target/debug/unf'` — this kills the production daemon. Test daemons use `UNF_HOME` for isolation. Use `just kill-test-daemons` to clean up test processes. If the production daemon is killed, run `unf restart`.
 
-### Pre-Commit Checklist
-- `cargo fmt -- --check` passes
-- `cargo clippy -- -D warnings` passes (zero warnings)
-- `cargo test` passes (100% pass rate, zero tolerance)
+### Code Submission
+- `cargo fmt -- --check` ✓
+- `cargo clippy -- -D warnings` ✓ (zero warnings)
+- `cargo test` ✓ (100% pass rate)
+- Update `CHANGELOG.md` under `Unreleased`
 
-### Pre-Push Checklist
-- All pre-commit checks pass
-- `cargo build --release` succeeds
-- Cross-platform concerns documented if applicable
+## Design Principles
 
-## SUPER Principles (Functional Design)
+**SUPER**: Side effects at edge, Uncoupled logic, Pure functions, Explicit data flow, Replaceable by value.
 
-All code follows SUPER:
-- **S**ide Effects at Edge: I/O (filesystem, SQLite, OS events) isolated at boundaries; core logic is pure
-- **U**ncoupled Logic: Small, focused, composable functions and modules
-- **P**ure & Total Functions: Predictable, handle all inputs, return values (not panics)
-- **E**xplicit Data Flow: Clear transformation pipelines, no hidden state
-- **R**eplaceable by Value: Referential transparency where possible
-
-### In Practice for Rust
-- Side effects (file I/O, SQLite, OS watcher APIs) live in boundary modules, not in core logic
-- Core hashing, diffing, retention, and CAS logic are pure functions taking data in, returning data out
-- Use `Result<T, E>` everywhere; `unwrap()` is banned outside tests
-- Prefer owned types for clarity; use borrows for performance in hot paths
-- Newtype wrappers for domain concepts (e.g., `ContentHash(String)`, `SnapshotId(u64)`)
+In practice:
+- Side effects (I/O, SQLite, OS APIs) at boundaries; core logic pure
+- Small, focused, composable functions
+- `Result<T, E>` everywhere; no `unwrap()` outside tests
+- Newtype wrappers for domain concepts (`ContentHash`, `SnapshotId`)
 
 ## Coding Standards
 
-### Rust-Specific
-- No `unwrap()` outside of tests -- use `?`, `expect()` with context, or proper error handling
-- No magic numbers -- use named constants
-- No `unsafe` without documented justification and review
-- Error types per module using `thiserror`; `anyhow` at binary boundaries only
-- Prefer `&str` over `String` in function signatures when ownership isn't needed
-- All public items have doc comments
+**Rust:**
+- No `unwrap()` outside tests — use `?` or `expect()`
+- Named constants, not magic numbers
+- No `unsafe` without justification
+- `Result<T, E>` per module using `thiserror`
+- Prefer `&str` over `String` in signatures
+- Doc comments on public items
 
-### Project Structure
-- Binary entry point in `src/main.rs` (thin: arg parsing + dispatch)
-- Library logic in `src/lib.rs` and submodules
-- CLI command handlers in `src/cli/`
-- Watcher subsystem in `src/watcher/`
-- Storage engine in `src/engine/`
-- Integration tests in `tests/`
-- E2E tests in `tests/e2e/`
-- Desktop app in `app/`
-- Homebrew formula in `Formula/`, cask in `Casks/`
+**Structure:**
+- `src/main.rs` — thin entry point (arg parsing, dispatch)
+- `src/lib.rs` — library logic and submodules
+- `src/cli/` — command handlers
+- `src/daemon/` — OS watcher implementations
+- `src/engine/` — storage engine
+- `tests/` — integration and E2E tests
+- `app/` — Tauri desktop app
+- `Formula/`, `Casks/` — Homebrew definitions
