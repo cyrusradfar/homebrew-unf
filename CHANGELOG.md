@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.9] - 2026-03-18
+### Added
+- Linux ARM64 (aarch64-unknown-linux-gnu) build target and .deb package
+- CHANGELOG.md, CONTRIBUTING.md
+- Dual MIT/Apache-2.0 license (matching ripgrep/bat/fd)
+### Changed
+- Homebrew formula supports ARM64 Linux
+- All docs polished for OSS readiness
+
 ## [0.17.8] - 2026-03-17
 ### Added
 - .deb package in staging and release pipelines
