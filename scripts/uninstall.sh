@@ -4,12 +4,20 @@ set -euo pipefail
 echo "Uninstalling UNFUDGED..."
 echo ""
 
-# Stop the daemon first
+# Stop sentinel first (prevents it from respawning the daemon)
+if pgrep -f "unf __sentinel" &>/dev/null; then
+  echo "Stopping sentinel..."
+  pkill -f "unf __sentinel" 2>/dev/null || true
+  sleep 1
+fi
+
+# Stop the daemon
 if command -v unf &>/dev/null; then
   echo "Stopping daemon..."
   unf stop 2>/dev/null || true
-elif pgrep -f "unf __daemon" &>/dev/null; then
-  echo "Stopping daemon (binary already removed, sending SIGTERM)..."
+fi
+if pgrep -f "unf __daemon" &>/dev/null; then
+  echo "Sending SIGTERM to daemon..."
   pkill -f "unf __daemon" 2>/dev/null || true
   sleep 1
 fi
@@ -29,6 +37,11 @@ for formula in unf unf-staging; do
     brew uninstall "$formula"
   fi
 done
+
+# Kill any remaining processes (sentinel may have respawned daemon before binary was removed)
+pkill -f "unf __sentinel" 2>/dev/null || true
+pkill -f "unf __daemon" 2>/dev/null || true
+sleep 1
 
 # Remove LaunchAgent if present
 PLIST="$HOME/Library/LaunchAgents/com.unfudged.daemon.plist"
