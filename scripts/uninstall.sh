@@ -4,7 +4,13 @@ set -euo pipefail
 echo "Uninstalling UNFUDGED..."
 echo ""
 
-# Stop sentinel first (prevents it from respawning the daemon)
+# Stop brew service first (cleanly unloads launchd plist)
+if brew services list 2>/dev/null | grep -q "^unf "; then
+  echo "Stopping brew service..."
+  brew services stop unf 2>/dev/null || true
+fi
+
+# Stop sentinel (prevents it from respawning the daemon)
 if pgrep -f "unf __sentinel" &>/dev/null; then
   echo "Stopping sentinel..."
   pkill -f "unf __sentinel" 2>/dev/null || true
@@ -38,18 +44,25 @@ for formula in unf unf-staging; do
   fi
 done
 
-# Kill any remaining processes (sentinel may have respawned daemon before binary was removed)
+# Kill any remaining processes
 pkill -f "unf __sentinel" 2>/dev/null || true
 pkill -f "unf __daemon" 2>/dev/null || true
 sleep 1
 
-# Remove LaunchAgent if present
-PLIST="$HOME/Library/LaunchAgents/com.unfudged.daemon.plist"
-if [ -f "$PLIST" ]; then
-  echo "Removing LaunchAgent..."
-  launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
-  rm -f "$PLIST"
-fi
+# Remove LaunchAgents (both legacy and brew-managed)
+for plist in \
+  "$HOME/Library/LaunchAgents/com.unfudged.sentinel.plist" \
+  "$HOME/Library/LaunchAgents/com.unfudged.daemon.plist" \
+  "$HOME/Library/LaunchAgents/homebrew.mxcl.unf.plist"; do
+  if [ -f "$plist" ]; then
+    echo "Removing LaunchAgent: $(basename "$plist")"
+    launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
+    rm -f "$plist"
+  fi
+done
+
+# Clear stopped marker so reinstall can start cleanly
+rm -f "$HOME/.unfudged/stopped"
 
 # Verify clean
 echo ""
@@ -68,10 +81,6 @@ for cask in unfudged unfudged-staging; do
 done
 if pgrep -f "unf __daemon" &>/dev/null; then
   echo "WARNING: daemon is still running"
-  CLEAN=false
-fi
-if [ -f "$PLIST" ]; then
-  echo "WARNING: LaunchAgent still present"
   CLEAN=false
 fi
 

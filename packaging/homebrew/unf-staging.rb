@@ -31,7 +31,16 @@ class UnfStaging < Formula
   end
 
   def post_install
-    system bin/"unf", "restart"
+    unf_home = Pathname.new(Dir.home)/".unfudged"
+    stopped = unf_home/"stopped"
+    stopped.delete if stopped.exist?
+  end
+
+  service do
+    run [opt_bin/"unf", "__sentinel"]
+    keep_alive true
+    log_path var/"log/unfudged-sentinel.log"
+    error_log_path var/"log/unfudged-sentinel.log"
   end
 
   def caveats

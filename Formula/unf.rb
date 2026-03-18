@@ -29,15 +29,29 @@ class Unf < Formula
   end
 
   def post_install
-    system bin/"unf", "restart"
+    # Clear the "stopped" marker so the sentinel can start.
+    # `unf stop` creates this file; without removing it, the sentinel
+    # exits immediately and brew services shows "not running".
+    unf_home = Pathname.new(Dir.home)/".unfudged"
+    stopped = unf_home/"stopped"
+    stopped.delete if stopped.exist?
+  end
+
+  service do
+    run [opt_bin/"unf", "__sentinel"]
+    keep_alive true
+    log_path var/"log/unfudged-sentinel.log"
+    error_log_path var/"log/unfudged-sentinel.log"
   end
 
   def caveats
     <<~EOS
-      To start watching a project:
+      To start the daemon:
+        brew services start unf
+
+      To watch a project:
         cd /path/to/project && unf watch
 
-      This automatically installs a LaunchAgent for auto-start on login.
       For the desktop app:
         brew install --cask cyrusradfar/unf/unfudged
     EOS
