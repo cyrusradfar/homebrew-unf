@@ -30,6 +30,10 @@ class UnfStaging < Formula
     bin.install "unf"
   end
 
+  def post_install
+    system bin/"unf", "restart"
+  end
+
   def caveats
     <<~EOS
       Staging build for pre-release testing.
