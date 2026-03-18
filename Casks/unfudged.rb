@@ -1,11 +1,12 @@
 cask "unfudged" do
-  version "0.17.8"
-  sha256 "887714e6316e4aec609eed56ace32ffc290ceb76899900abd78f5debc81f9f5c"
+  version "0.17.9"
+  sha256 "65b7c2759ba596040277b75071e2dd630aa8e723dfb869ca61e26151460b5af9"
 
-  url "https://downloads.unfudged.io/releases/v0.17.8/UNFUDGED-v0.17.8-universal.dmg"
+  url "https://downloads.unfudged.io/releases/v0.17.9/UNFUDGED-v0.17.9-universal.dmg"
   name "UNFUDGED"
   desc "High-resolution filesystem flight recorder - desktop app"
   homepage "https://unfudged.io"
+  license "MIT OR Apache-2.0"
 
   depends_on formula: "cyrusradfar/unf/unf"
   depends_on macos: ">= :catalina"
