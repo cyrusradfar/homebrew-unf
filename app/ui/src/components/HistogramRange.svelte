@@ -1,20 +1,26 @@
 <script lang="ts">
   import { densityBuckets, histogramStart, histogramEnd, histogramIsSession } from "../lib/stores";
   import type { DensityBucket } from "../lib/types";
+  import {
+    type RangeState,
+    initialState,
+    mouseDown as rsMouseDown,
+    mouseMove as rsMouseMove,
+    mouseUp as rsMouseUp,
+    shouldClearRange,
+    selectSession as rsSelectSession,
+  } from "../lib/rangeSelection";
 
   let barRowEl: HTMLDivElement | undefined = $state();
   let maxLog = $derived(Math.max(1, ...($densityBuckets.map((b) => Math.log1p(b.count)))));
 
-  // Range state: start/end as fraction [0..1] of the bar row width
-  // null = no range selected (show all)
-  let rangeStart = $state<number | null>(null);
-  let rangeEnd = $state<number | null>(null);
+  // Range state managed by the pure state machine
+  let rs = $state<RangeState>(initialState());
 
-  // Drag state
-  let dragMode = $state<"none" | "left" | "right" | "create" | "slide">("none");
-  let slideAnchor = $state(0);
-  let slideStartRange = $state<[number, number]>([0, 0]);
-
+  // Convenience aliases for the template
+  let rangeStart = $derived(rs.rangeStart);
+  let rangeEnd = $derived(rs.rangeEnd);
+  let dragMode = $derived(rs.dragMode);
   let hasRange = $derived(rangeStart !== null && rangeEnd !== null);
 
   // Convert fraction position to bucket index
@@ -56,93 +62,35 @@
     return idx >= Math.floor(lo) && idx <= Math.floor(hi);
   }
 
-  // Mouse down on the bar area: start creating a range
   function handleBarMouseDown(e: MouseEvent) {
     if (!barRowEl) return;
-    const frac = getFraction(e);
-
-    // If clicking inside existing range, start sliding
-    if (hasRange) {
-      const lo = Math.min(rangeStart!, rangeEnd!);
-      const hi = Math.max(rangeStart!, rangeEnd!);
-      const handleZone = 0.015; // ~1.5% hit zone for handles
-
-      if (Math.abs(frac - lo) < handleZone) {
-        dragMode = "left";
-        return;
-      }
-      if (Math.abs(frac - hi) < handleZone) {
-        dragMode = "right";
-        return;
-      }
-      if (frac > lo && frac < hi) {
-        dragMode = "slide";
-        slideAnchor = frac;
-        slideStartRange = [lo, hi];
-        return;
-      }
-    }
-
-    // Otherwise, start creating a new range
-    dragMode = "create";
-    rangeStart = frac;
-    rangeEnd = frac;
+    rs = rsMouseDown(rs, getFraction(e));
   }
 
   function handleMouseMove(e: MouseEvent) {
     if (dragMode === "none") return;
-    const frac = getFraction(e);
-
-    if (dragMode === "create") {
-      rangeEnd = frac;
-    } else if (dragMode === "left") {
-      rangeStart = Math.min(frac, rangeEnd!);
-    } else if (dragMode === "right") {
-      rangeEnd = Math.max(frac, rangeStart!);
-    } else if (dragMode === "slide") {
-      const delta = frac - slideAnchor;
-      let newLo = slideStartRange[0] + delta;
-      let newHi = slideStartRange[1] + delta;
-      // Clamp to [0, 1]
-      if (newLo < 0) { newHi -= newLo; newLo = 0; }
-      if (newHi > 1) { newLo -= (newHi - 1); newHi = 1; }
-      rangeStart = Math.max(0, newLo);
-      rangeEnd = Math.min(1, newHi);
-    }
+    rs = rsMouseMove(rs, getFraction(e));
   }
 
   function handleMouseUp() {
     if (dragMode === "none") return;
-
-    // Normalize so start < end
-    if (rangeStart !== null && rangeEnd !== null && rangeStart > rangeEnd) {
-      [rangeStart, rangeEnd] = [rangeEnd, rangeStart];
-    }
-
-    // If range is tiny (click without drag), clear it
-    if (rangeStart !== null && rangeEnd !== null && Math.abs(rangeEnd - rangeStart) < 0.005) {
-      rangeStart = null;
-      rangeEnd = null;
-    }
-
+    rs = rsMouseUp(rs);
     histogramIsSession.set(false);
-    dragMode = "none";
     syncStores();
   }
 
   // Double-click to clear range
   function handleDblClick() {
-    rangeStart = null;
-    rangeEnd = null;
+    rs = initialState();
     histogramIsSession.set(false);
     syncStores();
   }
 
-  // Sync local range state when stores are cleared externally (e.g. FilterStatus "clear" button)
+  // Sync local range state when stores are cleared externally (e.g. "clear all" button).
+  // Guarded by dragMode === "none" to prevent clearing a range mid-creation.
   $effect(() => {
-    if ($histogramStart === null && (rangeStart !== null || rangeEnd !== null)) {
-      rangeStart = null;
-      rangeEnd = null;
+    if (shouldClearRange($histogramStart === null, rs)) {
+      rs = initialState();
     }
   });
 
@@ -248,10 +196,8 @@
     });
   }
 
-  function selectSession(session: Session) {
-    const n = $densityBuckets.length;
-    rangeStart = session.startIdx / n;
-    rangeEnd = (session.endIdx + 1) / n;
+  function selectSessionHandler(session: Session) {
+    rs = rsSelectSession(rs, session.startIdx, session.endIdx, $densityBuckets.length);
     histogramIsSession.set(true);
     syncStores();
   }
@@ -283,7 +229,7 @@
             class="session-diamond"
             style="left: {session.centerPct}%"
             title={formatSessionTooltip(session)}
-            onclick={() => selectSession(session)}
+            onclick={() => selectSessionHandler(session)}
           >
             <svg width="10" height="10" viewBox="0 0 10 10">
               <rect x="1.5" y="1.5" width="7" height="7" rx="1" transform="rotate(45 5 5)" />

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.11] - 2026-03-18
+### Fixed
+- Histogram time range: drag-to-create was immediately cleared by $effect (session selection unaffected)
+### Added
+- Range selection state machine extracted to `rangeSelection.ts` with 21 unit tests (vitest)
+- Resource leak tests refined (removed flaky health check from SQLite FD test)
+
 ## [0.17.9] - 2026-03-18
 ### Added
 - Linux ARM64 (aarch64-unknown-linux-gnu) build target and .deb package

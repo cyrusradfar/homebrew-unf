@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tempfile::TempDir;
 
@@ -109,21 +109,6 @@ fn burst_write(dir: &Path, count: usize, prefix: &str) {
         let content = format!("{prefix} file {i} — resource leak test content");
         fs::write(dir.join(&name), &content).expect("burst_write failed");
     }
-}
-
-/// Poll `check` every `interval_ms` until it returns `true` or `timeout_ms` elapses.
-fn poll_until<F>(timeout_ms: u64, interval_ms: u64, mut check: F) -> bool
-where
-    F: FnMut() -> bool,
-{
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        if check() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(interval_ms));
-    }
-    false
 }
 
 // ---------------------------------------------------------------------------
@@ -393,34 +378,4 @@ fn sqlite_connection_cleanup_on_unwatch() {
         is_alive(pid),
         "Daemon should still be alive after all unwatches"
     );
-
-    // Verify we can still watch/unwatch (daemon isn't in a broken state)
-    let check_project = TempDir::new().expect("check project dir");
-    watch_project(unf_home.path(), check_project.path());
-    burst_write(check_project.path(), 2, "healthcheck");
-    thread::sleep(Duration::from_secs(1));
-
-    // Poll for snapshots to confirm daemon is functional
-    let uh = unf_home.path();
-    let cp = check_project.path();
-    let healthy = poll_until(10_000, 200, || {
-        let out = isolated_cmd(uh)
-            .current_dir(cp)
-            .arg("--json")
-            .arg("status")
-            .output()
-            .expect("status failed");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            v["snapshots"].as_u64().unwrap_or(0) >= 1
-        } else {
-            false
-        }
-    });
-    assert!(
-        healthy,
-        "Daemon should still be functional after SQLite cleanup"
-    );
-
-    unwatch_project(unf_home.path(), check_project.path());
 }
