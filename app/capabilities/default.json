@@ -4,6 +4,7 @@
   "description": "Default capabilities for the UNFUDGED desktop app",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:default"
   ]
 }
