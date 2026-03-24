@@ -29,8 +29,12 @@ pub struct Registry {
 
 /// Returns the path to the global config directory (`~/.unfudged/`).
 ///
-/// Checks `UNF_HOME` first (testing override), then falls back to
-/// `$HOME/.unfudged/`. Creates the directory if it doesn't exist.
+/// Priority order:
+/// 1. `UNF_HOME` env var (testing override)
+/// 2. `storage_dir` from the user config file (user-configured)
+/// 3. `$HOME/.unfudged` (default fallback)
+///
+/// Creates the directory if it doesn't exist.
 ///
 /// # Errors
 ///
@@ -47,7 +51,29 @@ pub fn global_dir() -> Result<PathBuf, UnfError> {
         return Ok(dir);
     }
 
-    // 2. Check HOME environment variable (useful for testing)
+    // 2. Check user config for a storage_dir override
+    if let Ok(config) = crate::config::load() {
+        if let Some(ref storage_dir) = config.storage_dir {
+            if storage_dir.is_absolute() {
+                if !storage_dir.exists() {
+                    fs::create_dir_all(storage_dir).map_err(|e| {
+                        UnfError::InvalidArgument(format!(
+                            "Failed to create config storage_dir {}: {}",
+                            storage_dir.display(),
+                            e
+                        ))
+                    })?;
+                }
+                return Ok(storage_dir.clone());
+            }
+            eprintln!(
+                "Warning: storage_dir in config is not absolute ({}), using default",
+                storage_dir.display()
+            );
+        }
+    }
+
+    // 3. Check HOME environment variable (useful for testing)
     let home = if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home)
     } else {
@@ -362,5 +388,172 @@ mod tests {
             let pruned = prune_stale_entries().expect("prune");
             assert_eq!(pruned, 0);
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // global_dir() priority tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: write a config.json with `storage_dir` set to the given path,
+    /// under the HOME-relative config directory that `dirs::config_dir()` will
+    /// resolve to on this platform.
+    ///
+    /// On macOS `dirs::config_dir()` returns `~/Library/Application Support`.
+    /// On Linux it returns `$XDG_CONFIG_HOME` when set, else `~/.config`.
+    ///
+    /// The caller is responsible for holding `ENV_LOCK` and setting HOME first.
+    fn write_config_with_storage_dir(home: &Path, storage_dir: &Path) {
+        let config_dir = {
+            // Ask dirs crate for the current config dir (HOME is already
+            // redirected by with_test_home / the caller).
+            dirs::config_dir().expect("dirs::config_dir must resolve in test")
+        };
+        let config_path = config_dir.join("unfudged").join("config.json");
+        fs::create_dir_all(config_path.parent().unwrap()).expect("create config parent dirs");
+        let json = format!(
+            r#"{{"storage_dir": "{}"}}"#,
+            storage_dir.to_str().unwrap()
+        );
+        fs::write(&config_path, json).expect("write config.json");
+        // Unused but kept to silence unused-variable warning in callers that
+        // pass `home` for clarity.
+        let _ = home;
+    }
+
+    #[test]
+    fn global_dir_unf_home_wins_over_config() {
+        // UNF_HOME must beat any config-file storage_dir.
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let home_dir = temp.path().join("home");
+        let unf_home_dir = temp.path().join("unf_home");
+        let config_storage_dir = temp.path().join("config_storage");
+
+        fs::create_dir_all(&home_dir).expect("create home");
+
+        // Save original env vars
+        let orig_home = env::var("HOME").ok();
+        let orig_unf_home = env::var("UNF_HOME").ok();
+
+        env::set_var("HOME", &home_dir);
+        env::set_var("UNF_HOME", &unf_home_dir);
+
+        // Write a config pointing to a different directory
+        write_config_with_storage_dir(&home_dir, &config_storage_dir);
+
+        let result = global_dir().expect("global_dir should succeed");
+        assert_eq!(result, unf_home_dir, "UNF_HOME must take priority over config");
+
+        // Restore env vars
+        match orig_unf_home {
+            Some(v) => env::set_var("UNF_HOME", v),
+            None => env::remove_var("UNF_HOME"),
+        }
+        match orig_home {
+            Some(v) => env::set_var("HOME", v),
+            None => env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn global_dir_config_wins_over_default() {
+        // When UNF_HOME is absent, a config-file storage_dir must be used.
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let home_dir = temp.path().join("home");
+        let config_storage_dir = temp.path().join("config_storage");
+        fs::create_dir_all(&home_dir).expect("create home");
+
+        let orig_home = env::var("HOME").ok();
+        let orig_unf_home = env::var("UNF_HOME").ok();
+
+        env::set_var("HOME", &home_dir);
+        env::remove_var("UNF_HOME");
+
+        write_config_with_storage_dir(&home_dir, &config_storage_dir);
+
+        let result = global_dir().expect("global_dir should succeed");
+        assert_eq!(result, config_storage_dir, "config storage_dir must beat default");
+        assert!(config_storage_dir.exists(), "config storage_dir should be created");
+
+        match orig_unf_home {
+            Some(v) => env::set_var("UNF_HOME", v),
+            None => env::remove_var("UNF_HOME"),
+        }
+        match orig_home {
+            Some(v) => env::set_var("HOME", v),
+            None => env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn global_dir_falls_back_to_default_when_no_config() {
+        // When neither UNF_HOME nor config is set, use ~/.unfudged.
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let home_dir = temp.path().join("home");
+        fs::create_dir_all(&home_dir).expect("create home");
+
+        let orig_home = env::var("HOME").ok();
+        let orig_unf_home = env::var("UNF_HOME").ok();
+
+        env::set_var("HOME", &home_dir);
+        env::remove_var("UNF_HOME");
+        // No config file written — config::load() returns default (None storage_dir)
+
+        let result = global_dir().expect("global_dir should succeed");
+        assert_eq!(result, home_dir.join(".unfudged"), "should fall back to ~/.unfudged");
+        assert!(home_dir.join(".unfudged").exists(), "~/.unfudged should be created");
+
+        match orig_unf_home {
+            Some(v) => env::set_var("UNF_HOME", v),
+            None => env::remove_var("UNF_HOME"),
+        }
+        match orig_home {
+            Some(v) => env::set_var("HOME", v),
+            None => env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn global_dir_relative_storage_dir_in_config_falls_back_to_default() {
+        // A relative path in config.storage_dir must be ignored; fall through to default.
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let home_dir = temp.path().join("home");
+        fs::create_dir_all(&home_dir).expect("create home");
+
+        let orig_home = env::var("HOME").ok();
+        let orig_unf_home = env::var("UNF_HOME").ok();
+
+        env::set_var("HOME", &home_dir);
+        env::remove_var("UNF_HOME");
+
+        // Write a config with a relative path
+        let config_dir = dirs::config_dir().expect("dirs::config_dir");
+        let config_path = config_dir.join("unfudged").join("config.json");
+        fs::create_dir_all(config_path.parent().unwrap()).expect("create config parent");
+        fs::write(&config_path, r#"{"storage_dir": "relative/path"}"#)
+            .expect("write config.json");
+
+        let result = global_dir().expect("global_dir should succeed");
+        assert_eq!(
+            result,
+            home_dir.join(".unfudged"),
+            "relative storage_dir should fall through to default"
+        );
+
+        match orig_unf_home {
+            Some(v) => env::set_var("UNF_HOME", v),
+            None => env::remove_var("UNF_HOME"),
+        }
+        match orig_home {
+            Some(v) => env::set_var("HOME", v),
+            None => env::remove_var("HOME"),
+        }
     }
 }
