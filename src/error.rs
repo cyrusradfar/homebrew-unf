@@ -35,6 +35,10 @@ pub enum UnfError {
     /// No results matched the query.
     #[error("{0}")]
     NoResults(String),
+
+    /// A configuration error occurred.
+    #[error("Config error: {0}")]
+    Config(String),
 }
 
 /// Errors from the content-addressable storage layer.
