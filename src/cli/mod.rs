@@ -12,6 +12,7 @@ pub mod filter;
 pub mod init;
 pub mod list;
 pub mod log;
+pub mod migrate;
 pub mod output;
 pub mod prune;
 pub mod recap;

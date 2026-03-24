@@ -99,6 +99,20 @@ pub fn run(format: OutputFormat) -> Result<(), UnfError> {
     Ok(())
 }
 
+/// Delegates `--move-storage` to the migration engine.
+///
+/// # Arguments
+///
+/// * `dest` - Destination path string (may be "default" for ~/.unfudged)
+/// * `format` - Output format (human or JSON)
+///
+/// # Errors
+///
+/// Propagates any error from the migration engine.
+pub fn run_move_storage(dest: &str, format: OutputFormat) -> Result<(), UnfError> {
+    super::migrate::run(dest, format)
+}
+
 /// Replaces the user's home directory prefix in `path` with `~`.
 ///
 /// Pure function — no I/O. Falls back to the full path string if the

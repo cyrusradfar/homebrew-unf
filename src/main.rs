@@ -592,10 +592,8 @@ fn main() {
         }),
 
         Commands::Config(args) => {
-            if args.move_storage.is_some() {
-                Err(UnfError::InvalidArgument(
-                    "--move-storage is not yet implemented".to_string(),
-                ))
+            if let Some(ref dest) = args.move_storage {
+                cli::config::run_move_storage(&dest.to_string_lossy(), format)
             } else {
                 cli::config::run(format)
             }
