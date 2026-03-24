@@ -4,6 +4,7 @@
   import { listProjects, removeProject, watchProject, unwatchProject } from "../lib/api";
   import { open } from "@tauri-apps/plugin-dialog";
   import type { ProjectEntry } from "../lib/types";
+  import SettingsPopover from "./SettingsPopover.svelte";
 
   interface Props {
     onProjectOpened: (path: string) => void;
@@ -14,6 +15,7 @@
   let dropdownOpen = $state(false);
   let dropdownButtonRef: HTMLButtonElement | undefined = $state();
   let dropdownRef: HTMLDivElement | undefined = $state();
+  let settingsOpen = $state(false);
 
   // Helper: status color for indicator dot
   function statusColor(status: ProjectEntry["status"]): string {
@@ -113,6 +115,11 @@
     dropdownOpen = !dropdownOpen;
   }
 
+  // Toggle settings popover
+  function toggleSettings() {
+    settingsOpen = !settingsOpen;
+  }
+
   /** Get display label for a tab */
   function tabLabel(tabId: string): string {
     if (tabId === GLOBAL_TAB) return "All Projects";
@@ -204,7 +211,24 @@
       {/key}
     {/each}
   </div>
+
+  <!-- Right: Settings -->
+  <div class="settings-container">
+    <button
+      class="gear-button"
+      class:active={settingsOpen}
+      onclick={toggleSettings}
+      title="Settings"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+      </svg>
+    </button>
+  </div>
 </div>
+
+<SettingsPopover visible={settingsOpen} onClose={() => settingsOpen = false} />
 
 <style>
   .topbar {
@@ -480,5 +504,34 @@
   .tab-close:hover {
     opacity: 1;
     color: var(--text-primary);
+  }
+
+  /* ===== SETTINGS SECTION ===== */
+  .settings-container {
+    flex-shrink: 0;
+    border-left: 1px solid var(--border);
+  }
+
+  .gear-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+
+  .gear-button:hover {
+    color: var(--text-primary);
+    background: var(--accent-bg);
+  }
+
+  .gear-button.active {
+    color: var(--accent);
+    background: var(--accent-bg);
   }
 </style>
