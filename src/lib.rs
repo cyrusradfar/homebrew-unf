@@ -7,8 +7,8 @@
 
 pub mod audit;
 pub mod autostart;
-pub mod config;
 pub mod cli;
+pub mod config;
 pub mod diff;
 pub mod engine;
 pub mod error;

@@ -81,9 +81,8 @@ fn write_lock(lock: &MigrationLock) -> Result<(), UnfError> {
         })?;
     }
 
-    let json = serde_json::to_string_pretty(lock).map_err(|e| {
-        UnfError::Config(format!("Failed to serialize migration lock: {}", e))
-    })?;
+    let json = serde_json::to_string_pretty(lock)
+        .map_err(|e| UnfError::Config(format!("Failed to serialize migration lock: {}", e)))?;
 
     // Atomic write: temp file in same directory, then rename.
     let tmp_path = path.with_extension("lock.tmp");
@@ -168,9 +167,8 @@ fn update_lock_state(new_state: &str) -> Result<(), UnfError> {
             e
         ))
     })?;
-    let mut lock: MigrationLock = serde_json::from_slice(&bytes).map_err(|e| {
-        UnfError::Config(format!("Failed to parse migration lock: {}", e))
-    })?;
+    let mut lock: MigrationLock = serde_json::from_slice(&bytes)
+        .map_err(|e| UnfError::Config(format!("Failed to parse migration lock: {}", e)))?;
     lock.state = new_state.to_string();
     write_lock(&lock)
 }
@@ -218,13 +216,18 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
             .unwrap_or_else(|| "~/.unfudged".to_string());
 
         println!("Migration was interrupted.");
-        println!("Your data is safe at the original location: {}", source_hint);
+        println!(
+            "Your data is safe at the original location: {}",
+            source_hint
+        );
         println!(
             "Run `unf config --move-storage <DEST>` to retry after removing the lock file, or"
         );
         println!(
             "delete {} to clear the lock and proceed.",
-            lock_path().map(|p| p.display().to_string()).unwrap_or_default()
+            lock_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         );
         return Ok(());
     }
@@ -237,8 +240,7 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
     preflight_checks(&source, &dest)?;
 
     // 3. Get size / project info for progress output.
-    let (total_bytes, project_count) =
-        crate::config::storage_usage(&source).unwrap_or((0, 0));
+    let (total_bytes, project_count) = crate::config::storage_usage(&source).unwrap_or((0, 0));
 
     // 3b. Create the migration lock BEFORE any side effects.
     //     From this point forward, any interruption leaves the lock in place
@@ -313,10 +315,7 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
             "elapsed_secs": elapsed,
             "backup_path": backup_path.display().to_string(),
         }),
-        &format!(
-            "Done. Previous data saved at {}",
-            backup_path.display()
-        ),
+        &format!("Done. Previous data saved at {}", backup_path.display()),
     );
 
     // 10. Remove the lock now that migration is fully complete.
@@ -413,7 +412,11 @@ pub fn preflight_checks(source: &Path, dest: &Path) -> Result<(), UnfError> {
 
     // Check parent directory is writable (we will create dest inside it).
     let parent = dest.parent().unwrap_or(Path::new("/"));
-    let parent_to_check = if parent.exists() { parent } else { Path::new("/tmp") };
+    let parent_to_check = if parent.exists() {
+        parent
+    } else {
+        Path::new("/tmp")
+    };
 
     // Disk space check using fs2.
     let source_size = crate::config::storage_usage(source)
@@ -483,7 +486,11 @@ fn stop_daemon() {
 fn read_live_pid(pid_path: &Path) -> Option<u32> {
     let content = fs::read_to_string(pid_path).ok()?;
     let pid: u32 = content.trim().parse().ok()?;
-    if crate::process::is_alive(pid) { Some(pid) } else { None }
+    if crate::process::is_alive(pid) {
+        Some(pid)
+    } else {
+        None
+    }
 }
 
 /// Polls until the process exits or timeout is reached.
@@ -543,8 +550,7 @@ fn copy_storage(source: &Path, dest: &Path, format: OutputFormat) -> Result<(), 
                 .unwrap_or_else(|| entry.path.display().to_string());
 
             // Size of this project's data in the new location.
-            let project_size =
-                project_size_at_dest(&entry.path, dest).unwrap_or(0);
+            let project_size = project_size_at_dest(&entry.path, dest).unwrap_or(0);
 
             emit_progress(
                 format,
@@ -732,9 +738,8 @@ pub fn verify_destination(dest: &Path) -> Result<(), UnfError> {
 /// Returns `UnfError::Config` if the current executable cannot be found or
 /// the spawn fails.
 pub fn restart_daemon() -> Result<(), UnfError> {
-    let exe = std::env::current_exe().map_err(|e| {
-        UnfError::Config(format!("Cannot determine executable path: {}", e))
-    })?;
+    let exe = std::env::current_exe()
+        .map_err(|e| UnfError::Config(format!("Cannot determine executable path: {}", e)))?;
 
     std::process::Command::new(&exe)
         .arg("__boot")
@@ -825,7 +830,9 @@ mod tests {
 
     #[test]
     fn resolve_destination_default() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // "default" should resolve to a path ending in .unfudged and is_default=true.
         let result = resolve_destination("default");
@@ -854,7 +861,11 @@ mod tests {
         let result = resolve_destination("relative/path");
         assert!(result.is_err(), "relative paths must be rejected");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("No changes made"), "error must mention No changes made: {}", msg);
+        assert!(
+            msg.contains("No changes made"),
+            "error must mention No changes made: {}",
+            msg
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -869,7 +880,11 @@ mod tests {
         let result = preflight_checks(source.path(), &dest);
         assert!(result.is_err(), "dest inside source must be rejected");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("No changes made"), "must mention No changes made: {}", msg);
+        assert!(
+            msg.contains("No changes made"),
+            "must mention No changes made: {}",
+            msg
+        );
     }
 
     #[test]
@@ -883,7 +898,11 @@ mod tests {
         let result = preflight_checks(source.path(), dest.path());
         assert!(result.is_err(), "non-empty dest must be rejected");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("No changes made"), "must mention No changes made: {}", msg);
+        assert!(
+            msg.contains("No changes made"),
+            "must mention No changes made: {}",
+            msg
+        );
     }
 
     #[test]
@@ -924,8 +943,14 @@ mod tests {
         copy_dir_recursive(src.path(), dst.path(), SKIP_FILES, SKIP_EXTENSIONS)
             .expect("copy should succeed");
 
-        assert!(dst.path().join("hello.txt").exists(), "hello.txt must be copied");
-        assert!(dst.path().join("sub").join("world.txt").exists(), "nested file must be copied");
+        assert!(
+            dst.path().join("hello.txt").exists(),
+            "hello.txt must be copied"
+        );
+        assert!(
+            dst.path().join("sub").join("world.txt").exists(),
+            "nested file must be copied"
+        );
 
         let content = fs::read(dst.path().join("hello.txt")).expect("read");
         assert_eq!(content, b"hello");
@@ -949,12 +974,30 @@ mod tests {
         copy_dir_recursive(src.path(), dst.path(), SKIP_FILES, SKIP_EXTENSIONS)
             .expect("copy should succeed");
 
-        assert!(!dst.path().join("daemon.pid").exists(), "daemon.pid must be skipped");
-        assert!(!dst.path().join("sentinel.pid").exists(), "sentinel.pid must be skipped");
-        assert!(!dst.path().join("stopped").exists(), "stopped must be skipped");
-        assert!(!dst.path().join("db.sqlite3-wal").exists(), "wal file must be skipped");
-        assert!(!dst.path().join("db.sqlite3-shm").exists(), "shm file must be skipped");
-        assert!(dst.path().join("projects.json").exists(), "projects.json must be copied");
+        assert!(
+            !dst.path().join("daemon.pid").exists(),
+            "daemon.pid must be skipped"
+        );
+        assert!(
+            !dst.path().join("sentinel.pid").exists(),
+            "sentinel.pid must be skipped"
+        );
+        assert!(
+            !dst.path().join("stopped").exists(),
+            "stopped must be skipped"
+        );
+        assert!(
+            !dst.path().join("db.sqlite3-wal").exists(),
+            "wal file must be skipped"
+        );
+        assert!(
+            !dst.path().join("db.sqlite3-shm").exists(),
+            "shm file must be skipped"
+        );
+        assert!(
+            dst.path().join("projects.json").exists(),
+            "projects.json must be copied"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1034,7 +1077,9 @@ mod tests {
 
     #[test]
     fn lock_path_returns_path_in_config_dir() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tmp");
         let (hp, xp) = redirect_config_to(tmp.path());
 
@@ -1058,7 +1103,9 @@ mod tests {
 
     #[test]
     fn write_and_read_lock_roundtrip() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tmp");
         let (hp, xp) = redirect_config_to(tmp.path());
 
@@ -1091,7 +1138,9 @@ mod tests {
 
     #[test]
     fn remove_lock_cleans_up() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tmp");
         let (hp, xp) = redirect_config_to(tmp.path());
 
@@ -1118,16 +1167,14 @@ mod tests {
 
     #[test]
     fn create_initial_lock_sets_preflight() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tmp");
         let (hp, xp) = redirect_config_to(tmp.path());
 
-        create_initial_lock(
-            PathBuf::from("/old/data"),
-            PathBuf::from("/new/data"),
-            8192,
-        )
-        .expect("create_initial_lock");
+        create_initial_lock(PathBuf::from("/old/data"), PathBuf::from("/new/data"), 8192)
+            .expect("create_initial_lock");
 
         let path = lock_path().expect("lock_path");
         let bytes = fs::read(&path).expect("read lock");

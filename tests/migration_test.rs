@@ -149,7 +149,10 @@ fn test_resolve_destination_absolute_path() {
     let (path, is_default) =
         migrate::resolve_destination("/tmp/my_storage").expect("absolute path must resolve");
     assert_eq!(path, PathBuf::from("/tmp/my_storage"));
-    assert!(!is_default, "custom absolute path must not be marked as default");
+    assert!(
+        !is_default,
+        "custom absolute path must not be marked as default"
+    );
 }
 
 #[test]
@@ -253,13 +256,20 @@ fn test_copy_dir_recursive_copies_files() {
     migrate::copy_dir_recursive(src.path(), dst.path(), &[], &[])
         .expect("copy_dir_recursive must succeed");
 
-    assert!(dst.path().join("root.txt").exists(), "root.txt must be copied");
+    assert!(
+        dst.path().join("root.txt").exists(),
+        "root.txt must be copied"
+    );
     assert!(
         dst.path().join("sub").join("mid.txt").exists(),
         "sub/mid.txt must be copied"
     );
     assert!(
-        dst.path().join("sub").join("deep").join("leaf.txt").exists(),
+        dst.path()
+            .join("sub")
+            .join("deep")
+            .join("leaf.txt")
+            .exists(),
         "sub/deep/leaf.txt must be copied"
     );
 
@@ -439,9 +449,8 @@ fn test_full_migration_flow() {
     let _env = EnvGuard::set(tmp.path(), &config_dir, &source);
 
     // Phase 1: resolve destination.
-    let (resolved_dest, is_default) =
-        migrate::resolve_destination(dest.to_str().unwrap())
-            .expect("resolve_destination must succeed for absolute path");
+    let (resolved_dest, is_default) = migrate::resolve_destination(dest.to_str().unwrap())
+        .expect("resolve_destination must succeed for absolute path");
     assert_eq!(resolved_dest, dest);
     assert!(!is_default);
 
@@ -539,8 +548,7 @@ fn test_full_migration_flow() {
     );
 
     // Config must point to dest.
-    let cfg = unfudged::config::load()
-        .expect("config::load must succeed after migration");
+    let cfg = unfudged::config::load().expect("config::load must succeed after migration");
     assert_eq!(
         cfg.storage_dir,
         Some(dest.clone()),

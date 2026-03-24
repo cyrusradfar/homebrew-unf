@@ -43,12 +43,19 @@ pub fn run(format: OutputFormat) -> Result<(), UnfError> {
             .ok()
             .and_then(|s| {
                 let trimmed = s.trim().to_string();
-                if trimmed.is_empty() { None } else { Some(trimmed) }
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
             })
             .unwrap_or_else(|| "~/.unfudged".to_string());
 
         println!("Migration was interrupted.");
-        println!("Your data is safe at the original location: {}", original_path);
+        println!(
+            "Your data is safe at the original location: {}",
+            original_path
+        );
         println!(
             "Run `unf config --move-storage <DEST>` to retry, or delete the lock file to proceed."
         );
@@ -91,7 +98,11 @@ pub fn run(format: OutputFormat) -> Result<(), UnfError> {
         println!(
             "  {} {}, {} used",
             project_count,
-            if project_count == 1 { "project" } else { "projects" },
+            if project_count == 1 {
+                "project"
+            } else {
+                "projects"
+            },
             crate::cli::format_size(disk_usage_bytes),
         );
     }
@@ -141,11 +152,7 @@ mod tests {
         if let Some(home) = dirs::home_dir() {
             let path = home.join("some").join("path");
             let result = home_relative(&path);
-            assert!(
-                result.starts_with("~/"),
-                "Expected ~/…, got: {}",
-                result
-            );
+            assert!(result.starts_with("~/"), "Expected ~/…, got: {}", result);
             assert!(result.contains("some/path"), "Got: {}", result);
         }
     }
@@ -188,7 +195,9 @@ mod tests {
     /// checking the lock file exists and the function returns Ok(()).
     #[test]
     fn lock_file_detected_returns_ok() {
-        let guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let tmp = TempDir::new().expect("create temp dir");
         let prev_home = set_env("HOME", tmp.path());
@@ -218,7 +227,9 @@ mod tests {
 
     #[test]
     fn default_config_human_output_returns_ok() {
-        let guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let tmp = TempDir::new().expect("create temp dir");
         let prev_home = set_env("HOME", tmp.path());
@@ -241,7 +252,9 @@ mod tests {
 
     #[test]
     fn json_output_returns_ok() {
-        let guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let tmp = TempDir::new().expect("create temp dir");
         let prev_home = set_env("HOME", tmp.path());

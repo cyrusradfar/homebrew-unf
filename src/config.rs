@@ -54,9 +54,8 @@ pub struct Config {
 /// Returns [`UnfError::Config`] if the OS config directory cannot be
 /// determined.
 pub fn config_path() -> Result<PathBuf, UnfError> {
-    let base = dirs::config_dir().ok_or_else(|| {
-        UnfError::Config("Cannot determine OS config directory".to_string())
-    })?;
+    let base = dirs::config_dir()
+        .ok_or_else(|| UnfError::Config("Cannot determine OS config directory".to_string()))?;
     Ok(base.join(APP_NAME).join(CONFIG_FILE))
 }
 
@@ -128,9 +127,8 @@ pub fn save(config: &Config) -> Result<(), UnfError> {
         })?;
     }
 
-    let json = serde_json::to_string_pretty(config).map_err(|e| {
-        UnfError::Config(format!("Failed to serialize config: {}", e))
-    })?;
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| UnfError::Config(format!("Failed to serialize config: {}", e)))?;
 
     // Atomic write: write to temp file in same directory, then rename.
     let tmp_path = path.with_extension("json.tmp");
@@ -178,9 +176,8 @@ pub fn storage_usage(storage_dir: &Path) -> Result<(u64, usize), UnfError> {
             ))
         })?;
         for entry in entries {
-            let entry = entry.map_err(|e| {
-                UnfError::Config(format!("Failed to read directory entry: {}", e))
-            })?;
+            let entry = entry
+                .map_err(|e| UnfError::Config(format!("Failed to read directory entry: {}", e)))?;
             if entry.path().is_dir() {
                 project_count += 1;
             }
@@ -240,7 +237,9 @@ mod tests {
     ///
     /// Returns (TempDir, guard) — keep the guard alive for the test's scope.
     fn with_temp_config_dir() -> (TempDir, MutexGuard<'static, ()>) {
-        let guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("create temp dir");
         // dirs::config_dir() on macOS reads HOME; on Linux reads XDG_CONFIG_HOME.
         // Setting both covers all platforms under test.
@@ -262,7 +261,11 @@ mod tests {
     fn config_path_returns_absolute_path() {
         let (_tmp, _guard) = with_temp_config_dir();
         let path = config_path().expect("config_path should succeed");
-        assert!(path.is_absolute(), "config path must be absolute: {:?}", path);
+        assert!(
+            path.is_absolute(),
+            "config path must be absolute: {:?}",
+            path
+        );
         clear_config_env();
     }
 
