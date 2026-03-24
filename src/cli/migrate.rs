@@ -21,6 +21,160 @@ use std::time::{Duration, Instant};
 use crate::cli::OutputFormat;
 use crate::error::UnfError;
 
+// ---------------------------------------------------------------------------
+// Migration lock
+// ---------------------------------------------------------------------------
+
+/// Tracks the state of an in-progress or interrupted migration.
+///
+/// Written atomically to `~/.config/unfudged/migration.lock` before any side
+/// effects begin. Removed on successful completion. If the process crashes or
+/// is interrupted, the lock file persists so subsequent commands can detect it
+/// and print recovery guidance.
+///
+/// States (in order): `"preflight"` → `"daemon_stopped"` → `"copying"` →
+/// `"swapped"` → `"done"` (lock removed before "done" is visible).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MigrationLock {
+    source: PathBuf,
+    destination: PathBuf,
+    started_at: String,
+    state: String,
+    total_bytes: u64,
+    copied_bytes: u64,
+    completed_projects: Vec<String>,
+    current_project: Option<String>,
+}
+
+/// Returns the path of the migration lock file.
+///
+/// The lock lives next to `config.json` in the OS config directory.
+///
+/// # Errors
+///
+/// Propagates any error from [`crate::config::config_path`].
+fn lock_path() -> Result<PathBuf, UnfError> {
+    let config_file = crate::config::config_path()?;
+    let config_dir = config_file.parent().ok_or_else(|| {
+        UnfError::Config("Cannot determine config directory for lock file".to_string())
+    })?;
+    Ok(config_dir.join("migration.lock"))
+}
+
+/// Writes the migration lock to disk atomically (temp-then-rename).
+///
+/// Creates parent directories if they don't exist.
+///
+/// # Errors
+///
+/// Returns [`UnfError::Config`] on any I/O or serialization failure.
+fn write_lock(lock: &MigrationLock) -> Result<(), UnfError> {
+    let path = lock_path()?;
+
+    // Ensure parent directory exists.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            UnfError::Config(format!(
+                "Failed to create config directory for lock file: {}",
+                e
+            ))
+        })?;
+    }
+
+    let json = serde_json::to_string_pretty(lock).map_err(|e| {
+        UnfError::Config(format!("Failed to serialize migration lock: {}", e))
+    })?;
+
+    // Atomic write: temp file in same directory, then rename.
+    let tmp_path = path.with_extension("lock.tmp");
+    fs::write(&tmp_path, &json).map_err(|e| {
+        UnfError::Config(format!(
+            "Failed to write migration lock temp file {}: {}",
+            tmp_path.display(),
+            e
+        ))
+    })?;
+    fs::rename(&tmp_path, &path).map_err(|e| {
+        UnfError::Config(format!(
+            "Failed to rename migration lock into place at {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Removes the migration lock file.
+///
+/// Silently succeeds if the file does not exist.
+///
+/// # Errors
+///
+/// Returns [`UnfError::Config`] if the file exists but cannot be removed.
+fn remove_lock() -> Result<(), UnfError> {
+    let path = lock_path()?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| {
+            UnfError::Config(format!(
+                "Failed to remove migration lock {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Creates the initial migration lock at state `"preflight"`.
+///
+/// # Errors
+///
+/// Propagates any error from [`write_lock`].
+fn create_initial_lock(
+    source: PathBuf,
+    destination: PathBuf,
+    total_bytes: u64,
+) -> Result<(), UnfError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let lock = MigrationLock {
+        source,
+        destination,
+        started_at: now,
+        state: "preflight".to_string(),
+        total_bytes,
+        copied_bytes: 0,
+        completed_projects: Vec::new(),
+        current_project: None,
+    };
+    write_lock(&lock)
+}
+
+/// Updates the `state` field of the existing migration lock on disk.
+///
+/// Reads the current lock, changes only the `state`, and writes it back
+/// atomically.
+///
+/// # Errors
+///
+/// Returns [`UnfError::Config`] if the lock cannot be read, parsed, or
+/// written.
+fn update_lock_state(new_state: &str) -> Result<(), UnfError> {
+    let path = lock_path()?;
+    let bytes = fs::read(&path).map_err(|e| {
+        UnfError::Config(format!(
+            "Failed to read migration lock {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let mut lock: MigrationLock = serde_json::from_slice(&bytes).map_err(|e| {
+        UnfError::Config(format!("Failed to parse migration lock: {}", e))
+    })?;
+    lock.state = new_state.to_string();
+    write_lock(&lock)
+}
+
 /// Files that should NOT be copied during migration (runtime state).
 const SKIP_FILES: &[&str] = &["daemon.pid", "sentinel.pid", "stopped"];
 
@@ -53,6 +207,28 @@ const DAEMON_STOP_TIMEOUT_MS: u64 = 2000;
 pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
     let start = Instant::now();
 
+    // 0. Detect an interrupted migration from a previous run.
+    //    If a lock file already exists, print recovery guidance and abort.
+    if lock_path().map(|p| p.exists()).unwrap_or(false) {
+        let source_hint = lock_path()
+            .ok()
+            .and_then(|p| fs::read(&p).ok())
+            .and_then(|b| serde_json::from_slice::<MigrationLock>(&b).ok())
+            .map(|l| l.source.display().to_string())
+            .unwrap_or_else(|| "~/.unfudged".to_string());
+
+        println!("Migration was interrupted.");
+        println!("Your data is safe at the original location: {}", source_hint);
+        println!(
+            "Run `unf config --move-storage <DEST>` to retry after removing the lock file, or"
+        );
+        println!(
+            "delete {} to clear the lock and proceed.",
+            lock_path().map(|p| p.display().to_string()).unwrap_or_default()
+        );
+        return Ok(());
+    }
+
     // 1. Resolve source and destination.
     let source = crate::registry::global_dir()?;
     let (dest, is_default) = resolve_destination(dest_arg)?;
@@ -63,6 +239,11 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
     // 3. Get size / project info for progress output.
     let (total_bytes, project_count) =
         crate::config::storage_usage(&source).unwrap_or((0, 0));
+
+    // 3b. Create the migration lock BEFORE any side effects.
+    //     From this point forward, any interruption leaves the lock in place
+    //     so the next invocation detects it and prints recovery guidance.
+    create_initial_lock(source.clone(), dest.clone(), total_bytes)?;
 
     emit_progress(
         format,
@@ -81,6 +262,7 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
 
     // 4. Stop daemon.
     stop_daemon();
+    update_lock_state("daemon_stopped")?;
 
     emit_progress(
         format,
@@ -89,10 +271,12 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
     );
 
     // 5. Copy data to destination.
+    update_lock_state("copying")?;
     copy_storage(&source, &dest, format)?;
 
     // 6. Swap config.
     swap_config(&dest, is_default)?;
+    update_lock_state("swapped")?;
 
     emit_progress(
         format,
@@ -134,6 +318,9 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
             backup_path.display()
         ),
     );
+
+    // 10. Remove the lock now that migration is fully complete.
+    remove_lock()?;
 
     Ok(())
 }
@@ -817,5 +1004,145 @@ mod tests {
             backup_name
         );
         assert!(migrated.exists(), "pre-existing .migrated must still exist");
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationLock helpers
+    // -----------------------------------------------------------------------
+
+    /// Sets HOME + XDG_CONFIG_HOME so that lock_path() resolves inside `dir`.
+    ///
+    /// Returns (home_prev, xdg_prev) for restoration.
+    fn redirect_config_to(dir: &std::path::Path) -> (Option<String>, Option<String>) {
+        let home_prev = std::env::var("HOME").ok();
+        let xdg_prev = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("HOME", dir);
+        std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+        (home_prev, xdg_prev)
+    }
+
+    fn restore_config_env(home_prev: Option<String>, xdg_prev: Option<String>) {
+        match home_prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match xdg_prev {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn lock_path_returns_path_in_config_dir() {
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tmp");
+        let (hp, xp) = redirect_config_to(tmp.path());
+
+        let lp = lock_path().expect("lock_path");
+        let cp = crate::config::config_path().expect("config_path");
+
+        // lock_path() and config_path() must share the same parent directory.
+        assert_eq!(
+            lp.parent().expect("lock parent"),
+            cp.parent().expect("config parent"),
+            "lock file must be a sibling of config.json"
+        );
+        assert_eq!(
+            lp.file_name().unwrap().to_string_lossy(),
+            "migration.lock",
+            "lock file must be named migration.lock"
+        );
+
+        restore_config_env(hp, xp);
+    }
+
+    #[test]
+    fn write_and_read_lock_roundtrip() {
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tmp");
+        let (hp, xp) = redirect_config_to(tmp.path());
+
+        let lock = MigrationLock {
+            source: PathBuf::from("/old/storage"),
+            destination: PathBuf::from("/new/storage"),
+            started_at: "2026-03-24T10:30:00Z".to_string(),
+            state: "copying".to_string(),
+            total_bytes: 1024,
+            copied_bytes: 512,
+            completed_projects: vec!["project-a".to_string()],
+            current_project: Some("project-b".to_string()),
+        };
+        write_lock(&lock).expect("write_lock");
+
+        let path = lock_path().expect("lock_path");
+        let bytes = fs::read(&path).expect("read lock file");
+        let read_back: MigrationLock = serde_json::from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(read_back.source, PathBuf::from("/old/storage"));
+        assert_eq!(read_back.destination, PathBuf::from("/new/storage"));
+        assert_eq!(read_back.state, "copying");
+        assert_eq!(read_back.total_bytes, 1024);
+        assert_eq!(read_back.copied_bytes, 512);
+        assert_eq!(read_back.completed_projects, vec!["project-a"]);
+        assert_eq!(read_back.current_project, Some("project-b".to_string()));
+
+        restore_config_env(hp, xp);
+    }
+
+    #[test]
+    fn remove_lock_cleans_up() {
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tmp");
+        let (hp, xp) = redirect_config_to(tmp.path());
+
+        // Write a lock file, verify it exists, then remove it.
+        let lock = MigrationLock {
+            source: PathBuf::from("/src"),
+            destination: PathBuf::from("/dst"),
+            started_at: "2026-03-24T10:30:00Z".to_string(),
+            state: "preflight".to_string(),
+            total_bytes: 0,
+            copied_bytes: 0,
+            completed_projects: Vec::new(),
+            current_project: None,
+        };
+        write_lock(&lock).expect("write_lock");
+        let path = lock_path().expect("lock_path");
+        assert!(path.exists(), "lock must exist after write");
+
+        remove_lock().expect("remove_lock");
+        assert!(!path.exists(), "lock must be gone after remove");
+
+        restore_config_env(hp, xp);
+    }
+
+    #[test]
+    fn create_initial_lock_sets_preflight() {
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tmp");
+        let (hp, xp) = redirect_config_to(tmp.path());
+
+        create_initial_lock(
+            PathBuf::from("/old/data"),
+            PathBuf::from("/new/data"),
+            8192,
+        )
+        .expect("create_initial_lock");
+
+        let path = lock_path().expect("lock_path");
+        let bytes = fs::read(&path).expect("read lock");
+        let lock: MigrationLock = serde_json::from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(lock.state, "preflight", "initial state must be preflight");
+        assert_eq!(lock.source, PathBuf::from("/old/data"));
+        assert_eq!(lock.destination, PathBuf::from("/new/data"));
+        assert_eq!(lock.total_bytes, 8192);
+        assert_eq!(lock.copied_bytes, 0);
+        assert!(lock.completed_projects.is_empty());
+        assert!(lock.current_project.is_none());
+        // started_at must be a non-empty timestamp string.
+        assert!(!lock.started_at.is_empty(), "started_at must be set");
+
+        restore_config_env(hp, xp);
     }
 }
