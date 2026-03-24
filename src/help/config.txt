@@ -1,0 +1,5 @@
+Examples:
+  unf config                         Show current storage location and usage
+  unf --json config                  JSON output for scripting
+  unf config --move-storage /path    Move storage to a new location
+  unf config --move-storage default  Move back to ~/.unfudged

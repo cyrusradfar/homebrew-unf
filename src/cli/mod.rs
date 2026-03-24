@@ -6,6 +6,7 @@
 
 pub mod boot;
 pub mod cat;
+pub mod config;
 pub mod diff;
 pub mod filter;
 pub mod init;

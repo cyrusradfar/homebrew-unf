@@ -80,6 +80,10 @@ enum Commands {
     #[command(after_help = include_str!("help/prune.txt"))]
     Prune(PruneArgs),
 
+    /// Show or change storage configuration
+    #[command(after_help = include_str!("help/config.txt"))]
+    Config(ConfigArgs),
+
     /// Reconstruct context after a crash or context overflow
     #[command(after_help = include_str!("help/recap.txt"))]
     Recap(RecapArgs),
@@ -282,6 +286,13 @@ struct RecapArgs {
     /// Exclude these projects (repeatable, prefix-matched on canonical path)
     #[arg(long, value_name = "PATH")]
     exclude_project: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+struct ConfigArgs {
+    /// Move storage to a new location (use "default" for ~/.unfudged)
+    #[arg(long, value_name = "PATH")]
+    move_storage: Option<PathBuf>,
 }
 
 /// Resolves the project root directory.
@@ -579,6 +590,16 @@ fn main() {
                 format,
             )
         }),
+
+        Commands::Config(args) => {
+            if args.move_storage.is_some() {
+                Err(UnfError::InvalidArgument(
+                    "--move-storage is not yet implemented".to_string(),
+                ))
+            } else {
+                cli::config::run(format)
+            }
+        }
 
         Commands::Recap(args) => {
             if args.global {
