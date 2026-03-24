@@ -1,4 +1,5 @@
 pub mod content;
+pub mod daemon;
 pub mod diff;
 pub mod history;
 pub mod project;
