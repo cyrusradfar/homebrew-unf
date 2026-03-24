@@ -159,3 +159,27 @@ export async function getGlobalDensity(
     exclude: params.exclude ?? null,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Daemon control
+// ---------------------------------------------------------------------------
+
+export async function watchProject(path: string): Promise<Record<string, unknown>> {
+  return await invoke<Record<string, unknown>>("watch_project", { path });
+}
+
+export async function unwatchProject(path: string): Promise<Record<string, unknown>> {
+  return await invoke<Record<string, unknown>>("unwatch_project", { path });
+}
+
+export async function stopDaemon(): Promise<Record<string, unknown>> {
+  return await invoke<Record<string, unknown>>("stop_daemon");
+}
+
+export async function restartDaemon(): Promise<Record<string, unknown>> {
+  return await invoke<Record<string, unknown>>("restart_daemon");
+}
+
+export async function getDaemonStatus(): Promise<Record<string, unknown>> {
+  return await invoke<Record<string, unknown>>("get_daemon_status");
+}
