@@ -24,6 +24,8 @@ pub fn run() {
             commands::daemon::stop_daemon,
             commands::daemon::restart_daemon,
             commands::daemon::get_daemon_status,
+            commands::config::get_config,
+            commands::config::move_storage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

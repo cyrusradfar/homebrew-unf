@@ -8,6 +8,7 @@ import type {
   DiffResponse,
   CatResponse,
   DensityResponse,
+  ConfigResponse,
 } from "./types";
 
 export async function listProjects(): Promise<ProjectListResponse> {
@@ -182,4 +183,16 @@ export async function restartDaemon(): Promise<Record<string, unknown>> {
 
 export async function getDaemonStatus(): Promise<Record<string, unknown>> {
   return await invoke<Record<string, unknown>>("get_daemon_status");
+}
+
+// ---------------------------------------------------------------------------
+// Config and migration
+// ---------------------------------------------------------------------------
+
+export async function getConfig(): Promise<ConfigResponse> {
+  return await invoke<ConfigResponse>("get_config");
+}
+
+export async function moveStorage(path: string): Promise<Record<string, unknown>> {
+  return await invoke<Record<string, unknown>>("move_storage", { path });
 }

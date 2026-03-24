@@ -182,3 +182,22 @@ export function createDefaultTabState(projectPath: string): TabState {
     histogramIsSession: false,
   };
 }
+
+export interface ConfigResponse {
+  storage_dir: string | null;
+  storage_dir_display: string;
+  is_default: boolean;
+  disk_usage_bytes: number;
+  project_count: number;
+}
+
+export interface MigrationEvent {
+  event: "started" | "daemon_stopped" | "project_start" | "project_done" | "config_swapped" | "verified" | "daemon_restarted" | "done" | "error";
+  total_bytes?: number;
+  bytes_copied?: number;
+  project?: string;
+  project_count?: number;
+  elapsed_secs?: number;
+  backup_path?: string;
+  message?: string;
+}
