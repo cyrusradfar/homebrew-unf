@@ -1,7 +1,8 @@
 <script lang="ts">
   import { projects, openTabs, activeTab, GLOBAL_TAB } from "../lib/stores";
   import { closeTab, switchTab } from "../lib/stores";
-  import { listProjects, removeProject } from "../lib/api";
+  import { listProjects, removeProject, watchProject, unwatchProject } from "../lib/api";
+  import { open } from "@tauri-apps/plugin-dialog";
   import type { ProjectEntry } from "../lib/types";
 
   interface Props {
@@ -13,11 +14,6 @@
   let dropdownOpen = $state(false);
   let dropdownButtonRef: HTMLButtonElement | undefined = $state();
   let dropdownRef: HTMLDivElement | undefined = $state();
-
-  // Projects not yet open as tabs (available to add)
-  const availableProjects = $derived(
-    $projects.filter((p) => !$openTabs.includes(p.path))
-  );
 
   // Helper: status color for indicator dot
   function statusColor(status: ProjectEntry["status"]): string {
@@ -31,9 +27,28 @@
     }
   }
 
-  // Helper: check if project is selectable (not orphaned/crashed/error)
-  function isSelectable(status: ProjectEntry["status"]): boolean {
-    return status === "watching" || status === "stopped";
+  // Helper: get action button label for a project status
+  function actionLabel(status: ProjectEntry["status"]): string {
+    switch (status) {
+      case "watching": return "Stop";
+      case "stopped": return "Start";
+      case "crashed": return "Restart";
+      case "orphaned":
+      case "error": return "Remove";
+      default: return "";
+    }
+  }
+
+  // Helper: get action button style class for a project status
+  function actionStyle(status: ProjectEntry["status"]): string {
+    switch (status) {
+      case "watching": return "action-muted";
+      case "stopped": return "action-accent";
+      case "crashed": return "action-warning";
+      case "orphaned":
+      case "error": return "action-danger";
+      default: return "";
+    }
   }
 
   // Close dropdown when clicking outside
@@ -52,15 +67,44 @@
     onProjectOpened(path);
   }
 
-  // Handle removing a project (orphaned/crashed/error)
-  async function handleRemove(e: MouseEvent, path: string) {
+  // Handle per-project action buttons (Start/Stop/Restart/Remove)
+  async function handleAction(e: MouseEvent, project: ProjectEntry) {
     e.stopPropagation();
+    const path = project.path;
     try {
-      await removeProject(path);
+      switch (project.status) {
+        case "watching":
+          await unwatchProject(path);
+          break;
+        case "stopped":
+        case "crashed":
+          await watchProject(path);
+          break;
+        case "orphaned":
+        case "error":
+          await removeProject(path);
+          break;
+      }
+      // Refresh project list
       const result = await listProjects();
       projects.set(result.projects);
-    } catch (_e) {
-      // Will show in toast
+    } catch (err) {
+      // TODO: error handling in future ticket
+      console.error("Action failed:", err);
+    }
+  }
+
+  // Handle watch new folder button
+  async function handleWatchNewFolder() {
+    try {
+      const selected = await open({ directory: true, title: "Select folder to watch" });
+      if (selected && typeof selected === "string") {
+        await watchProject(selected);
+        const result = await listProjects();
+        projects.set(result.projects);
+      }
+    } catch (err) {
+      console.error("Watch folder failed:", err);
     }
   }
 
@@ -94,17 +138,17 @@
 
     {#if dropdownOpen}
       <div bind:this={dropdownRef} class="dropdown-panel">
-        {#if availableProjects.length === 0}
+        {#if $projects.length === 0}
           <div class="dropdown-empty">
-            <p>{$projects.length === 0 ? "No projects available" : "All projects are open"}</p>
+            <p>No projects available</p>
           </div>
         {:else}
           <ul class="project-dropdown-list">
-            {#each availableProjects as project (project.path)}
+            {#each $projects as project (project.path)}
               <li>
-                {#if isSelectable(project.status)}
+                <div class="dropdown-item" class:active-tab={$openTabs.includes(project.path)}>
                   <button
-                    class="dropdown-item selectable"
+                    class="project-select-area"
                     onclick={() => handleSelectProject(project.path)}
                   >
                     <span class="status-dot" style="background: {statusColor(project.status)}"></span>
@@ -113,31 +157,27 @@
                       <span class="project-meta">
                         {project.status}
                         {#if project.snapshots !== null}
-                          &middot; {project.snapshots} snapshots
+                          &middot; {project.snapshots.toLocaleString()} snapshots
                         {/if}
                       </span>
                     </div>
                   </button>
-                {:else}
-                  <div class="dropdown-item disabled">
-                    <span class="status-dot" style="background: {statusColor(project.status)}"></span>
-                    <div class="project-info">
-                      <span class="project-name">{project.path.split("/").pop()}</span>
-                      <span class="project-meta">{project.status}</span>
-                    </div>
-                    <button
-                      class="remove-btn"
-                      title="Remove from list"
-                      onclick={(e) => handleRemove(e, project.path)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                {/if}
+                  <button
+                    class="action-btn {actionStyle(project.status)}"
+                    onclick={(e) => handleAction(e, project)}
+                  >
+                    {actionLabel(project.status)}
+                  </button>
+                </div>
               </li>
             {/each}
           </ul>
         {/if}
+        <div class="dropdown-footer">
+          <button class="watch-folder-btn" onclick={handleWatchNewFolder}>
+            + Watch New Folder
+          </button>
+        </div>
       </div>
     {/if}
   </div>
@@ -226,11 +266,13 @@
     border: 1px solid var(--border);
     border-top: none;
     border-radius: 0 0 6px 6px;
-    min-width: 280px;
+    min-width: 340px;
     max-height: 400px;
     overflow-y: auto;
     z-index: 1000;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    display: flex;
+    flex-direction: column;
   }
 
   .dropdown-empty {
@@ -244,14 +286,28 @@
     list-style: none;
     padding: 0;
     margin: 0;
+    flex: 1;
+    overflow-y: auto;
   }
 
   .dropdown-item {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 0;
     width: 100%;
-    padding: 8px 12px;
+    padding: 0;
+  }
+
+  .dropdown-item.active-tab {
+    background: var(--accent-bg);
+  }
+
+  .project-select-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    padding: 8px 8px 8px 12px;
     border: none;
     background: none;
     color: var(--text-primary);
@@ -259,15 +315,11 @@
     font-size: var(--text-sm);
     text-align: left;
     cursor: pointer;
+    min-width: 0;
   }
 
-  .dropdown-item.selectable:hover {
+  .project-select-area:hover {
     background: var(--accent-bg);
-  }
-
-  .dropdown-item.disabled {
-    opacity: 0.6;
-    cursor: default;
   }
 
   .status-dot {
@@ -299,25 +351,67 @@
     white-space: nowrap;
   }
 
-  .remove-btn {
+  .action-btn {
     flex-shrink: 0;
-    width: 24px;
-    height: 24px;
+    padding: 4px 10px;
+    margin-right: 8px;
     border: none;
-    background: var(--deletion-bg);
-    color: var(--deletion);
     border-radius: 4px;
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 500;
     cursor: pointer;
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s, color 0.2s;
+    transition: opacity 0.15s;
+    white-space: nowrap;
   }
 
-  .remove-btn:hover {
-    background: var(--deletion);
-    color: white;
+  .action-btn:hover {
+    opacity: 0.8;
+  }
+
+  .action-muted {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--text-muted);
+  }
+
+  .action-accent {
+    background: var(--accent-bg);
+    color: var(--accent);
+  }
+
+  .action-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+  }
+
+  .action-danger {
+    background: var(--deletion-bg);
+    color: var(--deletion);
+  }
+
+  .dropdown-footer {
+    border-top: 1px solid var(--border);
+    padding: 6px 8px;
+    flex-shrink: 0;
+  }
+
+  .watch-folder-btn {
+    width: 100%;
+    padding: 8px;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    background: none;
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+
+  .watch-folder-btn:hover {
+    background: var(--accent-bg);
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   /* ===== TABS SECTION ===== */
