@@ -4,3 +4,5 @@ Examples:
   unf diff --from 2h --to 1h          Changes between 2 hours and 1 hour ago
   unf diff --session                  Changes in the most recent work session
   unf diff --session 2                Changes in the 2nd most recent session
+  unf diff --snapshot 42              One snapshot vs its predecessor
+  unf diff --at 5m --context 10       Changes in last 5 min with 10 lines of context

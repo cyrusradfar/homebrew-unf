@@ -3,3 +3,4 @@ Examples:
   unf --json config                  JSON output for scripting
   unf config --move-storage /path    Move storage to a new location
   unf config --move-storage default  Move back to ~/.unfudged
+  unf config --move-storage /path --force  Overwrite if destination has existing data
