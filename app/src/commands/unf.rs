@@ -56,5 +56,19 @@ pub fn run_unf_global(args: &[&str]) -> Result<serde_json::Value, AppError> {
     }
 
     let json_str = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&json_str).map_err(|e| AppError::ParseError(e.to_string()))
+
+    // Some commands (e.g. --move-storage) emit newline-delimited JSON events.
+    // Parse the last non-empty line as the final result.
+    match serde_json::from_str(&json_str) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            let last_line = json_str
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("");
+            serde_json::from_str(last_line)
+                .map_err(|e| AppError::ParseError(e.to_string()))
+        }
+    }
 }
