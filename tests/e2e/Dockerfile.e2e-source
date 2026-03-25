@@ -1,0 +1,28 @@
+FROM ubuntu:24.04
+
+# Install base dependencies + Rust build requirements
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    jq \
+    procps \
+    file \
+    sudo \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash linuxbrew && \
+    echo "linuxbrew ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Install Rust as linuxbrew user
+USER linuxbrew
+WORKDIR /home/linuxbrew
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Add cargo to PATH
+ENV PATH="/home/linuxbrew/.cargo/bin:${PATH}"
+
+# Default command
+CMD ["/bin/bash"]

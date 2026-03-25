@@ -12,11 +12,15 @@ set -euo pipefail
 pass() { echo "[PASS] $1"; }
 fail() { echo "[FAIL] $1"; echo "  $2"; exit 1; }
 
+FROM_SOURCE="${FROM_SOURCE:-false}"
+
 cleanup() {
   echo ""
   echo "=== Cleanup ==="
   unf stop 2>/dev/null || true
-  brew uninstall "$UNF_FORMULA" 2>/dev/null || true
+  if [[ "$FROM_SOURCE" != "true" ]]; then
+    brew uninstall "$UNF_FORMULA" 2>/dev/null || true
+  fi
   rm -rf "$TEST_ROOT" || true
   rm -rf ~/.unfudged || true
   echo "Cleanup complete"
@@ -41,17 +45,28 @@ else
 fi
 
 echo "Platform: $PLATFORM"
-echo "Homebrew: $(command -v brew || echo 'NOT FOUND')"
-
-# Verify brew is available
-if ! command -v brew &> /dev/null; then
-  fail "Setup" "Homebrew not found in PATH"
-fi
-pass "Homebrew detected"
+echo "From source: $FROM_SOURCE"
 
 # Set formula name (defaults to unf, but can be unf-staging)
 UNF_FORMULA="${UNF_FORMULA:-unf}"
-echo "Formula: $UNF_FORMULA"
+
+if [[ "$FROM_SOURCE" == "true" ]]; then
+  echo "Mode: from-source (skipping Homebrew)"
+  # Verify unf is already on PATH (built and installed by the Docker entrypoint)
+  if ! command -v unf &> /dev/null; then
+    fail "Setup" "unf binary not found on PATH"
+  fi
+  pass "unf binary found"
+else
+  echo "Homebrew: $(command -v brew || echo 'NOT FOUND')"
+
+  # Verify brew is available
+  if ! command -v brew &> /dev/null; then
+    fail "Setup" "Homebrew not found in PATH"
+  fi
+  pass "Homebrew detected"
+  echo "Formula: $UNF_FORMULA"
+fi
 echo ""
 
 # Create test root
@@ -71,10 +86,17 @@ echo ""
 # ============================================================================
 
 echo "=== Test 1: Install ==="
-brew install "cyrusradfar/unf/$UNF_FORMULA" || fail "Install" "brew install failed"
+if [[ "$FROM_SOURCE" == "true" ]]; then
+  # Binary was already built and installed by the Docker entrypoint
+  if ! command -v unf &> /dev/null; then
+    fail "Install" "unf binary not found (from-source build failed?)"
+  fi
+else
+  brew install "cyrusradfar/unf/$UNF_FORMULA" || fail "Install" "brew install failed"
 
-if ! command -v unf &> /dev/null; then
-  fail "Install" "unf command not found after install"
+  if ! command -v unf &> /dev/null; then
+    fail "Install" "unf command not found after install"
+  fi
 fi
 
 VERSION=$(unf --version) || fail "Install" "unf --version failed"
@@ -337,10 +359,150 @@ pass "List projects"
 echo ""
 
 # ============================================================================
-# Test 14: Stop daemon
+# Test 14: Config (v0.18)
 # ============================================================================
 
-echo "=== Test 14: Stop daemon ==="
+echo "=== Test 14: Config ==="
+
+CONFIG_OUTPUT=$(unf config) || fail "Config" "unf config failed"
+
+# Should show storage directory and project count
+if ! echo "$CONFIG_OUTPUT" | grep -q "Storage directory"; then
+  fail "Config" "Missing 'Storage directory' in output:\n$CONFIG_OUTPUT"
+fi
+
+# JSON mode
+CONFIG_JSON=$(unf config --json) || fail "Config" "unf config --json failed"
+if command -v jq &> /dev/null; then
+  IS_DEFAULT=$(echo "$CONFIG_JSON" | jq '.is_default') || fail "Config" "Failed to parse config JSON"
+  if [[ "$IS_DEFAULT" != "true" ]]; then
+    fail "Config" "Expected is_default=true, got $IS_DEFAULT"
+  fi
+  PROJECT_COUNT=$(echo "$CONFIG_JSON" | jq '.project_count') || fail "Config" "Failed to parse project_count"
+  if [[ "$PROJECT_COUNT" -lt 1 ]]; then
+    fail "Config" "Expected at least 1 project, got $PROJECT_COUNT"
+  fi
+else
+  if ! echo "$CONFIG_JSON" | grep -q '"is_default":true'; then
+    fail "Config" "Expected is_default:true in JSON"
+  fi
+fi
+
+pass "Config"
+echo ""
+
+# ============================================================================
+# Test 15: Unwatch / Re-watch (v0.18)
+# ============================================================================
+
+echo "=== Test 15: Unwatch / Re-watch ==="
+cd "$TEST_ROOT/project-a" || fail "Unwatch" "Cannot cd to project-a"
+
+unf unwatch || fail "Unwatch" "unf unwatch failed"
+sleep 1
+
+STATUS=$(unf status) || true
+if ! echo "$STATUS" | grep -qi "stopped"; then
+  fail "Unwatch" "Status should show stopped after unwatch:\n$STATUS"
+fi
+
+unf watch || fail "Re-watch" "unf watch (re-watch) failed"
+sleep 2
+
+STATUS=$(unf status) || fail "Re-watch" "unf status failed after re-watch"
+if ! echo "$STATUS" | grep -q "Watching"; then
+  fail "Re-watch" "Status should show Watching after re-watch:\n$STATUS"
+fi
+
+pass "Unwatch / Re-watch"
+echo ""
+
+# ============================================================================
+# Test 16: Restart daemon (v0.18)
+# ============================================================================
+
+echo "=== Test 16: Restart daemon ==="
+
+# Capture daemon PID before restart
+PID_BEFORE=""
+if [[ -f ~/.unfudged/daemon.pid ]]; then
+  PID_BEFORE=$(cat ~/.unfudged/daemon.pid 2>/dev/null || true)
+fi
+
+unf restart || fail "Restart" "unf restart failed"
+sleep 2
+
+STATUS=$(unf status) || fail "Restart" "unf status failed after restart"
+if ! echo "$STATUS" | grep -q "Watching"; then
+  fail "Restart" "Status should show Watching after restart:\n$STATUS"
+fi
+
+# Verify daemon PID changed (proves a real restart happened)
+PID_AFTER=""
+if [[ -f ~/.unfudged/daemon.pid ]]; then
+  PID_AFTER=$(cat ~/.unfudged/daemon.pid 2>/dev/null || true)
+fi
+
+if [[ -n "$PID_BEFORE" && -n "$PID_AFTER" && "$PID_BEFORE" == "$PID_AFTER" ]]; then
+  fail "Restart" "Daemon PID did not change: before=$PID_BEFORE after=$PID_AFTER"
+fi
+echo "Daemon PID: $PID_BEFORE -> $PID_AFTER"
+
+# Verify daemon process is actually running
+if ! pgrep -f "unf __daemon" > /dev/null; then
+  fail "Restart" "No daemon process found after restart"
+fi
+
+pass "Restart daemon"
+echo ""
+
+# ============================================================================
+# Test 17: Move storage (v0.18)
+# ============================================================================
+
+echo "=== Test 17: Move storage ==="
+
+MOVE_DEST=$(mktemp -d)/unf-moved
+unf config --move-storage "$MOVE_DEST" || fail "Move storage" "unf config --move-storage failed"
+
+# Verify config now points to new location
+CONFIG_JSON=$(unf config --json) || fail "Move storage" "unf config --json failed after move"
+if command -v jq &> /dev/null; then
+  STORAGE_DIR=$(echo "$CONFIG_JSON" | jq -r '.storage_dir') || fail "Move storage" "Failed to parse storage_dir"
+  if [[ "$STORAGE_DIR" != "$MOVE_DEST" ]]; then
+    fail "Move storage" "Expected storage_dir=$MOVE_DEST, got $STORAGE_DIR"
+  fi
+  IS_DEFAULT=$(echo "$CONFIG_JSON" | jq '.is_default') || fail "Move storage" "Failed to parse is_default"
+  if [[ "$IS_DEFAULT" != "false" ]]; then
+    fail "Move storage" "Expected is_default=false after move"
+  fi
+else
+  if ! echo "$CONFIG_JSON" | grep -q "\"is_default\":false"; then
+    fail "Move storage" "Expected is_default:false after move"
+  fi
+fi
+
+# Verify data is still accessible (log should still work)
+cd "$TEST_ROOT/project-a" || fail "Move storage" "Cannot cd to project-a"
+LOG_AFTER_MOVE=$(unf log --json) || fail "Move storage" "unf log failed after move"
+if command -v jq &> /dev/null; then
+  ENTRY_COUNT=$(echo "$LOG_AFTER_MOVE" | jq '.entries | length') || fail "Move storage" "Failed to parse log JSON"
+  if [[ "$ENTRY_COUNT" -lt 1 ]]; then
+    fail "Move storage" "Expected entries after move, got $ENTRY_COUNT"
+  fi
+fi
+
+# Move back to default for clean uninstall
+unf config --move-storage ~/.unfudged || fail "Move storage" "Move back to default failed"
+
+pass "Move storage"
+echo ""
+
+# ============================================================================
+# Test 18: Stop daemon
+# ============================================================================
+
+echo "=== Test 18: Stop daemon ==="
 
 unf stop || fail "Stop" "unf stop failed"
 sleep 1
@@ -354,12 +516,16 @@ pass "Stop daemon"
 echo ""
 
 # ============================================================================
-# Test 15: Uninstall
+# Test 19: Uninstall
 # ============================================================================
 
-echo "=== Test 15: Uninstall ==="
+echo "=== Test 19: Uninstall ==="
 
-brew uninstall "$UNF_FORMULA" || fail "Uninstall" "brew uninstall failed"
+if [[ "$FROM_SOURCE" == "true" ]]; then
+  sudo rm -f /usr/local/bin/unf || fail "Uninstall" "Failed to remove binary"
+else
+  brew uninstall "$UNF_FORMULA" || fail "Uninstall" "brew uninstall failed"
+fi
 
 # Clear shell's command cache and verify binary is gone
 hash -r 2>/dev/null || true
