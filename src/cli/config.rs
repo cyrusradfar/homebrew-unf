@@ -120,8 +120,8 @@ pub fn run(format: OutputFormat) -> Result<(), UnfError> {
 /// # Errors
 ///
 /// Propagates any error from the migration engine.
-pub fn run_move_storage(dest: &str, format: OutputFormat) -> Result<(), UnfError> {
-    super::migrate::run(dest, format)
+pub fn run_move_storage(dest: &str, force: bool, format: OutputFormat) -> Result<(), UnfError> {
+    super::migrate::run(dest, force, format)
 }
 
 /// Replaces the user's home directory prefix in `path` with `~`.

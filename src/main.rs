@@ -293,6 +293,10 @@ struct ConfigArgs {
     /// Move storage to a new location (use "default" for ~/.unfudged)
     #[arg(long, value_name = "PATH")]
     move_storage: Option<PathBuf>,
+
+    /// Overwrite destination if it already contains data
+    #[arg(long, short)]
+    force: bool,
 }
 
 /// Resolves the project root directory.
@@ -593,7 +597,7 @@ fn main() {
 
         Commands::Config(args) => {
             if let Some(ref dest) = args.move_storage {
-                cli::config::run_move_storage(&dest.to_string_lossy(), format)
+                cli::config::run_move_storage(&dest.to_string_lossy(), args.force, format)
             } else {
                 cli::config::run(format)
             }

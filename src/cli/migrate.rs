@@ -202,7 +202,7 @@ const DAEMON_STOP_TIMEOUT_MS: u64 = 2000;
 /// Returns a descriptive error. All error messages include either
 /// "No changes made" (if nothing was modified) or "Your data is safe at
 /// [original path]".
-pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
+pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfError> {
     let start = Instant::now();
 
     // 0. Detect an interrupted migration from a previous run.
@@ -237,7 +237,7 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
     let (dest, is_default) = resolve_destination(dest_arg)?;
 
     // 2. Pre-flight checks (before any side effects).
-    preflight_checks(&source, &dest)?;
+    preflight_checks(&source, &dest, force)?;
 
     // 3. Get size / project info for progress output.
     let (total_bytes, project_count) = crate::config::storage_usage(&source).unwrap_or((0, 0));
@@ -333,17 +333,25 @@ pub fn run(dest_arg: &str, format: OutputFormat) -> Result<(), UnfError> {
 /// The special value `"default"` resolves to `~/.unfudged` (None config).
 /// All other values must be absolute paths.
 ///
+/// An absolute path that equals `$HOME/.unfudged` is also treated as the
+/// default — this handles the common case of migrating back to the default
+/// location by passing the explicit path rather than the string `"default"`.
+/// In both cases `is_default = true` so that [`swap_config`] writes `None`
+/// into `storage_dir` instead of storing the path explicitly.
+///
 /// Returns `(dest_path, is_default)`.
 ///
 /// # Errors
 ///
 /// Returns `UnfError::InvalidArgument` for relative paths.
 pub fn resolve_destination(dest_arg: &str) -> Result<(PathBuf, bool), UnfError> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        UnfError::Config("Cannot determine home directory. No changes made.".to_string())
+    })?;
+    let default_path = home.join(".unfudged");
+
     if dest_arg == "default" {
-        let home = dirs::home_dir().ok_or_else(|| {
-            UnfError::Config("Cannot determine home directory. No changes made.".to_string())
-        })?;
-        return Ok((home.join(".unfudged"), true));
+        return Ok((default_path, true));
     }
 
     let path = PathBuf::from(dest_arg);
@@ -353,7 +361,12 @@ pub fn resolve_destination(dest_arg: &str) -> Result<(PathBuf, bool), UnfError> 
         ));
     }
 
-    Ok((path, false))
+    // If the user explicitly passes the default path (e.g. `~/.unfudged`
+    // expanded by the shell), treat it as is_default so that swap_config
+    // clears storage_dir to None rather than storing the path verbatim.
+    let is_default = path == default_path;
+
+    Ok((path, is_default))
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +383,7 @@ pub fn resolve_destination(dest_arg: &str) -> Result<(PathBuf, bool), UnfError> 
 /// # Errors
 ///
 /// Returns `UnfError::InvalidArgument` with a "No changes made" message.
-pub fn preflight_checks(source: &Path, dest: &Path) -> Result<(), UnfError> {
+pub fn preflight_checks(source: &Path, dest: &Path, force: bool) -> Result<(), UnfError> {
     // Dest must not be the same as source.
     if dest == source {
         return Err(UnfError::InvalidArgument(
@@ -396,17 +409,26 @@ pub fn preflight_checks(source: &Path, dest: &Path) -> Result<(), UnfError> {
         )));
     }
 
-    // Destination must be empty or not exist.
+    // Destination must be empty or not exist (unless --force).
     if dest.exists() {
-        // Allow the path to exist if it is an empty directory.
         let is_empty = fs::read_dir(dest)
             .map(|mut d| d.next().is_none())
             .unwrap_or(false);
-        if !is_empty {
+        if !is_empty && !force {
             return Err(UnfError::InvalidArgument(format!(
-                "{} already contains data. No changes made.",
+                "{} already contains data. Use --force to overwrite. No changes made.",
                 dest.display()
             )));
+        }
+        if !is_empty && force {
+            // Remove existing data before migration
+            fs::remove_dir_all(dest).map_err(|e| {
+                UnfError::InvalidArgument(format!(
+                    "Failed to remove existing data at {}: {}. No changes made.",
+                    dest.display(),
+                    e
+                ))
+            })?;
         }
     }
 
@@ -856,6 +878,73 @@ mod tests {
         assert!(!is_default, "custom path should not be default");
     }
 
+    /// Passing `$HOME/.unfudged` as an explicit absolute path must be treated
+    /// as `is_default = true` so that `swap_config` writes `None` into
+    /// `storage_dir` (the clean default) instead of persisting the path.
+    ///
+    /// This is the "migrate back" regression: running
+    ///   `unf config --move-storage ~/.unfudged`
+    /// after a previous move must leave `config.json` with no `storage_dir`
+    /// override, not with an explicit path to a temp directory.
+    #[test]
+    fn resolve_destination_explicit_default_path_is_treated_as_default() {
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let tmp = TempDir::new().expect("tmp");
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        // Simulate passing `~/.unfudged` expanded by the shell.
+        let home_unfudged = tmp.path().join(".unfudged");
+        let dest_arg = home_unfudged.to_str().expect("UTF-8 path");
+
+        let result = resolve_destination(dest_arg);
+
+        // Restore HOME before any assertions so the guard cleanup is safe.
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let (path, is_default) = result.expect("resolve_destination must succeed");
+        assert_eq!(path, home_unfudged, "path must match the resolved default");
+        assert!(
+            is_default,
+            "explicit $HOME/.unfudged must be recognized as the default location (is_default=true)"
+        );
+    }
+
+    /// A path that merely ends in `.unfudged` but is NOT the home directory
+    /// must NOT be treated as the default.
+    #[test]
+    fn resolve_destination_non_home_unfudged_is_not_default() {
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let tmp = TempDir::new().expect("tmp");
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
+        // A different absolute path that ends in .unfudged but is not HOME/.unfudged.
+        let other_unfudged = tmp.path().join("some").join("other").join(".unfudged");
+        let dest_arg = other_unfudged.to_str().expect("UTF-8 path");
+
+        let (_, is_default) = resolve_destination(dest_arg).expect("should resolve");
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            !is_default,
+            "non-home .unfudged path must not be treated as default"
+        );
+    }
+
     #[test]
     fn resolve_destination_relative_path_rejected() {
         let result = resolve_destination("relative/path");
@@ -877,7 +966,7 @@ mod tests {
         let source = TempDir::new().expect("source dir");
         let dest = source.path().join("subdir");
 
-        let result = preflight_checks(source.path(), &dest);
+        let result = preflight_checks(source.path(), &dest, false);
         assert!(result.is_err(), "dest inside source must be rejected");
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -895,7 +984,7 @@ mod tests {
         // Write a file to make dest non-empty.
         fs::write(dest.path().join("existing.txt"), b"data").expect("write file");
 
-        let result = preflight_checks(source.path(), dest.path());
+        let result = preflight_checks(source.path(), dest.path(), false);
         assert!(result.is_err(), "non-empty dest must be rejected");
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -914,14 +1003,14 @@ mod tests {
 
         // Both dirs are on the same filesystem in /tmp — space should be fine.
         // dest is empty so the check should pass.
-        let result = preflight_checks(source.path(), dest.path());
+        let result = preflight_checks(source.path(), dest.path(), false);
         assert!(result.is_ok(), "empty dest should pass: {:?}", result);
     }
 
     #[test]
     fn preflight_same_path_rejected() {
         let source = TempDir::new().expect("dir");
-        let result = preflight_checks(source.path(), source.path());
+        let result = preflight_checks(source.path(), source.path(), false);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("No changes made"), "{}", msg);

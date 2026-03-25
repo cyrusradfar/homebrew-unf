@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { getConfig, moveStorage } from "../lib/api";
   import { open } from "@tauri-apps/plugin-dialog";
   import type { ConfigResponse } from "../lib/types";
@@ -15,6 +16,7 @@
   let selectedPath = $state('');
   let errorMessage = $state('');
   let backupPath = $state('');
+  let migratingStep = $state('');
   let loading = $state(false);
 
   // Load config when popover becomes visible
@@ -60,9 +62,11 @@
 
   async function handleMoveStorage() {
     state = 'migrating';
+    migratingStep = `Copying ${config ? formatBytes(config.disk_usage_bytes) : 'data'}...`;
+    // Yield so Svelte updates the DOM before the async IPC call
+    await tick();
     try {
       const result = await moveStorage(selectedPath);
-      // Check if result has backup_path
       if (result && typeof result === 'object') {
         backupPath = (result as any).backup_path || '';
       }
@@ -175,6 +179,7 @@
           <div class="progress-bar">
             <div class="progress-fill indeterminate"></div>
           </div>
+          <p class="progress-step">{migratingStep}</p>
           <p class="progress-text">Recording is paused during this operation.</p>
         </div>
       </div>
@@ -186,8 +191,12 @@
       </div>
       <div class="popover-body">
         <p class="success-text">Recording resumed.</p>
+        <div class="success-detail">
+          <span class="success-label">New location</span>
+          <code class="path-display">{selectedPath}</code>
+        </div>
         {#if backupPath}
-          <p class="backup-text">Previous data saved at <code>{backupPath}</code></p>
+          <p class="backup-text">Backup kept at <code>{backupPath}</code></p>
         {/if}
       </div>
 
@@ -427,6 +436,12 @@
     100% { transform: translateX(350%); }
   }
 
+  .progress-step {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    margin: 0 0 4px;
+  }
+
   .progress-text {
     font-size: var(--text-xs);
     color: var(--text-muted);
@@ -436,7 +451,21 @@
   .success-text {
     font-size: var(--text-sm);
     color: var(--addition);
-    margin: 0 0 6px;
+    margin: 0 0 8px;
+  }
+
+  .success-detail {
+    margin-bottom: 8px;
+  }
+
+  .success-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    display: block;
+    margin-bottom: 4px;
   }
 
   .backup-text {

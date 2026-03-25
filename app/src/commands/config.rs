@@ -9,8 +9,10 @@ pub fn get_config() -> Result<serde_json::Value, AppError> {
 }
 
 /// Move storage to a new location.
-/// Invokes: `unf config --move-storage PATH --json`
+/// Invokes: `unf config --move-storage PATH --force --json`
+/// Always passes --force since the UI has its own confirmation dialog.
+/// Async so it runs on a background thread instead of blocking the UI.
 #[tauri::command]
-pub fn move_storage(path: String) -> Result<serde_json::Value, AppError> {
-    run_unf_global(&["config", "--move-storage", &path])
+pub async fn move_storage(path: String) -> Result<serde_json::Value, AppError> {
+    run_unf_global(&["config", "--move-storage", &path, "--force"])
 }
