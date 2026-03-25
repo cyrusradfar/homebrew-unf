@@ -174,7 +174,7 @@ fn test_resolve_destination_relative_path_rejected() {
 #[test]
 fn test_preflight_same_path_rejected() {
     let tmp = TempDir::new().unwrap();
-    let result = migrate::preflight_checks(tmp.path(), tmp.path());
+    let result = migrate::preflight_checks(tmp.path(), tmp.path(), false);
     assert!(result.is_err(), "same source and dest must be rejected");
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -190,7 +190,7 @@ fn test_preflight_dest_inside_source_rejected() {
     // Destination is a subdirectory of source that does not yet exist.
     let dest = source.path().join("nested").join("dest");
 
-    let result = migrate::preflight_checks(source.path(), &dest);
+    let result = migrate::preflight_checks(source.path(), &dest, false);
     assert!(result.is_err(), "dest inside source must be rejected");
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -208,7 +208,7 @@ fn test_preflight_nonempty_dest_rejected() {
     // Make dest non-empty.
     fs::write(dest.path().join("existing_file.txt"), b"content").unwrap();
 
-    let result = migrate::preflight_checks(source.path(), dest.path());
+    let result = migrate::preflight_checks(source.path(), dest.path(), false);
     assert!(result.is_err(), "non-empty dest must be rejected");
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -226,7 +226,7 @@ fn test_preflight_empty_dest_dir_accepted() {
     fs::write(source.path().join("data.txt"), b"some data").unwrap();
     let dest = TempDir::new().unwrap(); // newly-created, empty
 
-    let result = migrate::preflight_checks(source.path(), dest.path());
+    let result = migrate::preflight_checks(source.path(), dest.path(), false);
     assert!(
         result.is_ok(),
         "empty dest should pass preflight: {:?}",
@@ -455,7 +455,7 @@ fn test_full_migration_flow() {
     assert!(!is_default);
 
     // Phase 2: pre-flight.
-    migrate::preflight_checks(&source, &dest)
+    migrate::preflight_checks(&source, &dest, false)
         .expect("preflight_checks must pass for valid source/dest");
 
     // Phase 3: copy data (skip runtime files).
