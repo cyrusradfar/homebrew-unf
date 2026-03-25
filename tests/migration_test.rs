@@ -600,9 +600,8 @@ fn test_migrate_back_to_default_path_clears_storage_dir() {
     // This is the failing scenario from the E2E test:
     //   unf config --move-storage ~/.unfudged
     // The shell expands ~/.unfudged to an absolute path; we pass that directly.
-    let (resolved, is_default) =
-        migrate::resolve_destination(default_storage.to_str().unwrap())
-            .expect("resolve_destination must succeed for $HOME/.unfudged");
+    let (resolved, is_default) = migrate::resolve_destination(default_storage.to_str().unwrap())
+        .expect("resolve_destination must succeed for $HOME/.unfudged");
 
     assert_eq!(
         resolved, default_storage,
@@ -613,13 +612,11 @@ fn test_migrate_back_to_default_path_clears_storage_dir() {
         "explicit $HOME/.unfudged must be recognized as the default (is_default=true)"
     );
 
-    migrate::swap_config(&resolved, is_default)
-        .expect("swap_config back to default must succeed");
+    migrate::swap_config(&resolved, is_default).expect("swap_config back to default must succeed");
 
     // --- Assertions ---
 
-    let cfg_after =
-        unfudged::config::load().expect("load config after migrating back to default");
+    let cfg_after = unfudged::config::load().expect("load config after migrating back to default");
 
     assert!(
         cfg_after.storage_dir.is_none(),
