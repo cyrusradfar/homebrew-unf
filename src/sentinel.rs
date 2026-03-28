@@ -156,9 +156,7 @@ const FRESHNESS_CHECK_INTERVAL: u64 = 4;
 
 /// Converts a `SystemTime` to a `DateTime<Utc>`.
 fn system_time_to_utc(st: std::time::SystemTime) -> chrono::DateTime<chrono::Utc> {
-    let duration = st
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let duration = st.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     chrono::DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
         .unwrap_or_default()
 }
@@ -209,7 +207,10 @@ fn compute_freshness(
 fn read_last_snapshot_time(storage_dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
     let path = storage::last_snapshot_time_path(storage_dir);
     let contents = fs::read_to_string(&path).ok()?;
-    contents.trim().parse::<chrono::DateTime<chrono::Utc>>().ok()
+    contents
+        .trim()
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .ok()
 }
 
 /// Samples the newest mtime across the project root and up to three well-known
@@ -657,10 +658,7 @@ fn acquire_sentinel_lock() -> Result<fs::File, UnfError> {
 
     if let Some(parent) = pid_path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
-            UnfError::InvalidArgument(format!(
-                "Failed to create sentinel PID directory: {}",
-                e
-            ))
+            UnfError::InvalidArgument(format!("Failed to create sentinel PID directory: {}", e))
         })?;
     }
 
@@ -1071,9 +1069,8 @@ mod tests {
     fn freshness_verdict_fresh() {
         let now = chrono::Utc::now();
         let newest_snapshot = Some(now - chrono::Duration::seconds(60));
-        let newest_fs_mtime = Some(
-            std::time::SystemTime::now() - std::time::Duration::from_secs(30),
-        );
+        let newest_fs_mtime =
+            Some(std::time::SystemTime::now() - std::time::Duration::from_secs(30));
         let threshold = std::time::Duration::from_secs(300);
 
         let verdict = compute_freshness(newest_snapshot, newest_fs_mtime, now, threshold);
@@ -1085,9 +1082,8 @@ mod tests {
     fn freshness_verdict_stale() {
         let now = chrono::Utc::now();
         let newest_snapshot = Some(now - chrono::Duration::seconds(600));
-        let newest_fs_mtime = Some(
-            std::time::SystemTime::now() - std::time::Duration::from_secs(30),
-        );
+        let newest_fs_mtime =
+            Some(std::time::SystemTime::now() - std::time::Duration::from_secs(30));
         let threshold = std::time::Duration::from_secs(300);
 
         let verdict = compute_freshness(newest_snapshot, newest_fs_mtime, now, threshold);
@@ -1105,9 +1101,8 @@ mod tests {
     fn freshness_verdict_idle() {
         let now = chrono::Utc::now();
         let newest_snapshot = Some(now - chrono::Duration::seconds(600));
-        let newest_fs_mtime = Some(
-            std::time::SystemTime::now() - std::time::Duration::from_secs(600),
-        );
+        let newest_fs_mtime =
+            Some(std::time::SystemTime::now() - std::time::Duration::from_secs(600));
         let threshold = std::time::Duration::from_secs(300);
 
         let verdict = compute_freshness(newest_snapshot, newest_fs_mtime, now, threshold);
@@ -1156,6 +1151,9 @@ mod tests {
     fn sample_newest_mtime_returns_some() {
         let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let result = sample_newest_mtime(tmp_dir.path());
-        assert!(result.is_some(), "expected Some mtime for existing directory");
+        assert!(
+            result.is_some(),
+            "expected Some mtime for existing directory"
+        );
     }
 }
