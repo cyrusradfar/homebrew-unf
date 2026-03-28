@@ -249,4 +249,53 @@ mod tests {
         let result = force_terminate(999999, 100);
         assert!(result.is_err());
     }
+
+    /// Proves the zombie bug: `is_alive()` returns true for zombie processes.
+    ///
+    /// This test spawns a child that exits immediately, does NOT call wait(),
+    /// and verifies that `kill(pid, 0)` still succeeds — exactly the bug that
+    /// caused the sentinel to think a dead daemon was alive for days.
+    ///
+    /// After confirming the bug, it reaps the zombie via `child.wait()` and
+    /// verifies `is_alive()` then correctly returns false.
+    #[test]
+    #[cfg(unix)]
+    fn zombie_process_fools_is_alive() {
+        use std::process::Command;
+
+        // Spawn a child that exits immediately
+        let mut child = Command::new("true").spawn().expect("failed to spawn");
+        let pid = child.id();
+
+        // Wait for child to exit (becomes zombie since we hold the Child handle
+        // but haven't called wait() — the OS keeps the process table entry)
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // BUG: is_alive() returns true for the zombie
+        assert!(
+            is_alive(pid),
+            "Expected is_alive() to return true for zombie (this IS the bug)"
+        );
+
+        // Verify it's actually a zombie via ps
+        let ps_output = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps failed");
+        let stat = String::from_utf8_lossy(&ps_output.stdout);
+        assert!(
+            stat.trim().starts_with('Z'),
+            "Expected zombie state 'Z', got '{}'",
+            stat.trim()
+        );
+
+        // Reap the zombie
+        let _ = child.wait();
+
+        // After reaping, is_alive() correctly returns false
+        assert!(
+            !is_alive(pid),
+            "After reaping, is_alive() should return false"
+        );
+    }
 }
