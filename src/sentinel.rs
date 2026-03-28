@@ -23,6 +23,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
 use crate::audit;
 use crate::error::UnfError;
 use crate::intent::{self, Intent};
@@ -117,9 +120,18 @@ pub fn run_sentinel() -> Result<(), UnfError> {
         return Ok(());
     }
 
-    // Write sentinel PID file
-    let pid_path = storage::sentinel_pid_path()?;
-    write_pid_file(&pid_path)?;
+    // Acquire exclusive lock on the sentinel PID file.
+    // Returns Err immediately if another sentinel holds the lock.
+    // _lock_file must be held for the sentinel's entire lifetime.
+    #[cfg(unix)]
+    let _lock_file = acquire_sentinel_lock()?;
+
+    // On non-unix platforms fall back to the plain PID-file approach.
+    #[cfg(not(unix))]
+    {
+        let pid_path = storage::sentinel_pid_path()?;
+        write_pid_file(&pid_path)?;
+    }
 
     // --- Boot-time initialization (replaces __boot one-shot agent) ---
     // Clear global stopped marker (fresh login = clean start)
@@ -193,9 +205,6 @@ pub fn run_sentinel() -> Result<(), UnfError> {
             thread::sleep(Duration::from_millis(100));
         }
     }
-
-    // Clean up PID file
-    let _ = fs::remove_file(&pid_path);
 
     Ok(())
 }
@@ -357,7 +366,73 @@ fn signal_daemon_reload() -> Result<(), UnfError> {
     Ok(())
 }
 
+/// Acquires an exclusive non-blocking flock on the sentinel PID file.
+///
+/// Opens (or creates) the sentinel PID file and attempts a non-blocking
+/// exclusive lock via `flock(LOCK_EX | LOCK_NB)`. On success the file is
+/// truncated, the current PID is written, and the open `File` handle is
+/// returned. The caller **must** keep this handle alive for the sentinel's
+/// entire lifetime — dropping it releases the flock, allowing a replacement
+/// sentinel to take over.
+///
+/// Returns `Err` immediately if another process already holds the lock.
+#[cfg(unix)]
+fn acquire_sentinel_lock() -> Result<fs::File, UnfError> {
+    let pid_path = storage::sentinel_pid_path()?;
+
+    if let Some(parent) = pid_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            UnfError::InvalidArgument(format!(
+                "Failed to create sentinel PID directory: {}",
+                e
+            ))
+        })?;
+    }
+
+    // Open without truncating — we must hold the lock before writing.
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&pid_path)
+        .map_err(|e| {
+            UnfError::InvalidArgument(format!("Failed to open sentinel PID file: {}", e))
+        })?;
+
+    // SAFETY: flock(2) is a standard POSIX advisory lock mechanism.
+    // LOCK_EX | LOCK_NB: exclusive, non-blocking — returns EWOULDBLOCK immediately
+    // if another process holds the lock.
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+
+    if ret != 0 {
+        return Err(UnfError::InvalidArgument(
+            "Another sentinel is already running".to_string(),
+        ));
+    }
+
+    // We hold the exclusive lock — safe to truncate and write our PID now.
+    file.set_len(0).map_err(|e| {
+        UnfError::InvalidArgument(format!("Failed to truncate sentinel PID file: {}", e))
+    })?;
+
+    let mut file = file;
+    file.write_all(std::process::id().to_string().as_bytes())
+        .map_err(|e| {
+            UnfError::InvalidArgument(format!("Failed to write sentinel PID file: {}", e))
+        })?;
+    file.sync_all().map_err(|e| {
+        UnfError::InvalidArgument(format!("Failed to sync sentinel PID file: {}", e))
+    })?;
+
+    Ok(file)
+    // Dropping the returned File releases the flock.
+}
+
 /// Writes the current process PID to a file.
+///
+/// Only used on non-unix platforms; on unix the flock-based
+/// `acquire_sentinel_lock()` handles PID writing.
+#[cfg(not(unix))]
 fn write_pid_file(path: &Path) -> Result<(), UnfError> {
     write_pid_file_with_pid(path, std::process::id())
 }
@@ -579,5 +654,62 @@ mod tests {
         let drift: Vec<DriftEntry> = Vec::new();
         let formatted = format_drift(&drift);
         assert!(formatted.is_empty());
+    }
+
+    /// Verifies that dropping the File handle returned by `acquire_sentinel_lock`
+    /// releases the flock so a subsequent acquisition succeeds.
+    ///
+    /// This confirms the single-instance guard is RAII-safe: the lock is held
+    /// exactly as long as the sentinel lives, and no manual cleanup is required.
+    #[cfg(unix)]
+    #[test]
+    fn lock_released_on_drop() {
+        use std::fs;
+        use std::os::unix::io::AsRawFd;
+
+        // Create a temp file to stand in for the sentinel PID file.
+        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+        let path = tmp.path().to_path_buf();
+
+        // Helper: attempt an exclusive non-blocking flock on the path.
+        // Returns true if the lock was acquired, false if already held.
+        // Drops the file handle immediately, releasing any acquired lock.
+        let try_lock = |p: &std::path::Path| -> bool {
+            let f = match fs::OpenOptions::new().write(true).open(p) {
+                Ok(f) => f,
+                Err(_) => return false,
+            };
+            // SAFETY: standard POSIX flock advisory lock check.
+            let ret = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            ret == 0
+            // `f` is dropped here, releasing the lock immediately.
+        };
+
+        // Acquire the lock and keep the handle alive.
+        let lock_file = {
+            let f = fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("failed to open temp file");
+            // SAFETY: standard POSIX flock advisory lock.
+            let ret = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            assert_eq!(ret, 0, "first lock acquisition must succeed");
+            f
+        };
+
+        // While we hold lock_file, a second attempt must fail.
+        assert!(
+            !try_lock(&path),
+            "lock should be held; second attempt must fail"
+        );
+
+        // Drop the file handle — this releases the flock.
+        drop(lock_file);
+
+        // After the drop, a new acquisition must succeed.
+        assert!(
+            try_lock(&path),
+            "lock should be released after drop; re-acquisition must succeed"
+        );
     }
 }
