@@ -522,7 +522,7 @@ echo ""
 echo "=== Test 19: Uninstall ==="
 
 if [[ "$FROM_SOURCE" == "true" ]]; then
-  sudo rm -f /usr/local/bin/unf || fail "Uninstall" "Failed to remove binary"
+  rm -f /usr/local/bin/unf 2>/dev/null || sudo rm -f /usr/local/bin/unf || fail "Uninstall" "Failed to remove binary"
 else
   brew uninstall "$UNF_FORMULA" || fail "Uninstall" "brew uninstall failed"
 fi
