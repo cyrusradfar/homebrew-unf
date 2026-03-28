@@ -21,13 +21,13 @@ brew install cyrusradfar/unf/unf
 
 ```bash
 curl -fsSLO https://downloads.unfudged.io/releases/v0.17.16/unf_0.17.16_amd64.deb
-sudo dpkg -i unf_0.17.9_amd64.deb
+sudo dpkg -i unf_0.17.16_amd64.deb
 ```
 
 For ARM64:
 ```bash
 curl -fsSLO https://downloads.unfudged.io/releases/v0.17.16/unf_0.17.16_arm64.deb
-sudo dpkg -i unf_0.17.9_arm64.deb
+sudo dpkg -i unf_0.17.16_arm64.deb
 ```
 
 ### Desktop app (macOS)
@@ -69,8 +69,11 @@ unf restore --at "10m ago"   # Roll back to 10 minutes ago
 | `unf restore --at <time>` | Restore files to a point in time |
 | `unf restore --at <time> <file>` | Restore a specific file |
 | `unf cat --at <time> <file>` | Print a file's contents at a point in time |
-| `unf list --at <time>` | List tracked files at a point in time |
-| `unf prune --before <time>` | Remove snapshots older than a threshold |
+| `unf list` | List all watched projects |
+| `unf prune --older-than <time>` | Remove snapshots older than a threshold |
+| `unf config` | Show storage location and disk usage |
+| `unf config --move-storage <path>` | Move storage to a new location |
+| `unf recap` | Summarize recent session activity |
 | `unf stop` | Stop the global daemon |
 | `unf restart` | Restart the global daemon |
 
