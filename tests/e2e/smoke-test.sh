@@ -499,10 +499,115 @@ pass "Move storage"
 echo ""
 
 # ============================================================================
-# Test 18: Stop daemon
+# Test 18: Sentinel zombie detection
 # ============================================================================
 
-echo "=== Test 18: Stop daemon ==="
+echo "=== Test 18: Sentinel zombie detection ==="
+
+# Record current daemon PID
+DAEMON_PID=$(cat ~/.unfudged/daemon.pid 2>/dev/null)
+if [[ -z "$DAEMON_PID" ]]; then
+  fail "Zombie" "No daemon PID file found"
+fi
+
+# Verify daemon is alive
+if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+  fail "Zombie" "Daemon PID $DAEMON_PID is not alive"
+fi
+
+# Kill daemon with SIGKILL to simulate crash (creates zombie)
+kill -9 "$DAEMON_PID"
+sleep 1
+
+# Wait for sentinel to detect crash and respawn (sentinel ticks every 15s)
+RESPAWNED=false
+for i in $(seq 1 25); do
+  sleep 1
+  NEW_PID=$(cat ~/.unfudged/daemon.pid 2>/dev/null)
+  if [[ "$NEW_PID" != "$DAEMON_PID" && -n "$NEW_PID" ]]; then
+    if kill -0 "$NEW_PID" 2>/dev/null; then
+      echo "Sentinel respawned daemon: $DAEMON_PID -> $NEW_PID (after ${i}s)"
+      RESPAWNED=true
+      break
+    fi
+  fi
+done
+
+if [[ "$RESPAWNED" != "true" ]]; then
+  fail "Zombie" "Sentinel did not respawn daemon within 25s"
+fi
+
+# Verify new daemon is recording
+cd "$TEST_ROOT/project-a" || fail "Zombie" "Cannot cd to project-a"
+echo "after zombie respawn" > zombie-test.txt
+sleep 5
+LOG_OUTPUT=$(unf log zombie-test.txt --json 2>/dev/null) || fail "Zombie" "unf log failed after respawn"
+if command -v jq &> /dev/null; then
+  ENTRY_COUNT=$(echo "$LOG_OUTPUT" | jq '.entries | length') || fail "Zombie" "Failed to parse JSON"
+  if [[ "$ENTRY_COUNT" -lt 1 ]]; then
+    fail "Zombie" "No entries after zombie respawn"
+  fi
+fi
+
+# Verify audit log recorded the crash
+if ! grep -q "DAEMON_CRASH" ~/.unfudged/audit.log 2>/dev/null; then
+  fail "Zombie" "No DAEMON_CRASH event in audit log"
+fi
+
+pass "Sentinel zombie detection"
+echo ""
+
+# ============================================================================
+# Test 19: Sentinel single-instance (flock)
+# ============================================================================
+
+echo "=== Test 19: Sentinel single-instance (flock) ==="
+
+# Count sentinel processes — should be exactly 1
+SENTINEL_COUNT=$(pgrep -fc "unf __sentinel" 2>/dev/null || echo "0")
+if [[ "$SENTINEL_COUNT" -ne 1 ]]; then
+  fail "Flock" "Expected 1 sentinel, found $SENTINEL_COUNT"
+fi
+
+pass "Sentinel single-instance (flock)"
+echo ""
+
+# ============================================================================
+# Test 20: Stop does not cause infinite restart
+# ============================================================================
+
+echo "=== Test 20: Stop does not cause infinite restart ==="
+
+unf stop || fail "Stop loop" "unf stop failed"
+sleep 2
+
+# Verify daemon is dead
+if pgrep -f "unf __daemon" > /dev/null 2>&1; then
+  fail "Stop loop" "Daemon still running after stop"
+fi
+
+# Make a file edit while stopped
+echo "edit while stopped" > "$TEST_ROOT/project-a/stopped-edit.txt"
+
+# Wait 20s — sentinel should NOT restart the daemon
+sleep 20
+
+if pgrep -f "unf __daemon" > /dev/null 2>&1; then
+  fail "Stop loop" "Daemon restarted after intentional stop + file edit"
+fi
+
+# Restart for remaining tests
+unf watch 2>/dev/null || true
+sleep 3
+
+pass "Stop does not cause infinite restart"
+echo ""
+
+# ============================================================================
+# Test 21: Stop daemon
+# ============================================================================
+
+echo "=== Test 21: Stop daemon ==="
 
 unf stop || fail "Stop" "unf stop failed"
 sleep 1
@@ -516,10 +621,10 @@ pass "Stop daemon"
 echo ""
 
 # ============================================================================
-# Test 19: Uninstall
+# Test 22: Uninstall
 # ============================================================================
 
-echo "=== Test 19: Uninstall ==="
+echo "=== Test 22: Uninstall ==="
 
 if [[ "$FROM_SOURCE" == "true" ]]; then
   rm -f /usr/local/bin/unf 2>/dev/null || sudo rm -f /usr/local/bin/unf || fail "Uninstall" "Failed to remove binary"
