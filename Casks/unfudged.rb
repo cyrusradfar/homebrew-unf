@@ -1,6 +1,6 @@
 cask "unfudged" do
   version "0.17.16"
-  sha256 "3de9f394bf1670b24c2152d9d33593a0dae32e3168990c97466c2491807bb35d"
+  sha256 "99b2a3d6565780bb4911e2a636955b303867c7e8bd14b153d18d90e76e226cc8"
 
   url "https://downloads.unfudged.io/releases/v0.17.16/UNFUDGED-v0.17.16-universal.dmg"
   name "UNFUDGED"
