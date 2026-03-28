@@ -17,7 +17,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -61,6 +61,50 @@ pub struct DriftEntry {
     pub kind: DriftKind,
 }
 
+/// Decision the sentinel should take for the daemon on each health-check tick.
+///
+/// Returned by `assess_daemon_status()`. Separates pure decision logic from
+/// the I/O of actually spawning or logging.
+#[derive(Debug, PartialEq, Eq)]
+enum DaemonAction {
+    /// Daemon child is running normally — no action needed.
+    Alive,
+    /// Daemon needs to be spawned (or re-spawned).
+    NeedsRespawn {
+        /// Human-readable reason for the audit log.
+        reason: &'static str,
+    },
+    /// No projects are registered; daemon should not be running.
+    NoChild,
+}
+
+/// Determines what action the sentinel should take for the daemon.
+///
+/// Calls `try_wait()` on the child handle (wraps `waitpid(WNOHANG)`), which
+/// reaps a zombie if the child has exited. The function is otherwise free of
+/// I/O — all side-effecting decisions (spawn, log) are the caller's concern.
+///
+/// # Arguments
+/// * `child` — mutable borrow of the sentinel's `Option<Child>` state.
+/// * `has_projects` — whether there are any registered projects to watch.
+fn assess_daemon_status(child: &mut Option<Child>, has_projects: bool) -> DaemonAction {
+    if !has_projects {
+        return DaemonAction::NoChild;
+    }
+    match child {
+        None => DaemonAction::NeedsRespawn {
+            reason: "no child handle",
+        },
+        Some(ref mut c) => match c.try_wait() {
+            Ok(Some(_status)) => DaemonAction::NeedsRespawn { reason: "exited" },
+            Ok(None) => DaemonAction::Alive,
+            Err(_) => DaemonAction::NeedsRespawn {
+                reason: "try_wait error",
+            },
+        },
+    }
+}
+
 /// Compares intent vs registry and returns a list of drifted entries.
 ///
 /// Pure function — no I/O. Fully testable.
@@ -88,6 +132,78 @@ pub fn compute_drift(intent: &Intent, registry: &Registry) -> Vec<DriftEntry> {
     }
 
     drift
+}
+
+/// Result of a freshness check for a single project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FreshnessVerdict {
+    /// Recent snapshots exist; recording is active.
+    Fresh,
+    /// No recent filesystem changes detected. Project is idle.
+    Idle,
+    /// Recent filesystem changes detected but no recent snapshots.
+    /// The daemon is likely not recording.
+    Stale { gap_secs: u64 },
+    /// Could not determine freshness (missing data).
+    Unknown,
+}
+
+/// Duration after which missing snapshots with recent FS activity is considered stale.
+// Wired into the sentinel loop by T-SR-07.
+#[allow(dead_code)]
+const STALENESS_THRESHOLD_SECS: u64 = 300;
+
+/// Converts a `SystemTime` to a `DateTime<Utc>`.
+// Called by compute_freshness(); wired into sentinel loop by T-SR-07.
+#[allow(dead_code)]
+fn system_time_to_utc(st: std::time::SystemTime) -> chrono::DateTime<chrono::Utc> {
+    let duration = st
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    chrono::DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
+        .unwrap_or_default()
+}
+
+/// Computes the freshness verdict for a project.
+///
+/// Pure function — takes pre-fetched timestamps, no I/O.
+///
+/// # Arguments
+/// * `newest_snapshot` - Timestamp of the most recent snapshot in the DB.
+/// * `newest_fs_mtime` - Most recent mtime of any file in the project root.
+/// * `now` - Current time.
+/// * `staleness_threshold` - Duration after which a gap is considered stale.
+// Wired into the sentinel loop by T-SR-07.
+#[allow(dead_code)]
+fn compute_freshness(
+    newest_snapshot: Option<chrono::DateTime<chrono::Utc>>,
+    newest_fs_mtime: Option<std::time::SystemTime>,
+    now: chrono::DateTime<chrono::Utc>,
+    staleness_threshold: std::time::Duration,
+) -> FreshnessVerdict {
+    let threshold_chrono = chrono::Duration::from_std(staleness_threshold)
+        .unwrap_or_else(|_| chrono::Duration::seconds(STALENESS_THRESHOLD_SECS as i64));
+    let threshold_time = now - threshold_chrono;
+
+    match (newest_snapshot, newest_fs_mtime) {
+        // Has recent snapshots — all good
+        (Some(snap_time), _) if snap_time > threshold_time => FreshnessVerdict::Fresh,
+        // No recent snapshots, but check if FS has recent changes
+        (snap_opt, Some(fs_time)) => {
+            let fs_time_utc = system_time_to_utc(fs_time);
+            if fs_time_utc > threshold_time {
+                let gap = match snap_opt {
+                    Some(snap_time) => (now - snap_time).num_seconds().max(0) as u64,
+                    None => (now - threshold_time).num_seconds().max(0) as u64,
+                };
+                FreshnessVerdict::Stale { gap_secs: gap }
+            } else {
+                FreshnessVerdict::Idle
+            }
+        }
+        // No FS mtime data — idle
+        (_, None) => FreshnessVerdict::Idle,
+    }
 }
 
 /// Formats drift entries for audit logging.
@@ -174,6 +290,12 @@ pub fn run_sentinel() -> Result<(), UnfError> {
     let term_flag = Arc::clone(&shutdown);
     let _ = signal_hook::flag::register(signal_hook::consts::SIGTERM, term_flag);
 
+    // Retain the Child handle for the daemon we spawn so we can call
+    // try_wait() on each tick and reap zombies. Starts as None — either we
+    // adopt a daemon that was already running (PID-file path) or we spawn
+    // one on the first tick that finds it missing.
+    let mut daemon_child: Option<Child> = None;
+
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -187,7 +309,7 @@ pub fn run_sentinel() -> Result<(), UnfError> {
         }
 
         // 1. Daemon health check
-        if let Err(e) = check_daemon_health() {
+        if let Err(e) = check_daemon_health(&mut daemon_child) {
             eprintln!("sentinel: daemon health check error: {}", e);
         }
 
@@ -210,40 +332,63 @@ pub fn run_sentinel() -> Result<(), UnfError> {
 }
 
 /// Checks if the daemon is alive; respawns if not.
-fn check_daemon_health() -> Result<(), UnfError> {
+///
+/// Accepts the sentinel's `daemon_child` state so it can call `try_wait()`
+/// (reaping zombies via `waitpid(WNOHANG)`) and update the handle after a
+/// respawn. Falls back to the PID-file path when `daemon_child` is `None`
+/// (e.g., sentinel restarted and adopted a pre-existing daemon).
+fn check_daemon_health(daemon_child: &mut Option<Child>) -> Result<(), UnfError> {
     let global_pid_path = storage::global_pid_path()?;
 
-    if is_daemon_alive(&global_pid_path) {
-        return Ok(());
-    }
+    // Determine whether there are any projects that need watching.
+    let has_projects = registry::has_projects().unwrap_or(false)
+        || intent::load()
+            .map(|i| !i.projects.is_empty())
+            .unwrap_or(false);
 
-    // Check if there are projects to watch
-    if !registry::has_projects().unwrap_or(false) {
-        // Also check intent
-        if let Ok(intent) = intent::load() {
-            if intent.projects.is_empty() {
-                return Ok(());
-            }
-        } else {
-            return Ok(());
+    // If we have a child handle, use try_wait() to detect crashes/zombies.
+    // If not, fall back to the PID-file + kill(pid,0) + is_zombie() check.
+    let action = if daemon_child.is_some() {
+        assess_daemon_status(daemon_child, has_projects)
+    } else if !has_projects {
+        DaemonAction::NoChild
+    } else if is_daemon_alive(&global_pid_path) {
+        // Daemon is running (adopted from a previous sentinel incarnation).
+        // We don't hold the Child handle, so we can't reap it, but init/
+        // launchd will reap it when it eventually exits.
+        DaemonAction::Alive
+    } else {
+        DaemonAction::NeedsRespawn {
+            reason: "no child handle",
         }
-    }
+    };
 
-    audit::log_event("DAEMON_CRASH", "detected dead daemon, respawning");
-    spawn_daemon(&global_pid_path)?;
+    match action {
+        DaemonAction::Alive | DaemonAction::NoChild => {}
+        DaemonAction::NeedsRespawn { reason } => {
+            audit::log_event("DAEMON_CRASH", &format!("detected dead daemon: {}", reason));
+            let child = spawn_daemon(&global_pid_path)?;
+            *daemon_child = Some(child);
 
-    if let Ok(pid_str) = fs::read_to_string(&global_pid_path) {
-        audit::log_event("DAEMON_START", &format!("pid={}", pid_str.trim()));
+            if let Ok(pid_str) = fs::read_to_string(&global_pid_path) {
+                audit::log_event("DAEMON_START", &format!("pid={}", pid_str.trim()));
+            }
+        }
     }
 
     Ok(())
 }
 
 /// Checks whether the daemon process is alive by reading its PID file.
+///
+/// Used as the fallback when the sentinel has no `Child` handle (e.g., after
+/// a sentinel restart that adopted a pre-existing daemon). Excludes zombies:
+/// `kill(pid, 0)` returns success for zombies, so we additionally verify the
+/// process is not in state Z before calling it alive.
 fn is_daemon_alive(global_pid_path: &Path) -> bool {
     if let Ok(pid_str) = fs::read_to_string(global_pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            return crate::process::is_alive(pid);
+            return crate::process::is_alive(pid) && !crate::process::is_zombie(pid);
         }
     }
     false
@@ -326,8 +471,13 @@ fn reconcile(drift: &[DriftEntry]) -> Result<(), UnfError> {
     Ok(())
 }
 
-/// Spawns the global daemon process, reusing the same pattern as cli/watch.rs.
-fn spawn_daemon(global_pid_path: &Path) -> Result<(), UnfError> {
+/// Spawns the global daemon process and returns the `Child` handle.
+///
+/// The caller **must** retain the returned `Child` handle so that `try_wait()`
+/// can be called on subsequent ticks to reap the process when it exits.
+/// Dropping the handle without calling `wait()` / `try_wait()` causes the
+/// daemon to become a zombie — exactly the bug this change fixes.
+fn spawn_daemon(global_pid_path: &Path) -> Result<Child, UnfError> {
     let current_exe = env::current_exe().map_err(|e| {
         UnfError::Watcher(crate::error::WatcherError::Io(std::io::Error::other(
             format!("Failed to get current executable path: {}", e),
@@ -350,7 +500,7 @@ fn spawn_daemon(global_pid_path: &Path) -> Result<(), UnfError> {
     let pid = child.id();
     write_pid_file_with_pid(global_pid_path, pid)?;
 
-    Ok(())
+    Ok(child)
 }
 
 /// Sends SIGUSR1 to the daemon to trigger a registry reload.
@@ -656,6 +806,29 @@ mod tests {
         assert!(formatted.is_empty());
     }
 
+    /// `assess_daemon_status` returns `NeedsRespawn` when there is no child handle
+    /// but there are projects registered.
+    #[test]
+    fn assess_daemon_status_no_child() {
+        let mut child: Option<Child> = None;
+        let action = assess_daemon_status(&mut child, true);
+        assert_eq!(
+            action,
+            DaemonAction::NeedsRespawn {
+                reason: "no child handle"
+            }
+        );
+    }
+
+    /// `assess_daemon_status` returns `NoChild` when there are no registered
+    /// projects, regardless of whether a child handle exists.
+    #[test]
+    fn assess_daemon_status_no_projects() {
+        let mut child: Option<Child> = None;
+        let action = assess_daemon_status(&mut child, false);
+        assert_eq!(action, DaemonAction::NoChild);
+    }
+
     /// Verifies that dropping the File handle returned by `acquire_sentinel_lock`
     /// releases the flock so a subsequent acquisition succeeds.
     ///
@@ -711,5 +884,63 @@ mod tests {
             try_lock(&path),
             "lock should be released after drop; re-acquisition must succeed"
         );
+    }
+
+    /// Recent snapshot within the threshold window yields `Fresh`.
+    #[test]
+    fn freshness_verdict_fresh() {
+        let now = chrono::Utc::now();
+        let newest_snapshot = Some(now - chrono::Duration::seconds(60));
+        let newest_fs_mtime = Some(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(30),
+        );
+        let threshold = std::time::Duration::from_secs(300);
+
+        let verdict = compute_freshness(newest_snapshot, newest_fs_mtime, now, threshold);
+        assert_eq!(verdict, FreshnessVerdict::Fresh);
+    }
+
+    /// Old snapshot but recent FS activity yields `Stale`.
+    #[test]
+    fn freshness_verdict_stale() {
+        let now = chrono::Utc::now();
+        let newest_snapshot = Some(now - chrono::Duration::seconds(600));
+        let newest_fs_mtime = Some(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(30),
+        );
+        let threshold = std::time::Duration::from_secs(300);
+
+        let verdict = compute_freshness(newest_snapshot, newest_fs_mtime, now, threshold);
+        match verdict {
+            FreshnessVerdict::Stale { gap_secs } => {
+                // gap should be approximately 600s (now - snap_time)
+                assert!(gap_secs >= 590 && gap_secs <= 610, "gap_secs={}", gap_secs);
+            }
+            other => panic!("expected Stale, got {:?}", other),
+        }
+    }
+
+    /// Old snapshot and old FS activity yields `Idle`.
+    #[test]
+    fn freshness_verdict_idle() {
+        let now = chrono::Utc::now();
+        let newest_snapshot = Some(now - chrono::Duration::seconds(600));
+        let newest_fs_mtime = Some(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(600),
+        );
+        let threshold = std::time::Duration::from_secs(300);
+
+        let verdict = compute_freshness(newest_snapshot, newest_fs_mtime, now, threshold);
+        assert_eq!(verdict, FreshnessVerdict::Idle);
+    }
+
+    /// No snapshot and no FS mtime data yields `Idle`.
+    #[test]
+    fn freshness_verdict_no_data() {
+        let now = chrono::Utc::now();
+        let threshold = std::time::Duration::from_secs(300);
+
+        let verdict = compute_freshness(None, None, now, threshold);
+        assert_eq!(verdict, FreshnessVerdict::Idle);
     }
 }
