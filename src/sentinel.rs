@@ -516,6 +516,35 @@ fn signal_daemon_reload() -> Result<(), UnfError> {
     Ok(())
 }
 
+/// Attempts a non-blocking exclusive flock on `file`, then truncates and
+/// writes the current PID if successful.
+///
+/// Returns `true` if the lock was acquired and the PID written.
+/// Returns `false` if the lock is held by another process.
+///
+/// # Panics / Errors
+///
+/// Write and sync errors are treated as non-fatal and silently ignored;
+/// the caller's primary concern is whether the lock was obtained.
+#[cfg(unix)]
+fn try_flock_and_write_pid(file: &fs::File) -> bool {
+    // SAFETY: flock(2) is a standard POSIX advisory lock mechanism.
+    // LOCK_EX | LOCK_NB: exclusive, non-blocking — returns EWOULDBLOCK
+    // immediately if another process holds the lock.
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if ret != 0 {
+        return false;
+    }
+
+    // We hold the exclusive lock — safe to truncate and write our PID.
+    let _ = file.set_len(0);
+    let mut file_ref = file;
+    let _ = file_ref.write_all(std::process::id().to_string().as_bytes());
+    let _ = file_ref.sync_all();
+
+    true
+}
+
 /// Acquires an exclusive non-blocking flock on the sentinel PID file.
 ///
 /// Opens (or creates) the sentinel PID file and attempts a non-blocking
@@ -525,7 +554,13 @@ fn signal_daemon_reload() -> Result<(), UnfError> {
 /// entire lifetime — dropping it releases the flock, allowing a replacement
 /// sentinel to take over.
 ///
-/// Returns `Err` immediately if another process already holds the lock.
+/// If the lock is already held by another process, the supersede path is
+/// attempted:
+/// - Read the PID from the sentinel PID file.
+/// - If that process is alive, send SIGTERM and poll for lock release up to
+///   5 seconds (50 × 100 ms).
+/// - If the PID is stale (process already gone), wait 500 ms and retry once.
+/// - If the lock still cannot be acquired, return `Err`.
 #[cfg(unix)]
 fn acquire_sentinel_lock() -> Result<fs::File, UnfError> {
     let pid_path = storage::sentinel_pid_path()?;
@@ -549,32 +584,51 @@ fn acquire_sentinel_lock() -> Result<fs::File, UnfError> {
             UnfError::InvalidArgument(format!("Failed to open sentinel PID file: {}", e))
         })?;
 
-    // SAFETY: flock(2) is a standard POSIX advisory lock mechanism.
-    // LOCK_EX | LOCK_NB: exclusive, non-blocking — returns EWOULDBLOCK immediately
-    // if another process holds the lock.
-    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-
-    if ret != 0 {
-        return Err(UnfError::InvalidArgument(
-            "Another sentinel is already running".to_string(),
-        ));
+    // First attempt: fast path.
+    if try_flock_and_write_pid(&file) {
+        return Ok(file);
     }
 
-    // We hold the exclusive lock — safe to truncate and write our PID now.
-    file.set_len(0).map_err(|e| {
-        UnfError::InvalidArgument(format!("Failed to truncate sentinel PID file: {}", e))
-    })?;
+    // Lock is held by another process. Read its PID to decide what to do.
+    let old_pid: Option<u32> = fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok());
 
-    let mut file = file;
-    file.write_all(std::process::id().to_string().as_bytes())
-        .map_err(|e| {
-            UnfError::InvalidArgument(format!("Failed to write sentinel PID file: {}", e))
-        })?;
-    file.sync_all().map_err(|e| {
-        UnfError::InvalidArgument(format!("Failed to sync sentinel PID file: {}", e))
-    })?;
+    match old_pid {
+        Some(pid) if crate::process::is_alive(pid) => {
+            // An old sentinel is still running. Supersede it.
+            audit::log_event(
+                "SENTINEL_SUPERSEDE",
+                &format!("terminating old sentinel pid={}", pid),
+            );
+            let _ = crate::process::terminate(pid);
 
-    Ok(file)
+            // Poll up to 5 seconds for the lock to become available.
+            for _ in 0..50 {
+                thread::sleep(Duration::from_millis(100));
+                if try_flock_and_write_pid(&file) {
+                    return Ok(file);
+                }
+            }
+
+            Err(UnfError::InvalidArgument(
+                "Cannot acquire sentinel lock after supersede attempt".to_string(),
+            ))
+        }
+        _ => {
+            // Stale PID file — the old process already exited but the lock
+            // file was not cleaned up. Wait briefly for the OS to release
+            // the flock and retry once.
+            thread::sleep(Duration::from_millis(500));
+            if try_flock_and_write_pid(&file) {
+                return Ok(file);
+            }
+
+            Err(UnfError::InvalidArgument(
+                "Another sentinel is already running".to_string(),
+            ))
+        }
+    }
     // Dropping the returned File releases the flock.
 }
 
@@ -827,6 +881,42 @@ mod tests {
         let mut child: Option<Child> = None;
         let action = assess_daemon_status(&mut child, false);
         assert_eq!(action, DaemonAction::NoChild);
+    }
+
+    /// `try_flock_and_write_pid` returns `false` when the file is already locked
+    /// by another descriptor in the same process.
+    ///
+    /// flock(2) locks are per open-file-description (not per FD within a process
+    /// on Linux, but on macOS the non-blocking attempt on the same path from a
+    /// different open FD correctly returns EWOULDBLOCK).  We simulate this by
+    /// holding a lock on a temp file and verifying a second attempt fails.
+    #[cfg(unix)]
+    #[test]
+    fn try_flock_and_write_pid_fails_when_locked() {
+        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+        let path = tmp.path();
+
+        // Acquire the lock on one file descriptor.
+        let holder = fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open holder");
+        let ret = unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(ret, 0, "first lock must succeed");
+
+        // Open a *separate* file descriptor to the same path.
+        let challenger = fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open challenger");
+
+        // The helper must report failure since the holder still holds the lock.
+        assert!(
+            !try_flock_and_write_pid(&challenger),
+            "try_flock_and_write_pid should return false when file is already locked"
+        );
+
+        drop(holder);
     }
 
     /// Verifies that dropping the File handle returned by `acquire_sentinel_lock`
