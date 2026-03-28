@@ -53,7 +53,7 @@ unf watch       # Start recording file changes
 # ... work normally ...
 unf log src/main.rs          # See every saved version
 unf diff --at "5m"           # What changed in the last 5 minutes?
-unf restore --at "10m ago"   # Roll back to 10 minutes ago
+unf restore --at 10m         # Roll back to 10 minutes ago
 ```
 
 ## CLI reference
@@ -77,7 +77,7 @@ unf restore --at "10m ago"   # Roll back to 10 minutes ago
 | `unf stop` | Stop the global daemon |
 | `unf restart` | Restart the global daemon |
 
-Time formats: `"5m"`, `"2h"`, `"1d"`, `"2025-06-15 14:30:00"`, or any `humantime` duration.
+Time formats: `5m`, `2h`, `1d`, or ISO 8601 (`2026-02-09T20:17:00Z`).
 
 ## How it works
 
@@ -86,7 +86,7 @@ Time formats: `"5m"`, `"2h"`, `"1d"`, `"2025-06-15 14:30:00"`, or any `humantime
 - **SQLite metadata** — Timestamps, paths, and hashes in SQLite with WAL mode for concurrent access.
 - **Smart batching** — 3-second debounce window prevents rapid saves from bloating storage.
 - **Text-only** — Binary files are detected and skipped. Only text snapshots are kept.
-- **Retention decay** — Every change for 24h, hourly for 7d, daily for 30d.
+- **Manual pruning** — `unf prune --older-than 30d` to reclaim space. Automatic retention decay is planned.
 
 Resource targets: <1% CPU, <100MB RAM. Local-first, zero data leaves the machine.
 
