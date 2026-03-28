@@ -504,6 +504,15 @@ echo ""
 
 echo "=== Test 18: Sentinel zombie detection ==="
 
+# Ensure sentinel and daemon are running
+# (migration test may have stopped/restarted them)
+cd "$TEST_ROOT/project-a" || fail "Zombie" "Cannot cd to project-a"
+if ! pgrep -f "unf __sentinel" > /dev/null 2>&1; then
+  echo "Sentinel not running, starting via watch..."
+  unf watch 2>/dev/null || true
+  sleep 3
+fi
+
 # Record current daemon PID
 DAEMON_PID=$(cat ~/.unfudged/daemon.pid 2>/dev/null)
 if [[ -z "$DAEMON_PID" ]]; then
@@ -513,6 +522,13 @@ fi
 # Verify daemon is alive
 if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
   fail "Zombie" "Daemon PID $DAEMON_PID is not alive"
+fi
+
+# Verify sentinel is alive
+SENTINEL_PID=$(cat ~/.unfudged/sentinel.pid 2>/dev/null)
+echo "Daemon PID: $DAEMON_PID, Sentinel PID: $SENTINEL_PID"
+if [[ -z "$SENTINEL_PID" ]] || ! kill -0 "$SENTINEL_PID" 2>/dev/null; then
+  fail "Zombie" "Sentinel not running (PID: $SENTINEL_PID)"
 fi
 
 # Kill daemon with SIGKILL to simulate crash (creates zombie)
@@ -534,6 +550,11 @@ for i in $(seq 1 25); do
 done
 
 if [[ "$RESPAWNED" != "true" ]]; then
+  # Debug: show what's running
+  echo "Debug: sentinel alive=$(kill -0 $SENTINEL_PID 2>/dev/null && echo yes || echo no)"
+  echo "Debug: daemon.pid=$(cat ~/.unfudged/daemon.pid 2>/dev/null)"
+  echo "Debug: processes=$(ps aux | grep 'unf __' | grep -v grep || echo none)"
+  echo "Debug: audit=$(tail -5 ~/.unfudged/audit.log 2>/dev/null)"
   fail "Zombie" "Sentinel did not respawn daemon within 25s"
 fi
 
