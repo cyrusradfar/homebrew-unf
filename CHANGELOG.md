@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.16] - 2026-03-28
+### Fixed
+- Sentinel detects and respawns zombie daemons (crashed processes that `kill(pid,0)` couldn't distinguish from alive)
+- `flock` guard prevents multiple sentinels from accumulating
+- `spawn_daemon()` retains `Child` handle to prevent zombie creation
+
+### Added
+- Data freshness check: sentinel verifies snapshots are actively being recorded, restarts daemon on first staleness
+- E2E tests for zombie detection, flock, and stop-no-loop (Linux + macOS)
+
 ## [0.17.11] - 2026-03-18
 ### Fixed
 - Histogram time range: drag-to-create was immediately cleared by $effect (session selection unaffected)
