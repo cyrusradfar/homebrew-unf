@@ -149,13 +149,12 @@ pub enum FreshnessVerdict {
 }
 
 /// Duration after which missing snapshots with recent FS activity is considered stale.
-// Wired into the sentinel loop by T-SR-07.
-#[allow(dead_code)]
 const STALENESS_THRESHOLD_SECS: u64 = 300;
 
+/// Freshness check interval in sentinel ticks (4 * 15s = 60s).
+const FRESHNESS_CHECK_INTERVAL: u64 = 4;
+
 /// Converts a `SystemTime` to a `DateTime<Utc>`.
-// Called by compute_freshness(); wired into sentinel loop by T-SR-07.
-#[allow(dead_code)]
 fn system_time_to_utc(st: std::time::SystemTime) -> chrono::DateTime<chrono::Utc> {
     let duration = st
         .duration_since(std::time::UNIX_EPOCH)
@@ -173,8 +172,6 @@ fn system_time_to_utc(st: std::time::SystemTime) -> chrono::DateTime<chrono::Utc
 /// * `newest_fs_mtime` - Most recent mtime of any file in the project root.
 /// * `now` - Current time.
 /// * `staleness_threshold` - Duration after which a gap is considered stale.
-// Wired into the sentinel loop by T-SR-07.
-#[allow(dead_code)]
 fn compute_freshness(
     newest_snapshot: Option<chrono::DateTime<chrono::Utc>>,
     newest_fs_mtime: Option<std::time::SystemTime>,
@@ -204,6 +201,90 @@ fn compute_freshness(
         // No FS mtime data — idle
         (_, None) => FreshnessVerdict::Idle,
     }
+}
+
+/// Reads the last snapshot timestamp written by the daemon's sidecar file.
+///
+/// Returns `None` if the file does not exist or cannot be parsed.
+fn read_last_snapshot_time(storage_dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let path = storage::last_snapshot_time_path(storage_dir);
+    let contents = fs::read_to_string(&path).ok()?;
+    contents.trim().parse::<chrono::DateTime<chrono::Utc>>().ok()
+}
+
+/// Samples the newest mtime across the project root and up to three well-known
+/// subdirectories (`src/`, `lib/`, `app/`).
+///
+/// Cost: 1-4 `stat()` calls. Returns `None` only if every `stat()` fails.
+fn sample_newest_mtime(project_path: &Path) -> Option<std::time::SystemTime> {
+    let mut newest: Option<std::time::SystemTime> = None;
+    let candidates = [
+        project_path.to_path_buf(),
+        project_path.join("src"),
+        project_path.join("lib"),
+        project_path.join("app"),
+    ];
+    for path in &candidates {
+        if let Ok(meta) = fs::metadata(path) {
+            if let Ok(mtime) = meta.modified() {
+                newest = Some(match newest {
+                    Some(current) if mtime > current => mtime,
+                    Some(current) => current,
+                    None => mtime,
+                });
+            }
+        }
+    }
+    newest
+}
+
+/// Checks data freshness for all registered projects and force-restarts the
+/// daemon if any project is stale.
+///
+/// I/O boundary function: reads the registry, reads sidecar files, stats
+/// filesystem paths, and kills the daemon child if stale.
+fn check_data_freshness(daemon_child: &mut Option<Child>) -> Result<(), UnfError> {
+    let reg = registry::load()?;
+
+    for project in &reg.projects {
+        let storage_dir = match storage::resolve_storage_dir_canonical(&project.path) {
+            Ok(sd) => sd,
+            Err(_) => continue,
+        };
+
+        let newest_snapshot = read_last_snapshot_time(&storage_dir);
+        let newest_fs_mtime = sample_newest_mtime(&project.path);
+
+        let verdict = compute_freshness(
+            newest_snapshot,
+            newest_fs_mtime,
+            chrono::Utc::now(),
+            std::time::Duration::from_secs(STALENESS_THRESHOLD_SECS),
+        );
+
+        if let FreshnessVerdict::Stale { gap_secs } = verdict {
+            audit::log_event(
+                "FRESHNESS_STALE",
+                &format!("project={} gap={}s", project.path.display(), gap_secs),
+            );
+            audit::log_event(
+                "DAEMON_STALE_RESTART",
+                "restarting daemon due to stale freshness",
+            );
+
+            // Kill the daemon child if we hold the handle.
+            if let Some(ref mut child) = daemon_child {
+                let pid = child.id();
+                let _ = crate::process::force_terminate(pid, 2000);
+            }
+            *daemon_child = None;
+
+            // One restart handles all projects — return early.
+            return Ok(());
+        }
+    }
+
+    Ok(())
 }
 
 /// Formats drift entries for audit logging.
@@ -295,6 +376,7 @@ pub fn run_sentinel() -> Result<(), UnfError> {
     // adopt a daemon that was already running (PID-file path) or we spawn
     // one on the first tick that finds it missing.
     let mut daemon_child: Option<Child> = None;
+    let mut tick_count: u64 = 0;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -316,6 +398,14 @@ pub fn run_sentinel() -> Result<(), UnfError> {
         // 2. Intent reconciliation
         if let Err(e) = reconcile_intent() {
             eprintln!("sentinel: reconciliation error: {}", e);
+        }
+
+        // 3. Data freshness check (every Nth tick)
+        tick_count += 1;
+        if tick_count.is_multiple_of(FRESHNESS_CHECK_INTERVAL) {
+            if let Err(e) = check_data_freshness(&mut daemon_child) {
+                eprintln!("sentinel: freshness check error: {}", e);
+            }
         }
 
         // Sleep in small increments so shutdown is responsive
@@ -1032,5 +1122,40 @@ mod tests {
 
         let verdict = compute_freshness(None, None, now, threshold);
         assert_eq!(verdict, FreshnessVerdict::Idle);
+    }
+
+    /// `read_last_snapshot_time` correctly parses a valid RFC3339 timestamp
+    /// written to a temp sidecar file.
+    #[test]
+    fn read_last_snapshot_time_valid() {
+        let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let storage_dir = tmp_dir.path();
+
+        // Write a known RFC3339 timestamp to the sidecar file location.
+        let expected: chrono::DateTime<chrono::Utc> =
+            "2026-03-27T10:00:00Z".parse().expect("valid timestamp");
+        let sidecar_path = storage::last_snapshot_time_path(storage_dir);
+        fs::write(&sidecar_path, expected.to_rfc3339()).expect("write sidecar");
+
+        let result = read_last_snapshot_time(storage_dir);
+        assert_eq!(result, Some(expected));
+    }
+
+    /// `read_last_snapshot_time` returns `None` when the sidecar file does
+    /// not exist.
+    #[test]
+    fn read_last_snapshot_time_missing() {
+        let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let result = read_last_snapshot_time(tmp_dir.path());
+        assert_eq!(result, None);
+    }
+
+    /// `sample_newest_mtime` returns `Some` for an existing directory — the
+    /// directory itself has an mtime.
+    #[test]
+    fn sample_newest_mtime_returns_some() {
+        let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let result = sample_newest_mtime(tmp_dir.path());
+        assert!(result.is_some(), "expected Some mtime for existing directory");
     }
 }
