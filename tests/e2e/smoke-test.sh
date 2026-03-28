@@ -558,11 +558,12 @@ if [[ "$RESPAWNED" != "true" ]]; then
   fail "Zombie" "Sentinel did not respawn daemon within 25s"
 fi
 
-# Verify new daemon is recording
+# Verify new daemon is recording (give it time to set up watchers)
 cd "$TEST_ROOT/project-a" || fail "Zombie" "Cannot cd to project-a"
-echo "after zombie respawn" > zombie-test.txt
 sleep 5
-LOG_OUTPUT=$(unf log zombie-test.txt --json 2>/dev/null) || fail "Zombie" "unf log failed after respawn"
+echo "after zombie respawn" > zombie-test.txt
+sleep 8
+LOG_OUTPUT=$(unf log zombie-test.txt --json 2>&1) || fail "Zombie" "unf log failed after respawn: $LOG_OUTPUT"
 if command -v jq &> /dev/null; then
   ENTRY_COUNT=$(echo "$LOG_OUTPUT" | jq '.entries | length') || fail "Zombie" "Failed to parse JSON"
   if [[ "$ENTRY_COUNT" -lt 1 ]]; then
