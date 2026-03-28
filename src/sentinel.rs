@@ -747,11 +747,14 @@ fn write_pid_file_with_pid(path: &Path, pid: u32) -> Result<(), UnfError> {
 }
 
 /// Checks if the sentinel is currently running by reading its PID file.
+///
+/// Also checks for zombie state to avoid the same bug class that affected
+/// daemon detection (a zombie sentinel would pass `is_alive` but be inert).
 pub fn is_sentinel_alive() -> bool {
     if let Ok(pid_path) = storage::sentinel_pid_path() {
         if let Ok(pid_str) = fs::read_to_string(&pid_path) {
             if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                return crate::process::is_alive(pid);
+                return crate::process::is_alive(pid) && !crate::process::is_zombie(pid);
             }
         }
     }
@@ -793,6 +796,10 @@ pub fn ensure_sentinel_running() -> Result<(), UnfError> {
     let pid_path = storage::sentinel_pid_path()?;
     write_pid_file_with_pid(&pid_path, pid)?;
 
+    // The Child handle is intentionally dropped here. Unlike the daemon (where
+    // dropping caused zombie bugs), the sentinel uses flock for single-instance
+    // enforcement and is detached via process_group(0). The CLI process exits
+    // shortly after, and init/launchd reaps the sentinel on termination.
     Ok(())
 }
 
