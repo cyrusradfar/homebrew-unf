@@ -43,6 +43,38 @@ pub fn is_alive(pid: u32) -> bool {
     }
 }
 
+/// Checks whether a process with the given PID is a zombie (state Z).
+///
+/// A zombie has exited but has not yet been reaped by its parent via `waitpid()`.
+/// The process table entry still exists, so `kill(pid, 0)` returns success —
+/// making `is_alive()` return `true` for zombies. This function distinguishes
+/// zombies from genuinely running processes.
+///
+/// Uses `ps -o stat= -p <pid>` and checks whether the stat field starts with `Z`.
+/// Returns `false` for nonexistent processes or any error (fail-open).
+///
+/// Called at most once per 15-second sentinel tick for a single PID;
+/// the subprocess spawn cost is negligible.
+#[cfg(unix)]
+pub fn is_zombie(pid: u32) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            stat.trim().starts_with('Z')
+        }
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+pub fn is_zombie(_pid: u32) -> bool {
+    // Windows has no zombie process concept.
+    false
+}
+
 /// Sends a termination signal to the process with the given PID.
 ///
 /// On Unix: sends SIGTERM (graceful shutdown request).
@@ -248,6 +280,18 @@ mod tests {
     fn force_terminate_nonexistent_process_fails() {
         let result = force_terminate(999999, 100);
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn current_process_is_not_zombie() {
+        assert!(!is_zombie(std::process::id()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn nonexistent_process_is_not_zombie() {
+        assert!(!is_zombie(999_999));
     }
 
     /// Proves the zombie bug: `is_alive()` returns true for zombie processes.
