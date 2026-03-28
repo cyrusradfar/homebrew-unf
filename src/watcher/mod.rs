@@ -37,6 +37,19 @@ fn map_notify_event(kind: &EventKind) -> Option<EventType> {
     }
 }
 
+/// Writes the current UTC timestamp to the freshness sidecar file.
+///
+/// Called after each non-empty batch flush so the sentinel can verify
+/// that snapshots are actively being recorded without opening SQLite.
+///
+/// Fire-and-forget: errors are silently discarded so a failed write never
+/// interrupts the batch processing path.
+fn update_last_snapshot_time(storage_dir: &std::path::Path) {
+    let path = crate::storage::last_snapshot_time_path(storage_dir);
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = std::fs::write(&path, now.as_bytes());
+}
+
 /// Processes a batch of debounced events, creating snapshots for each.
 ///
 /// Converts absolute paths to relative paths and creates snapshots via the engine.
@@ -177,7 +190,12 @@ pub fn run_daemon() -> Result<(), UnfError> {
         let now = Instant::now();
         for ctx in state.projects.values_mut() {
             if let Some(batch) = ctx.debouncer.drain_if_ready(now) {
-                process_batch(batch, &ctx.engine, &ctx.root);
+                if !batch.is_empty() {
+                    process_batch(batch, &ctx.engine, &ctx.root);
+                    if let Ok(sd) = crate::storage::resolve_storage_dir_canonical(&ctx.root) {
+                        update_last_snapshot_time(&sd);
+                    }
+                }
             }
         }
     }
@@ -199,6 +217,22 @@ fn flush_all_pending(state: &mut daemon::DaemonState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_last_snapshot_time_writes_file() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        update_last_snapshot_time(dir.path());
+
+        let sidecar = crate::storage::last_snapshot_time_path(dir.path());
+        assert!(sidecar.exists(), "sidecar file must exist after write");
+
+        let contents = std::fs::read_to_string(&sidecar).expect("read sidecar");
+        let trimmed = contents.trim();
+        // Must parse as a valid RFC 3339 timestamp
+        trimmed
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .expect("sidecar content must be a valid RFC 3339 timestamp");
+    }
 
     #[test]
     fn map_notify_event_create() {

@@ -159,6 +159,17 @@ pub fn global_stopped_path() -> Result<PathBuf, UnfError> {
     Ok(global_dir.join("stopped"))
 }
 
+/// Returns the path to the daemon freshness sidecar file.
+///
+/// The daemon writes the current UTC timestamp (RFC 3339) to this file
+/// after each non-empty batch flush. The sentinel reads this file to
+/// verify that snapshots are actively being recorded without opening SQLite.
+///
+/// Pure function — no I/O.
+pub fn last_snapshot_time_path(storage_dir: &Path) -> PathBuf {
+    storage_dir.join("last_snapshot_time")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +325,14 @@ mod tests {
     fn global_pid_path_ends_with_daemon_pid() {
         let path = global_pid_path().expect("should resolve global pid path");
         assert!(path.ends_with("daemon.pid"));
+    }
+
+    #[test]
+    fn last_snapshot_time_path_correct() {
+        let storage = PathBuf::from("/tmp/store");
+        assert_eq!(
+            last_snapshot_time_path(&storage),
+            PathBuf::from("/tmp/store/last_snapshot_time")
+        );
     }
 }
