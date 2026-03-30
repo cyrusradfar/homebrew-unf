@@ -6,7 +6,6 @@
 
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -14,6 +13,7 @@ use std::process::{Command, Stdio};
 use crate::cli::OutputFormat;
 use crate::engine::Engine;
 use crate::error::UnfError;
+use crate::process::PidFile;
 use crate::storage;
 
 /// JSON output for the watch command.
@@ -57,6 +57,8 @@ struct WatchOutput {
 /// - `UnfError::Db` if database operations fail
 /// - `UnfError::Cas` if directory creation fails
 /// - `UnfError::Watcher` if daemon spawn or signal operations fail
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     let storage_dir = storage::resolve_storage_dir(project_root)?;
 
@@ -101,11 +103,10 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
     if daemon_running {
         // Send SIGUSR1 to trigger registry reload
-        if let Ok(pid_str) = fs::read_to_string(&global_pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                if let Err(e) = crate::process::send_signal(pid, signal_hook::consts::SIGUSR1) {
-                    super::output::print_warning(&format!("Failed to signal daemon: {}", e));
-                }
+        let pid_file = PidFile::new(global_pid_path.clone());
+        if let Ok(Some(pid)) = pid_file.read() {
+            if let Err(e) = crate::process::send_signal(pid, signal_hook::consts::SIGUSR1) {
+                super::output::print_warning(&format!("Failed to signal daemon: {}", e));
             }
         }
     } else {
@@ -123,8 +124,9 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
     // Also write per-project PID file for backward compatibility with status
     let per_project_pid = storage::pid_path(&storage_dir);
-    if let Ok(pid_str) = fs::read_to_string(&global_pid_path) {
-        let _ = fs::write(&per_project_pid, &pid_str);
+    let global_pid_file = PidFile::new(global_pid_path.clone());
+    if let Ok(Some(pid)) = global_pid_file.read() {
+        let _ = fs::write(&per_project_pid, pid.to_string());
     }
 
     // Get snapshot count to determine status
@@ -166,12 +168,8 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 /// Reads the global PID file and checks if the process is alive.
 /// Returns false if the PID file doesn't exist or the process is dead.
 fn is_global_daemon_running(global_pid_path: &Path) -> bool {
-    if let Ok(pid_str) = fs::read_to_string(global_pid_path) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            return crate::process::is_alive(pid);
-        }
-    }
-    false
+    let pid_file = PidFile::new(global_pid_path.to_path_buf());
+    pid_file.is_running()
 }
 
 /// Spawns the global daemon process.
@@ -207,29 +205,12 @@ fn spawn_global_daemon(global_pid_path: &Path) -> Result<(), UnfError> {
         })?;
 
     let pid = child.id();
-
-    // Ensure parent directory exists
-    if let Some(parent) = global_pid_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            UnfError::Watcher(crate::error::WatcherError::Io(std::io::Error::other(
-                format!("Failed to create PID file directory: {}", e),
-            )))
-        })?;
-    }
-
-    let mut pid_file = fs::File::create(global_pid_path).map_err(|e| {
+    let pid_file = PidFile::new(global_pid_path.to_path_buf());
+    pid_file.write(pid).map_err(|e| {
         UnfError::Watcher(crate::error::WatcherError::Io(std::io::Error::other(
-            format!("Failed to create global PID file: {}", e),
+            format!("Failed to write global PID file: {}", e),
         )))
     })?;
-
-    pid_file
-        .write_all(pid.to_string().as_bytes())
-        .map_err(|e| {
-            UnfError::Watcher(crate::error::WatcherError::Io(std::io::Error::other(
-                format!("Failed to write global PID file: {}", e),
-            )))
-        })?;
 
     Ok(())
 }

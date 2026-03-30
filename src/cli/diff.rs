@@ -19,6 +19,18 @@ use crate::types::{EventType, Snapshot};
 
 pub use crate::diff::{compute_diff_stats, DiffStats};
 
+/// Parameters bundled for diff operations.
+///
+/// This struct consolidates common parameters across diff functions to reduce
+/// parameter count and improve maintainability.
+#[derive(Clone, Copy)]
+struct DiffParams {
+    /// Output format (human-readable or JSON)
+    format: OutputFormat,
+    /// Number of context lines around changes in unified diff
+    context_radius: usize,
+}
+
 /// JSON output for the diff command.
 #[derive(serde::Serialize)]
 struct DiffOutput {
@@ -39,14 +51,14 @@ struct DiffChange {
 }
 
 /// A single line in a diff.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct DiffLine {
     op: String,
     content: String,
 }
 
 /// A single hunk in contextual diff format.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct DiffHunk {
     old_start: u32,
     old_count: u32,
@@ -56,7 +68,7 @@ struct DiffHunk {
 }
 
 /// A single line in a hunk with line numbers.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct DiffHunkLine {
     op: String,
     content: String,
@@ -173,9 +185,14 @@ pub fn run(
     let storage_dir = storage::resolve_storage_dir(project_root)?;
     let engine = Engine::open(project_root, &storage_dir)?;
 
+    let params = DiffParams {
+        format,
+        context_radius,
+    };
+
     // Snapshot mode: --snapshot <id> (diff against predecessor)
     if let Some(snap_id) = snapshot {
-        return run_snapshot_diff(&engine, snap_id, format, context_radius);
+        return run_snapshot_diff(&engine, snap_id, params);
     }
 
     // Determine diff mode and validate arguments
@@ -193,11 +210,11 @@ pub fn run(
 
     // Single-point mode: --at
     if let Some(at_spec) = at {
-        run_single_point(&engine, at_spec, file_filter, format, context_radius)
+        run_single_point(&engine, at_spec, file_filter, params)
     } else {
         // Two-point mode: --from / --to
         let from_spec = from.expect("from should be Some at this point");
-        run_two_point(&engine, from_spec, to, file_filter, format, context_radius)
+        run_two_point(&engine, from_spec, to, file_filter, params)
     }
 }
 
@@ -208,18 +225,16 @@ fn run_single_point(
     engine: &Engine,
     at_spec: &str,
     file_filter: Option<&str>,
-    format: OutputFormat,
-    context_radius: usize,
+    params: DiffParams,
 ) -> Result<(), UnfError> {
-    run_two_point(engine, at_spec, None, file_filter, format, context_radius)
+    run_two_point(engine, at_spec, None, file_filter, params)
 }
 
 /// Snapshot diff: diffs a specific snapshot against its predecessor.
 fn run_snapshot_diff(
     engine: &Engine,
     snapshot_id: i64,
-    format: OutputFormat,
-    context_radius: usize,
+    params: DiffParams,
 ) -> Result<(), UnfError> {
     use crate::types::SnapshotId;
 
@@ -230,64 +245,158 @@ fn run_snapshot_diff(
 
     let prev = engine.get_previous_snapshot(&snap.file_path, snap.timestamp, snap.id)?;
 
-    // If content hash matches predecessor, there's no actual change
+    // Early return if no actual change (hash match with predecessor)
     if let Some(ref p) = prev {
         if p.content_hash == snap.content_hash {
-            if format == OutputFormat::Json {
-                let output = DiffOutput {
-                    from: p.timestamp.to_rfc3339(),
-                    to: snap.timestamp.to_rfc3339(),
-                    changes: vec![],
-                };
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
-            } else {
+            return output_no_changes(&snap, &prev, snapshot_id, params.format);
+        }
+    }
+
+    let old_content = load_snapshot_content(engine, &prev)?;
+    let new_content = load_snapshot_content(engine, &Some(snap.clone()))?;
+
+    let diff = TextDiff::from_lines(&old_content, &new_content);
+    let diff_lines = extract_diff_lines(&diff);
+    let hunks = generate_hunks(&diff, params.context_radius);
+
+    match params.format {
+        OutputFormat::Json => output_snapshot_diff_json(&snap, &prev, &diff_lines, &hunks)?,
+        OutputFormat::Human => {
+            if diff_lines.is_empty() {
                 println!(
                     "No changes in snapshot {} for {}",
                     snapshot_id, snap.file_path
                 );
+            } else {
+                let colored = use_color();
+                print_diff_header(&snap.file_path, colored);
+                print_unified_diff(&diff, params.context_radius, colored);
             }
-            return Ok(());
         }
     }
 
-    let old_content = match &prev {
-        Some(p) if p.event_type != EventType::Delete => {
-            String::from_utf8_lossy(&engine.load_content(&p.content_hash)?).to_string()
+    Ok(())
+}
+
+/// Loads content from a snapshot, or returns empty string for delete events.
+fn load_snapshot_content(engine: &Engine, snapshot: &Option<Snapshot>) -> Result<String, UnfError> {
+    match snapshot {
+        Some(snap) if snap.event_type != EventType::Delete => {
+            let bytes = engine.load_content(&snap.content_hash)?;
+            Ok(String::from_utf8_lossy(&bytes).to_string())
         }
-        _ => String::new(),
-    };
+        _ => Ok(String::new()),
+    }
+}
 
-    let new_content = if snap.event_type != EventType::Delete {
-        String::from_utf8_lossy(&engine.load_content(&snap.content_hash)?).to_string()
-    } else {
-        String::new()
-    };
-
-    let status = match snap.event_type {
+/// Converts an EventType to human-readable status string.
+fn event_type_to_status(event_type: &EventType) -> &'static str {
+    match event_type {
         EventType::Create => "created",
         EventType::Delete => "deleted",
         EventType::Modify => "modified",
-    };
+    }
+}
 
-    let diff = TextDiff::from_lines(&old_content, &new_content);
-
-    // OLD format: diff lines without equal
-    let mut diff_lines = Vec::new();
+/// Extracts diff lines from a TextDiff, excluding equal lines.
+fn extract_diff_lines<'a>(diff: &TextDiff<'a, 'a, 'a, str>) -> Vec<DiffLine> {
+    let mut lines = Vec::new();
     for change in diff.iter_all_changes() {
         let op = match change.tag() {
             ChangeTag::Delete => "delete",
             ChangeTag::Insert => "insert",
             ChangeTag::Equal => continue,
         };
-        diff_lines.push(DiffLine {
+        lines.push(DiffLine {
             op: op.to_string(),
             content: change.to_string(),
         });
     }
+    lines
+}
 
-    // NEW format: hunks with line numbers
-    let hunks = generate_hunks(&diff, context_radius);
+/// Outputs snapshot diff in JSON format.
+fn output_snapshot_diff_json(
+    snap: &Snapshot,
+    prev: &Option<Snapshot>,
+    diff_lines: &[DiffLine],
+    hunks: &[DiffHunk],
+) -> Result<(), UnfError> {
+    let output = DiffOutput {
+        from: prev
+            .as_ref()
+            .map(|p| p.timestamp.to_rfc3339())
+            .unwrap_or_default(),
+        to: snap.timestamp.to_rfc3339(),
+        changes: vec![DiffChange {
+            file: snap.file_path.clone(),
+            status: event_type_to_status(&snap.event_type).to_string(),
+            diff: if diff_lines.is_empty() {
+                None
+            } else {
+                Some(diff_lines.to_vec())
+            },
+            hunks: if hunks.is_empty() {
+                None
+            } else {
+                Some(hunks.to_vec())
+            },
+        }],
+    };
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
 
+/// Prints the file header lines for a diff.
+fn print_diff_header(file_path: &str, colored: bool) {
+    if colored {
+        println!("{}--- a/{}{}", colors::BOLD, file_path, colors::RESET);
+        println!("{}+++ b/{}{}", colors::BOLD, file_path, colors::RESET);
+    } else {
+        println!("--- a/{}", file_path);
+        println!("+++ b/{}", file_path);
+    }
+}
+
+/// Prints a unified diff in colored or plain text format.
+fn print_unified_diff<'a>(
+    diff: &'a TextDiff<'a, 'a, 'a, str>,
+    context_radius: usize,
+    colored: bool,
+) {
+    let mut binding = diff.unified_diff();
+    let udiff = binding.context_radius(context_radius);
+
+    for hunk in udiff.iter_hunks() {
+        if colored {
+            print!("{}{}{}", colors::CYAN, hunk.header(), colors::RESET);
+            for change in hunk.iter_changes() {
+                match change.tag() {
+                    ChangeTag::Delete => {
+                        print!("{}-{}{}", colors::RED, change, colors::RESET)
+                    }
+                    ChangeTag::Insert => {
+                        print!("{}+{}{}", colors::GREEN, change, colors::RESET)
+                    }
+                    ChangeTag::Equal => print!(" {}", change),
+                }
+                if change.missing_newline() {
+                    println!();
+                }
+            }
+        } else {
+            print!("{}", hunk);
+        }
+    }
+}
+
+/// Outputs "no changes" message for snapshot with no actual diff.
+fn output_no_changes(
+    snap: &Snapshot,
+    prev: &Option<Snapshot>,
+    snapshot_id: i64,
+    format: OutputFormat,
+) -> Result<(), UnfError> {
     if format == OutputFormat::Json {
         let output = DiffOutput {
             from: prev
@@ -295,57 +404,15 @@ fn run_snapshot_diff(
                 .map(|p| p.timestamp.to_rfc3339())
                 .unwrap_or_default(),
             to: snap.timestamp.to_rfc3339(),
-            changes: vec![DiffChange {
-                file: snap.file_path.clone(),
-                status: status.to_string(),
-                diff: if diff_lines.is_empty() {
-                    None
-                } else {
-                    Some(diff_lines)
-                },
-                hunks: if hunks.is_empty() { None } else { Some(hunks) },
-            }],
+            changes: vec![],
         };
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    } else if diff_lines.is_empty() {
+    } else {
         println!(
             "No changes in snapshot {} for {}",
             snapshot_id, snap.file_path
         );
-    } else {
-        let colored = use_color();
-        if colored {
-            println!("{}--- a/{}{}", colors::BOLD, snap.file_path, colors::RESET);
-            println!("{}+++ b/{}{}", colors::BOLD, snap.file_path, colors::RESET);
-        } else {
-            println!("--- a/{}", snap.file_path);
-            println!("+++ b/{}", snap.file_path);
-        }
-        let mut binding = diff.unified_diff();
-        let udiff = binding.context_radius(context_radius);
-        for hunk in udiff.iter_hunks() {
-            if colored {
-                print!("{}{}{}", colors::CYAN, hunk.header(), colors::RESET);
-                for change in hunk.iter_changes() {
-                    match change.tag() {
-                        ChangeTag::Delete => {
-                            print!("{}-{}{}", colors::RED, change, colors::RESET)
-                        }
-                        ChangeTag::Insert => {
-                            print!("{}+{}{}", colors::GREEN, change, colors::RESET)
-                        }
-                        ChangeTag::Equal => print!(" {}", change),
-                    }
-                    if change.missing_newline() {
-                        println!();
-                    }
-                }
-            } else {
-                print!("{}", hunk);
-            }
-        }
     }
-
     Ok(())
 }
 
@@ -355,8 +422,7 @@ fn run_two_point(
     from_spec: &str,
     to_spec: Option<&str>,
     file_filter: Option<&str>,
-    format: OutputFormat,
-    context_radius: usize,
+    params: DiffParams,
 ) -> Result<(), UnfError> {
     let from_time = super::parse_time_spec(from_spec)?;
     let to_time = match to_spec {
@@ -384,8 +450,7 @@ fn run_two_point(
         &from_state,
         &to_state,
         &changes,
-        format,
-        context_radius,
+        params,
     )
 }
 
@@ -475,6 +540,11 @@ pub fn run_session(
     let storage_dir = storage::resolve_storage_dir(project_root)?;
     let engine = Engine::open(project_root, &storage_dir)?;
 
+    let params = DiffParams {
+        format,
+        context_radius,
+    };
+
     // Get snapshots for session detection
     let since_time = if let Some(spec) = since {
         super::parse_time_spec(spec)?
@@ -497,18 +567,10 @@ pub fn run_session(
     let from_spec = resolved.start.to_rfc3339();
     let to_spec = resolved.end.to_rfc3339();
 
-    run_two_point(
-        &engine,
-        &from_spec,
-        Some(&to_spec),
-        file_filter,
-        format,
-        context_radius,
-    )
+    run_two_point(&engine, &from_spec, Some(&to_spec), file_filter, params)
 }
 
 /// Renders the two-point diff output in human or JSON format.
-#[allow(clippy::too_many_arguments)]
 fn render_state_diff(
     engine: &Engine,
     from_time: chrono::DateTime<Utc>,
@@ -516,83 +578,148 @@ fn render_state_diff(
     from_state: &HashMap<String, Snapshot>,
     to_state: &HashMap<String, Snapshot>,
     changes: &[(String, FileChange)],
-    format: OutputFormat,
-    context_radius: usize,
+    params: DiffParams,
 ) -> Result<(), UnfError> {
     if changes.is_empty() {
-        if format == OutputFormat::Json {
-            let output = DiffOutput {
-                from: from_time.to_rfc3339(),
-                to: to_time.to_rfc3339(),
-                changes: vec![],
-            };
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        } else {
-            println!("No changes between the specified times.");
-        }
-        return Ok(());
+        return render_state_diff_empty(from_time, to_time, params.format);
     }
 
-    if format == OutputFormat::Json {
-        let mut json_changes = Vec::new();
-        for (path, change) in changes {
-            let status = match change {
-                FileChange::Created => "created",
-                FileChange::Deleted => "deleted",
-                FileChange::Modified => "modified",
-            };
-            if *change == FileChange::Modified {
-                let (diff_lines, hunks) =
-                    get_state_diff_with_hunks(engine, path, from_state, to_state, context_radius)?;
-                json_changes.push(DiffChange {
-                    file: path.clone(),
-                    status: status.to_string(),
-                    diff: Some(diff_lines),
-                    hunks: Some(hunks),
-                });
-            } else {
-                json_changes.push(DiffChange {
-                    file: path.clone(),
-                    status: status.to_string(),
-                    diff: None,
-                    hunks: None,
-                });
-            }
+    match params.format {
+        OutputFormat::Json => {
+            render_state_diff_json(
+                engine, from_time, to_time, from_state, to_state, changes, params,
+            )?;
         }
+        OutputFormat::Human => {
+            render_state_diff_human(
+                engine, from_time, to_time, from_state, to_state, changes, params,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Renders empty diff output.
+fn render_state_diff_empty(
+    from_time: chrono::DateTime<Utc>,
+    to_time: chrono::DateTime<Utc>,
+    format: OutputFormat,
+) -> Result<(), UnfError> {
+    if format == OutputFormat::Json {
         let output = DiffOutput {
             from: from_time.to_rfc3339(),
             to: to_time.to_rfc3339(),
-            changes: json_changes,
+            changes: vec![],
         };
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        println!(
-            "Changes between {} and {}:\n",
-            super::format_local_time(from_time),
-            super::format_local_time(to_time),
-        );
-        for (path, change) in changes {
-            match change {
-                FileChange::Deleted => println!("  deleted   {}", path),
-                FileChange::Modified => println!("  modified  {}", path),
-                FileChange::Created => println!("  created   {}", path),
-            }
-        }
-        // Print diffs for modified files
-        let modified: Vec<&str> = changes
-            .iter()
-            .filter(|(_, c)| *c == FileChange::Modified)
-            .map(|(p, _)| p.as_str())
-            .collect();
-        let colored = use_color();
-        if !modified.is_empty() {
-            println!();
-            for path in modified {
-                print_state_file_diff(engine, path, from_state, to_state, colored, context_radius)?;
-            }
-        }
+        println!("No changes between the specified times.");
     }
     Ok(())
+}
+
+/// Renders JSON output for two-point diff.
+fn render_state_diff_json(
+    engine: &Engine,
+    from_time: chrono::DateTime<Utc>,
+    to_time: chrono::DateTime<Utc>,
+    from_state: &HashMap<String, Snapshot>,
+    to_state: &HashMap<String, Snapshot>,
+    changes: &[(String, FileChange)],
+    params: DiffParams,
+) -> Result<(), UnfError> {
+    let mut json_changes = Vec::new();
+    for (path, change) in changes {
+        let status = change_type_to_status(change);
+        if *change == FileChange::Modified {
+            let (diff_lines, hunks) = get_state_diff_with_hunks(
+                engine,
+                path,
+                from_state,
+                to_state,
+                params.context_radius,
+            )?;
+            json_changes.push(DiffChange {
+                file: path.clone(),
+                status: status.to_string(),
+                diff: Some(diff_lines),
+                hunks: Some(hunks),
+            });
+        } else {
+            json_changes.push(DiffChange {
+                file: path.clone(),
+                status: status.to_string(),
+                diff: None,
+                hunks: None,
+            });
+        }
+    }
+    let output = DiffOutput {
+        from: from_time.to_rfc3339(),
+        to: to_time.to_rfc3339(),
+        changes: json_changes,
+    };
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+/// Renders human-readable output for two-point diff.
+fn render_state_diff_human(
+    engine: &Engine,
+    from_time: chrono::DateTime<Utc>,
+    to_time: chrono::DateTime<Utc>,
+    from_state: &HashMap<String, Snapshot>,
+    to_state: &HashMap<String, Snapshot>,
+    changes: &[(String, FileChange)],
+    params: DiffParams,
+) -> Result<(), UnfError> {
+    println!(
+        "Changes between {} and {}:\n",
+        super::format_local_time(from_time),
+        super::format_local_time(to_time),
+    );
+    for (path, change) in changes {
+        let status_str = match change {
+            FileChange::Deleted => "deleted",
+            FileChange::Modified => "modified",
+            FileChange::Created => "created",
+        };
+        println!("  {}  {}", status_str, path);
+    }
+
+    // Print diffs for modified files
+    let modified: Vec<&str> = changes
+        .iter()
+        .filter(|(_, c)| *c == FileChange::Modified)
+        .map(|(p, _)| p.as_str())
+        .collect();
+
+    if !modified.is_empty() {
+        println!();
+        let colored = use_color();
+        for path in modified {
+            print_state_file_diff(
+                engine,
+                path,
+                from_state,
+                to_state,
+                colored,
+                params.context_radius,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Converts FileChange to status string.
+fn change_type_to_status(&change: &FileChange) -> &'static str {
+    match change {
+        FileChange::Created => "created",
+        FileChange::Deleted => "deleted",
+        FileChange::Modified => "modified",
+    }
 }
 
 /// Gets diff lines and hunks for JSON output in two-point mode.
@@ -1000,7 +1127,7 @@ mod tests {
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].old_start, 1);
         assert_eq!(hunks[0].new_start, 1);
-        assert!(hunks[0].lines.len() > 0);
+        assert!(!hunks[0].lines.is_empty());
 
         // Verify line numbers are present
         let has_line_nums = hunks[0]
@@ -1011,6 +1138,8 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
+    // TODO(v0.18): reduce complexity
     fn generate_hunks_with_context() {
         let old = "alpha\nbravo\ncharlie\ndelta\necho\n";
         let new = "alpha\nBRAVO\ncharlie\nDELTA\necho\n";

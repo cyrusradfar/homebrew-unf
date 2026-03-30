@@ -313,6 +313,10 @@ fn resolve_project_root(cli_project: Option<&Path>) -> Result<PathBuf, UnfError>
         })?,
     };
 
+    // Canonicalize the path, but fall back to the original if the path contains
+    // broken symlinks or the filesystem is inaccessible. This is intentional: we
+    // allow commands like `unf log --project /path` to work even when the directory
+    // is temporarily unreachable, as long as it's registered in the project registry.
     let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
 
     // Check if this path (or an ancestor) is a registered project
@@ -376,6 +380,8 @@ fn resolve_project_path(path: &Path) -> Result<PathBuf, UnfError> {
     )))
 }
 
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 fn main() {
     // Reset SIGPIPE to default behavior so piping to `head`, `jq`, etc.
     // doesn't cause a panic with "Broken pipe".
@@ -461,27 +467,29 @@ fn main() {
                         "--global cannot be combined with --cursor".to_string(),
                     ))
                 } else if args.density {
-                    cli::log::run_global_density(
-                        &args.include_project,
-                        &args.exclude_project,
-                        args.since.as_deref(),
-                        &args.include,
-                        &args.exclude,
+                    let params = cli::log::GlobalDensityParams::new(
+                        args.include_project.clone(),
+                        args.exclude_project.clone(),
+                        args.since.clone(),
+                        args.include.clone(),
+                        args.exclude.clone(),
                         args.ignore_case,
                         args.buckets,
-                    )
+                    );
+                    cli::log::run_global_density(&params)
                 } else {
-                    cli::log::run_global(
-                        &args.include_project,
-                        &args.exclude_project,
-                        args.since.as_deref(),
-                        args.limit,
-                        &args.include,
-                        &args.exclude,
-                        args.ignore_case,
-                        args.group_by_file,
+                    let params = cli::log::GlobalLogParams {
+                        include_project: args.include_project.clone(),
+                        exclude_project: args.exclude_project.clone(),
+                        since: args.since.clone(),
+                        limit: args.limit,
+                        include: args.include.clone(),
+                        exclude: args.exclude.clone(),
+                        ignore_case: args.ignore_case,
+                        grouped: args.group_by_file,
                         format,
-                    )
+                    };
+                    cli::log::run_global(&params)
                 }
             } else if !args.include_project.is_empty() || !args.exclude_project.is_empty() {
                 Err(UnfError::InvalidArgument(
@@ -489,20 +497,20 @@ fn main() {
                 ))
             } else {
                 resolve_project_root(cli.project.as_deref()).and_then(|root| {
-                    cli::log::run(
-                        &root,
-                        args.target.as_deref(),
-                        args.since.as_deref(),
-                        args.limit,
-                        &args.include,
-                        &args.exclude,
-                        args.ignore_case,
-                        args.group_by_file,
+                    let params = cli::log::LogParams {
+                        target: args.target.clone(),
+                        since: args.since.clone(),
+                        limit: args.limit,
+                        include: args.include.clone(),
+                        exclude: args.exclude.clone(),
+                        ignore_case: args.ignore_case,
+                        grouped: args.group_by_file,
                         format,
-                        args.density,
-                        args.buckets,
-                        args.cursor.as_deref(),
-                    )
+                        density: args.density,
+                        num_buckets: args.buckets,
+                        cursor_str: args.cursor.clone(),
+                    };
+                    cli::log::run(&root, &params)
                 })
             }
         }

@@ -201,3 +201,7 @@ export interface MigrationEvent {
   backup_path?: string;
   message?: string;
 }
+
+export interface MoveStorageResponse {
+  backup_path?: string;
+}

@@ -9,6 +9,7 @@ import type {
   CatResponse,
   DensityResponse,
   ConfigResponse,
+  MoveStorageResponse,
 } from "./types";
 
 export async function listProjects(): Promise<ProjectListResponse> {
@@ -193,6 +194,6 @@ export async function getConfig(): Promise<ConfigResponse> {
   return await invoke<ConfigResponse>("get_config");
 }
 
-export async function moveStorage(path: string): Promise<Record<string, unknown>> {
-  return await invoke<Record<string, unknown>>("move_storage", { path });
+export async function moveStorage(path: string): Promise<MoveStorageResponse> {
+  return await invoke<MoveStorageResponse>("move_storage", { path });
 }

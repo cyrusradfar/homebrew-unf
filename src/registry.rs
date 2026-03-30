@@ -183,9 +183,17 @@ pub fn register_project(project_root: &Path) -> Result<(), UnfError> {
 pub fn unregister_project(project_root: &Path) -> Result<(), UnfError> {
     let mut registry = load()?;
 
-    let canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
+    // Attempt to canonicalize the path. If canonicalization fails (e.g., broken
+    // symlink or inaccessible directory), fall back to the non-canonical path.
+    // This can cause silent unregister failures if the project was registered
+    // with a different path representation, so log a warning.
+    let canonical = project_root.canonicalize().unwrap_or_else(|_| {
+        eprintln!(
+            "Warning: Failed to canonicalize path {}, comparing non-canonical",
+            project_root.display()
+        );
+        project_root.to_path_buf()
+    });
 
     let original_len = registry.projects.len();
     registry.projects.retain(|p| p.path != canonical);

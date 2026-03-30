@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::cli::OutputFormat;
 use crate::error::UnfError;
+use crate::process::PidFile;
 use crate::storage;
 
 /// JSON output for the restart command.
@@ -19,6 +20,8 @@ struct RestartOutput {
     status: String,
 }
 
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     // Kill sentinel first (prevents it from respawning daemon during restart)
     if let Err(e) = crate::sentinel::kill_sentinel() {
@@ -27,20 +30,19 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
     // Stop daemon if running
     let global_pid_path = storage::global_pid_path()?;
-    if let Ok(pid_str) = fs::read_to_string(&global_pid_path) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            if crate::process::is_alive(pid) {
-                let _ = crate::process::terminate(pid);
-                for _ in 0..20 {
-                    if !crate::process::is_alive(pid) {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(100));
+    let pid_file = PidFile::new(global_pid_path);
+    if let Ok(Some(pid)) = pid_file.read() {
+        if crate::process::is_alive(pid) {
+            let _ = crate::process::terminate(pid);
+            for _ in 0..20 {
+                if !crate::process::is_alive(pid) {
+                    break;
                 }
+                thread::sleep(Duration::from_millis(100));
             }
         }
-        let _ = fs::remove_file(&global_pid_path);
     }
+    let _ = pid_file.remove();
 
     // Remove global stopped marker
     if let Ok(stopped_path) = storage::global_stopped_path() {

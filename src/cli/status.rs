@@ -5,7 +5,6 @@
 //! - Snapshot count, tracked files, and store size
 //! - Time since recording started
 
-use std::fs;
 use std::path::Path;
 
 use chrono::Utc;
@@ -13,6 +12,7 @@ use chrono::Utc;
 use crate::cli::OutputFormat;
 use crate::engine::Engine;
 use crate::error::UnfError;
+use crate::process::PidFile;
 use crate::storage;
 
 /// JSON output for the status command.
@@ -155,13 +155,10 @@ fn is_daemon_watching_project(project_root: &Path, _storage_dir: &Path) -> bool 
         Ok(p) => p,
         Err(_) => return false,
     };
-    let pid_str = match fs::read_to_string(&global_pid_path) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let pid = match pid_str.trim().parse::<u32>() {
-        Ok(p) => p,
-        Err(_) => return false,
+    let pid_file = PidFile::new(global_pid_path);
+    let pid = match pid_file.read() {
+        Ok(Some(p)) => p,
+        _ => return false,
     };
     if !crate::process::is_alive(pid) {
         return false;

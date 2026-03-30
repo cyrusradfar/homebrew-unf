@@ -54,9 +54,11 @@ pub fn load() -> Result<Intent, UnfError> {
     let contents = fs::read_to_string(&path)
         .map_err(|e| UnfError::InvalidArgument(format!("Failed to read intent file: {}", e)))?;
 
-    // Unlock happens on drop
+    // Unlock happens on drop.
+    // If the intent file is corrupt, log a warning and reset to empty intent.
+    // This is intentional fallback behavior: users can recover by re-running `unf watch`.
     let intent = serde_json::from_str::<Intent>(&contents).unwrap_or_else(|e| {
-        eprintln!("Warning: corrupt intent file, resetting: {}", e);
+        eprintln!("Warning: corrupt intent file, resetting to empty: {}", e);
         Intent::default()
     });
 

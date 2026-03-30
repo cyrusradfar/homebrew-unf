@@ -202,7 +202,10 @@ impl Filter {
 
         // 3. If .gitignore loaded, check if path is ignored
         if let Some(ref gitignore) = self.gitignore {
-            // Convert to relative path if it starts with project_root
+            // Convert to relative path if it starts with project_root.
+            // If strip_prefix fails, the path is absolute and outside the project root,
+            // so we use the absolute path directly. The gitignore matcher handles both
+            // relative and absolute paths correctly.
             let check_path = path.strip_prefix(&self.project_root).unwrap_or(path);
 
             // Check if the path itself is ignored

@@ -12,8 +12,15 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Cross-platform sed: macOS uses sed -i '' while Linux uses sed -i
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    SED_ARGS=('-i' '')
+else
+    SED_ARGS=('-i')
+fi
+
 # Update root Cargo.toml
-sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" "$ROOT_DIR/Cargo.toml"
+sed "${SED_ARGS[@]}" "s/^version = \".*\"/version = \"$VERSION\"/" "$ROOT_DIR/Cargo.toml"
 
 # Update app/Cargo.toml (only the first version line)
 # Use awk to replace only the first occurrence of version line

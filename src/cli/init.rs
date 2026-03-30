@@ -3,8 +3,6 @@
 //! Initializes the flight recorder for a project and starts the background daemon.
 
 use std::env;
-use std::fs;
-use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -12,6 +10,7 @@ use std::process::{Command, Stdio};
 use crate::cli::OutputFormat;
 use crate::engine::Engine;
 use crate::error::UnfError;
+use crate::process::PidFile;
 use crate::storage;
 
 /// JSON output for the init command.
@@ -56,30 +55,21 @@ struct InitOutput {
 pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     let storage_dir = storage::resolve_storage_dir(project_root)?;
     let pid_file_path = storage::pid_path(&storage_dir);
+    let pid_file = PidFile::new(pid_file_path.clone());
 
     // Check if already initialized and daemon is running
-    if storage_dir.exists() && pid_file_path.exists() {
-        // Read PID and check if process is running
-        if let Ok(pid_str) = fs::read_to_string(&pid_file_path) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                // Check if process exists
-                if crate::process::is_alive(pid) {
-                    if format == OutputFormat::Json {
-                        let output = InitOutput {
-                            status: "already_running".to_string(),
-                            snapshots_preserved: None,
-                            auto_restart: None,
-                        };
-                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-                    } else {
-                        println!("Already watching. Use 'unf status' for details.");
-                    }
-                    return Ok(());
-                }
-            }
+    if storage_dir.exists() && pid_file.is_running() {
+        if format == OutputFormat::Json {
+            let output = InitOutput {
+                status: "already_running".to_string(),
+                snapshots_preserved: None,
+                auto_restart: None,
+            };
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        } else {
+            println!("Already watching. Use 'unf status' for details.");
         }
-        // If we get here, PID file exists but process is dead (stale PID file)
-        // Continue with initialization
+        return Ok(());
     }
 
     // Remove stopped sentinel if it exists (re-initialization)
@@ -119,18 +109,11 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
     // Write PID file
     let pid = child.id();
-    let mut pid_file = fs::File::create(&pid_file_path).map_err(|e| {
+    pid_file.write(pid).map_err(|e| {
         UnfError::Watcher(crate::error::WatcherError::Io(std::io::Error::other(
-            format!("Failed to create PID file: {}", e),
+            format!("Failed to write PID file: {}", e),
         )))
     })?;
-    pid_file
-        .write_all(pid.to_string().as_bytes())
-        .map_err(|e| {
-            UnfError::Watcher(crate::error::WatcherError::Io(std::io::Error::other(
-                format!("Failed to write PID file: {}", e),
-            )))
-        })?;
 
     // Register project in global registry and install auto-start
     // Errors are warnings, not fatal — init still succeeds

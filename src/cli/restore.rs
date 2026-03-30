@@ -52,6 +52,8 @@ struct SkippedFile {
 /// # Returns
 ///
 /// `Ok(())` on success, or `UnfError` if querying, loading, or writing fails.
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 pub fn run(
     project_root: &Path,
     at: &str,

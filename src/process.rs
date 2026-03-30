@@ -1,10 +1,13 @@
 //! Cross-platform process management utilities.
 //!
-//! Provides two operations: check if a process is alive, and terminate a process.
+//! Provides operations for process management: checking if processes are alive,
+//! terminating processes, managing PID files, and inter-process communication.
 //! Uses POSIX signals on Unix and Windows process APIs on Windows.
 
 use crate::error::{UnfError, WatcherError};
-use std::path::Path;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -189,6 +192,109 @@ pub fn find_processes_using_file(_path: &Path) -> Vec<u32> {
     Vec::new()
 }
 
+/// A PID file utility for reading, writing, and checking process lifecycle.
+///
+/// Encapsulates all PID file operations (read, write, remove, staleness check)
+/// into a single abstraction. Handles parsing and process existence validation.
+///
+/// # Example
+///
+/// ```ignore
+/// let pid_file = PidFile::new(PathBuf::from("/var/run/daemon.pid"));
+/// pid_file.write(12345)?;
+/// assert_eq!(pid_file.read()?, Some(12345));
+/// assert!(pid_file.is_running());
+/// pid_file.remove()?;
+/// ```
+pub struct PidFile {
+    path: PathBuf,
+}
+
+impl PidFile {
+    /// Creates a new PidFile pointing to the given path.
+    ///
+    /// Does not create the file or validate the path.
+    pub fn new(path: PathBuf) -> Self {
+        PidFile { path }
+    }
+
+    /// Writes a PID to the file.
+    ///
+    /// Creates parent directories if needed. Overwrites any existing content.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if parent directory creation or file write fails.
+    pub fn write(&self, pid: u32) -> io::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut file = fs::File::create(&self.path)?;
+        use std::io::Write;
+        file.write_all(pid.to_string().as_bytes())?;
+
+        Ok(())
+    }
+
+    /// Reads the PID from the file.
+    ///
+    /// Returns `Ok(Some(pid))` if file exists and contains a valid integer.
+    /// Returns `Ok(None)` if file doesn't exist or is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if file read fails for reasons other than "not found".
+    pub fn read(&self) -> io::Result<Option<u32>> {
+        match fs::read_to_string(&self.path) {
+            Ok(content) => {
+                let pid = content.trim().parse::<u32>();
+                match pid {
+                    Ok(p) => Ok(Some(p)),
+                    Err(_) => Ok(None), // Invalid PID in file, treat as absent
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Removes the PID file.
+    ///
+    /// Returns `Ok(())` even if the file doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if removal fails for reasons other than "not found".
+    pub fn remove(&self) -> io::Result<()> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Returns the path to the PID file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Checks if the process recorded in the PID file is currently running.
+    ///
+    /// Returns `false` if:
+    /// - The file doesn't exist
+    /// - The file contains an invalid PID
+    /// - The process with that PID is not alive
+    ///
+    /// Returns `true` only if a valid PID is read and the process exists.
+    pub fn is_running(&self) -> bool {
+        match self.read() {
+            Ok(Some(pid)) => is_alive(pid),
+            _ => false,
+        }
+    }
+}
+
 /// Sends SIGTERM, then escalates to SIGKILL if the process doesn't exit within the timeout.
 ///
 /// Polls `is_alive()` every 100ms after SIGTERM. If the process is still alive
@@ -231,6 +337,136 @@ pub fn force_terminate(pid: u32, _timeout_ms: u64) -> Result<(), UnfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ---- PidFile tests (TDD approach) ----
+
+    #[test]
+    fn pidfile_write_then_read_returns_same_pid() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("test.pid");
+        let pf = PidFile::new(pid_path);
+
+        let test_pid = 12345u32;
+        pf.write(test_pid).expect("write pid");
+
+        let read_pid = pf.read().expect("read pid");
+        assert_eq!(read_pid, Some(test_pid));
+    }
+
+    #[test]
+    fn pidfile_read_nonexistent_returns_none() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("nonexistent.pid");
+        let pf = PidFile::new(pid_path);
+
+        let result = pf.read().expect("read should not fail");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pidfile_read_invalid_content_returns_none() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("invalid.pid");
+        fs::write(&pid_path, b"not-a-number").expect("write invalid content");
+
+        let pf = PidFile::new(pid_path);
+        let result = pf.read().expect("read should not fail");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pidfile_remove_deletes_file() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("test.pid");
+        let pf = PidFile::new(pid_path.clone());
+
+        pf.write(99999).expect("write pid");
+        assert!(pid_path.exists());
+
+        pf.remove().expect("remove pid");
+        assert!(!pid_path.exists());
+    }
+
+    #[test]
+    fn pidfile_remove_nonexistent_succeeds() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("nonexistent.pid");
+        let pf = PidFile::new(pid_path);
+
+        // Should not fail even if file doesn't exist
+        let result = pf.remove();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pidfile_is_running_nonexistent_returns_false() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("nonexistent.pid");
+        let pf = PidFile::new(pid_path);
+
+        assert!(!pf.is_running());
+    }
+
+    #[test]
+    fn pidfile_is_running_dead_pid_returns_false() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("test.pid");
+        let pf = PidFile::new(pid_path);
+
+        // Write a very high PID that almost certainly doesn't exist
+        pf.write(999999).expect("write pid");
+        assert!(!pf.is_running());
+    }
+
+    #[test]
+    fn pidfile_is_running_live_pid_returns_true() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("test.pid");
+        let pf = PidFile::new(pid_path);
+
+        // Write the current process's PID
+        let current_pid = std::process::id();
+        pf.write(current_pid).expect("write pid");
+        assert!(pf.is_running());
+    }
+
+    #[test]
+    fn pidfile_path_returns_correct_path() {
+        let pid_path = PathBuf::from("/tmp/test.pid");
+        let pf = PidFile::new(pid_path.clone());
+
+        assert_eq!(pf.path(), &pid_path);
+    }
+
+    #[test]
+    fn pidfile_write_creates_parent_directories() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("subdir1/subdir2/test.pid");
+        let pf = PidFile::new(pid_path.clone());
+
+        pf.write(54321).expect("write pid");
+        assert!(pid_path.exists());
+
+        let read_pid = pf.read().expect("read pid");
+        assert_eq!(read_pid, Some(54321));
+    }
+
+    #[test]
+    fn pidfile_write_overwrites_existing() {
+        let temp = TempDir::new().expect("create temp dir");
+        let pid_path = temp.path().join("test.pid");
+        let pf = PidFile::new(pid_path);
+
+        pf.write(11111).expect("write pid 1");
+        pf.write(22222).expect("write pid 2");
+
+        let read_pid = pf.read().expect("read pid");
+        assert_eq!(read_pid, Some(22222));
+    }
+
+    // ---- Original process tests ----
 
     #[test]
     fn current_process_is_alive() {

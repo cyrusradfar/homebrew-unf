@@ -433,6 +433,8 @@ fn test_cleanup_old_with_existing_migrated() {
 // ===========================================================================
 
 #[test]
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 fn test_full_migration_flow() {
     let _lock = env_lock();
     let tmp = TempDir::new().unwrap();

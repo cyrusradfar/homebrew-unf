@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -17,6 +19,7 @@
     "shiki": "^3.22.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.9",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tsconfig/svelte": "^5.0.0",
     "svelte": "^5.0.0",

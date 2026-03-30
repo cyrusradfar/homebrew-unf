@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::cli::OutputFormat;
 use crate::engine::Engine;
 use crate::error::UnfError;
+use crate::process::PidFile;
 use crate::registry;
 use crate::storage;
 
@@ -46,6 +47,8 @@ struct ListOutput {
 ///
 /// * `format` - Output format (human or JSON)
 /// * `verbose` - If true, include additional project details
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
     let reg = registry::load()?;
 
@@ -334,13 +337,10 @@ fn is_project_being_watched(project_path: &Path, _storage_dir: &Path) -> bool {
         Ok(p) => p,
         Err(_) => return false,
     };
-    let pid_str = match std::fs::read_to_string(&global_pid_path) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let pid = match pid_str.trim().parse::<u32>() {
-        Ok(p) => p,
-        Err(_) => return false,
+    let pid_file = PidFile::new(global_pid_path);
+    let pid = match pid_file.read() {
+        Ok(Some(p)) => p,
+        _ => return false,
     };
     if !crate::process::is_alive(pid) {
         return false;

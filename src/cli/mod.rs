@@ -258,7 +258,11 @@ mod tests {
         let now = Utc::now();
         let diff = now.signed_duration_since(dt).num_seconds();
         // Should be approximately 30 seconds ago (allow 2s tolerance)
-        assert!(diff >= 28 && diff <= 32, "Expected ~30s ago, got {}s", diff);
+        assert!(
+            (28..=32).contains(&diff),
+            "Expected ~30s ago, got {}s",
+            diff
+        );
     }
 
     #[test]

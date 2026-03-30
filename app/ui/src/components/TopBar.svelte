@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { projects, openTabs, activeTab, GLOBAL_TAB } from "../lib/stores";
+  import { projects, openTabs, activeTab, GLOBAL_TAB, error } from "../lib/stores";
   import { closeTab, switchTab } from "../lib/stores";
   import { listProjects, removeProject, watchProject, unwatchProject } from "../lib/api";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -91,8 +91,21 @@
       const result = await listProjects();
       projects.set(result.projects);
     } catch (err) {
-      // TODO: error handling in future ticket
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      error.set(`Failed to ${getActionVerb(project.status)}: ${errorMessage}`);
       console.error("Action failed:", err);
+    }
+  }
+
+  // Helper: get action verb for error message
+  function getActionVerb(status: ProjectEntry["status"]): string {
+    switch (status) {
+      case "watching": return "stop watching";
+      case "stopped": return "start watching";
+      case "crashed": return "restart";
+      case "orphaned":
+      case "error": return "remove";
+      default: return "perform action on";
     }
   }
 
@@ -106,6 +119,8 @@
         projects.set(result.projects);
       }
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      error.set(`Failed to watch folder: ${errorMessage}`);
       console.error("Watch folder failed:", err);
     }
   }

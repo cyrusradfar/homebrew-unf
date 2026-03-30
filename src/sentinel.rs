@@ -29,6 +29,7 @@ use std::os::unix::io::AsRawFd;
 use crate::audit;
 use crate::error::UnfError;
 use crate::intent::{self, Intent};
+use crate::process::PidFile;
 use crate::registry::{self, Registry};
 use crate::storage;
 
@@ -155,8 +156,14 @@ const STALENESS_THRESHOLD_SECS: u64 = 300;
 const FRESHNESS_CHECK_INTERVAL: u64 = 4;
 
 /// Converts a `SystemTime` to a `DateTime<Utc>`.
+///
+/// Returns the UNIX epoch if the system time is invalid or cannot be converted.
+/// This fallback is safe because we're comparing timestamps; a bad clock read
+/// is caught by the sentinel's staleness threshold logic.
 fn system_time_to_utc(st: std::time::SystemTime) -> chrono::DateTime<chrono::Utc> {
     let duration = st.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    // unwrap_or_default() falls back to epoch (1970-01-01). Safe because the
+    // staleness threshold logic will catch bad clock reads downstream.
     chrono::DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
         .unwrap_or_default()
 }
@@ -176,8 +183,11 @@ fn compute_freshness(
     now: chrono::DateTime<chrono::Utc>,
     staleness_threshold: std::time::Duration,
 ) -> FreshnessVerdict {
-    let threshold_chrono = chrono::Duration::from_std(staleness_threshold)
-        .unwrap_or_else(|_| chrono::Duration::seconds(STALENESS_THRESHOLD_SECS as i64));
+    // The staleness threshold duration should always fit in chrono::Duration.
+    // If it doesn't, that's a programming error (e.g., an absurdly large duration).
+    let threshold_chrono = chrono::Duration::from_std(staleness_threshold).expect(
+        "staleness_threshold must fit in chrono::Duration (programming error if this fails)",
+    );
     let threshold_time = now - threshold_chrono;
 
     match (newest_snapshot, newest_fs_mtime) {
@@ -311,6 +321,8 @@ fn format_drift(drift: &[DriftEntry]) -> String {
 /// 3. Loops every 15 seconds checking daemon health and reconciling intent
 ///
 /// Exits when SIGTERM is received or the global stopped marker exists.
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 pub fn run_sentinel() -> Result<(), UnfError> {
     // Check for global stopped marker
     let stopped_path = storage::global_stopped_path()?;
@@ -328,7 +340,10 @@ pub fn run_sentinel() -> Result<(), UnfError> {
     #[cfg(not(unix))]
     {
         let pid_path = storage::sentinel_pid_path()?;
-        write_pid_file(&pid_path)?;
+        let pid_file = PidFile::new(pid_path);
+        pid_file.write(std::process::id()).map_err(|e| {
+            UnfError::InvalidArgument(format!("Failed to write sentinel PID file: {}", e))
+        })?;
     }
 
     // --- Boot-time initialization (replaces __boot one-shot agent) ---
@@ -403,7 +418,7 @@ pub fn run_sentinel() -> Result<(), UnfError> {
 
         // 3. Data freshness check (every Nth tick)
         tick_count += 1;
-        if tick_count % FRESHNESS_CHECK_INTERVAL == 0 {
+        if tick_count.is_multiple_of(FRESHNESS_CHECK_INTERVAL) {
             if let Err(e) = check_data_freshness(&mut daemon_child) {
                 eprintln!("sentinel: freshness check error: {}", e);
             }
@@ -477,10 +492,9 @@ fn check_daemon_health(daemon_child: &mut Option<Child>) -> Result<(), UnfError>
 /// `kill(pid, 0)` returns success for zombies, so we additionally verify the
 /// process is not in state Z before calling it alive.
 fn is_daemon_alive(global_pid_path: &Path) -> bool {
-    if let Ok(pid_str) = fs::read_to_string(global_pid_path) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            return crate::process::is_alive(pid) && !crate::process::is_zombie(pid);
-        }
+    let pid_file = PidFile::new(global_pid_path.to_path_buf());
+    if let Ok(Some(pid)) = pid_file.read() {
+        return crate::process::is_alive(pid) && !crate::process::is_zombie(pid);
     }
     false
 }
@@ -589,7 +603,10 @@ fn spawn_daemon(global_pid_path: &Path) -> Result<Child, UnfError> {
         })?;
 
     let pid = child.id();
-    write_pid_file_with_pid(global_pid_path, pid)?;
+    let pid_file = PidFile::new(global_pid_path.to_path_buf());
+    pid_file.write(pid).map_err(|e| {
+        UnfError::InvalidArgument(format!("Failed to write daemon PID file: {}", e))
+    })?;
 
     Ok(child)
 }
@@ -597,11 +614,10 @@ fn spawn_daemon(global_pid_path: &Path) -> Result<Child, UnfError> {
 /// Sends SIGUSR1 to the daemon to trigger a registry reload.
 fn signal_daemon_reload() -> Result<(), UnfError> {
     let global_pid_path = storage::global_pid_path()?;
-    if let Ok(pid_str) = fs::read_to_string(&global_pid_path) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            if crate::process::is_alive(pid) {
-                let _ = crate::process::send_signal(pid, signal_hook::consts::SIGUSR1);
-            }
+    let pid_file = PidFile::new(global_pid_path);
+    if let Ok(Some(pid)) = pid_file.read() {
+        if crate::process::is_alive(pid) {
+            let _ = crate::process::send_signal(pid, signal_hook::consts::SIGUSR1);
         }
     }
     Ok(())
@@ -720,42 +736,15 @@ fn acquire_sentinel_lock() -> Result<fs::File, UnfError> {
     // Dropping the returned File releases the flock.
 }
 
-/// Writes the current process PID to a file.
-///
-/// Only used on non-unix platforms; on unix the flock-based
-/// `acquire_sentinel_lock()` handles PID writing.
-#[cfg(not(unix))]
-fn write_pid_file(path: &Path) -> Result<(), UnfError> {
-    write_pid_file_with_pid(path, std::process::id())
-}
-
-/// Writes a specific PID to a file.
-fn write_pid_file_with_pid(path: &Path, pid: u32) -> Result<(), UnfError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            UnfError::InvalidArgument(format!("Failed to create PID file directory: {}", e))
-        })?;
-    }
-
-    let mut file = fs::File::create(path)
-        .map_err(|e| UnfError::InvalidArgument(format!("Failed to create PID file: {}", e)))?;
-
-    file.write_all(pid.to_string().as_bytes())
-        .map_err(|e| UnfError::InvalidArgument(format!("Failed to write PID file: {}", e)))?;
-
-    Ok(())
-}
-
 /// Checks if the sentinel is currently running by reading its PID file.
 ///
 /// Also checks for zombie state to avoid the same bug class that affected
 /// daemon detection (a zombie sentinel would pass `is_alive` but be inert).
 pub fn is_sentinel_alive() -> bool {
     if let Ok(pid_path) = storage::sentinel_pid_path() {
-        if let Ok(pid_str) = fs::read_to_string(&pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                return crate::process::is_alive(pid) && !crate::process::is_zombie(pid);
-            }
+        let pid_file = PidFile::new(pid_path);
+        if let Ok(Some(pid)) = pid_file.read() {
+            return crate::process::is_alive(pid) && !crate::process::is_zombie(pid);
         }
     }
     false
@@ -794,7 +783,10 @@ pub fn ensure_sentinel_running() -> Result<(), UnfError> {
 
     let pid = child.id();
     let pid_path = storage::sentinel_pid_path()?;
-    write_pid_file_with_pid(&pid_path, pid)?;
+    let pid_file = PidFile::new(pid_path);
+    pid_file.write(pid).map_err(|e| {
+        UnfError::InvalidArgument(format!("Failed to write sentinel PID file: {}", e))
+    })?;
 
     // The Child handle is intentionally dropped here. Unlike the daemon (where
     // dropping caused zombie bugs), the sentinel uses flock for single-instance
@@ -806,21 +798,20 @@ pub fn ensure_sentinel_running() -> Result<(), UnfError> {
 /// Kills the sentinel process if running.
 pub fn kill_sentinel() -> Result<(), UnfError> {
     let pid_path = storage::sentinel_pid_path()?;
-    if let Ok(pid_str) = fs::read_to_string(&pid_path) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            if crate::process::is_alive(pid) {
-                let _ = crate::process::terminate(pid);
-                // Wait briefly for exit
-                for _ in 0..20 {
-                    if !crate::process::is_alive(pid) {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(100));
+    let pid_file = PidFile::new(pid_path);
+    if let Ok(Some(pid)) = pid_file.read() {
+        if crate::process::is_alive(pid) {
+            let _ = crate::process::terminate(pid);
+            // Wait briefly for exit
+            for _ in 0..20 {
+                if !crate::process::is_alive(pid) {
+                    break;
                 }
+                thread::sleep(Duration::from_millis(100));
             }
         }
     }
-    let _ = fs::remove_file(&pid_path);
+    let _ = pid_file.remove();
     Ok(())
 }
 
@@ -1097,7 +1088,7 @@ mod tests {
         match verdict {
             FreshnessVerdict::Stale { gap_secs } => {
                 // gap should be approximately 600s (now - snap_time)
-                assert!(gap_secs >= 590 && gap_secs <= 610, "gap_secs={}", gap_secs);
+                assert!((590..=610).contains(&gap_secs), "gap_secs={}", gap_secs);
             }
             other => panic!("expected Stale, got {:?}", other),
         }

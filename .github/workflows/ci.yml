@@ -15,5 +15,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --lib
+      - name: Integration tests
+        run: cargo test --test integration --test migration_test --test daemon_integration -- --test-threads=1
       - run: cargo clippy -- -D warnings
       - run: cargo fmt -- --check
+  lint-app:
+    name: Lint app (Biome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        working-directory: app/ui
+        run: npm ci
+      - name: Run Biome
+        working-directory: app/ui
+        run: npx biome check .

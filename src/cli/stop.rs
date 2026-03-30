@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::cli::OutputFormat;
 use crate::error::UnfError;
+use crate::process::PidFile;
 use crate::storage;
 
 /// JSON output for the stop command.
@@ -66,7 +67,8 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     wait_for_process_exit(pid, SHUTDOWN_TIMEOUT_MS)?;
 
     // Remove global PID file
-    let _ = fs::remove_file(&global_pid_path);
+    let pid_file = PidFile::new(global_pid_path);
+    let _ = pid_file.remove();
 
     // Write global stopped marker so sentinel doesn't restart
     if let Ok(stopped_path) = storage::global_stopped_path() {
@@ -92,8 +94,9 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
                 let stopped = storage::stopped_path(&storage_dir);
                 let _ = fs::write(&stopped, b"");
                 // Remove per-project PID file
-                let pid_file = storage::pid_path(&storage_dir);
-                let _ = fs::remove_file(&pid_file);
+                let pid_file_path = storage::pid_path(&storage_dir);
+                let pid_file = PidFile::new(pid_file_path);
+                let _ = pid_file.remove();
             }
         }
     }
@@ -121,15 +124,14 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
 /// Finds the live global daemon PID. Cleans up stale PID file if found.
 fn find_live_daemon_pid(global_pid_path: &Path) -> Result<Option<u32>, UnfError> {
-    if let Ok(content) = fs::read_to_string(global_pid_path) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            if crate::process::is_alive(pid) {
-                return Ok(Some(pid));
-            }
+    let pid_file = PidFile::new(global_pid_path.to_path_buf());
+    if let Ok(Some(pid)) = pid_file.read() {
+        if crate::process::is_alive(pid) {
+            return Ok(Some(pid));
         }
-        // Stale or invalid PID, clean up
-        let _ = fs::remove_file(global_pid_path);
     }
+    // Stale or invalid PID, clean up
+    let _ = pid_file.remove();
     Ok(None)
 }
 

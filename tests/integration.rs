@@ -2041,6 +2041,8 @@ fn log_global_help_shows_flags() {
 }
 
 #[test]
+#[allow(clippy::cognitive_complexity)]
+// TODO(v0.18): reduce complexity
 fn log_sessions_json() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");

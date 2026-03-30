@@ -8,6 +8,7 @@ use std::path::Path;
 
 use crate::cli::OutputFormat;
 use crate::error::UnfError;
+use crate::process::PidFile;
 use crate::storage;
 
 /// JSON output for the unwatch command.
@@ -53,18 +54,18 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
     // Signal global daemon to reload (it will remove this project)
     if let Ok(global_pid_path) = storage::global_pid_path() {
-        if let Ok(pid_str) = fs::read_to_string(&global_pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                if crate::process::is_alive(pid) {
-                    let _ = crate::process::send_signal(pid, signal_hook::consts::SIGUSR1);
-                }
+        let pid_file = PidFile::new(global_pid_path);
+        if let Ok(Some(pid)) = pid_file.read() {
+            if crate::process::is_alive(pid) {
+                let _ = crate::process::send_signal(pid, signal_hook::consts::SIGUSR1);
             }
         }
     }
 
     // Clean up per-project PID file
     let pid_path = storage::pid_path(&storage_dir);
-    let _ = fs::remove_file(&pid_path);
+    let pid_file = PidFile::new(pid_path);
+    let _ = pid_file.remove();
 
     // If no more registered projects, remove auto-start
     if let Ok(false) = crate::registry::has_projects() {

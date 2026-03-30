@@ -67,9 +67,7 @@
     await tick();
     try {
       const result = await moveStorage(selectedPath);
-      if (result && typeof result === 'object') {
-        backupPath = (result as any).backup_path || '';
-      }
+      backupPath = result.backup_path || '';
       state = 'success';
       // Reload config to reflect new state
       await loadConfig();

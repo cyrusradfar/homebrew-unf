@@ -18,6 +18,9 @@ use rusqlite::Connection;
 use crate::error::{CasError, UnfError};
 use crate::types::{ContentHash, EventType, Snapshot};
 
+/// Snapshot metadata: (content_hash, size_bytes, line_count, lines_added, lines_removed)
+type SnapshotData = (ContentHash, u64, u64, u64, u64);
+
 /// Statistics from a prune operation.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct PruneStats {
@@ -40,6 +43,23 @@ const OBJECTS_DIR: &str = "objects";
 
 /// Sentinel hash value for deleted files (all zeros).
 const EMPTY_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Recursively walks a directory tree and sums the size of all files.
+///
+/// Used by [`Engine::get_store_size`] to calculate total object store size.
+/// Accumulates file sizes into the provided mutable reference.
+fn walk_dir_sum(path: &Path, total: &mut u64) -> Result<(), UnfError> {
+    if path.is_file() {
+        let metadata = fs::metadata(path).map_err(CasError::Io)?;
+        *total += metadata.len();
+    } else if path.is_dir() {
+        for entry in fs::read_dir(path).map_err(CasError::Io)? {
+            let entry = entry.map_err(CasError::Io)?;
+            walk_dir_sum(&entry.path(), total)?;
+        }
+    }
+    Ok(())
+}
 
 /// The main storage engine for UNFUDGED.
 ///
@@ -178,77 +198,18 @@ impl Engine {
     ) -> Result<Option<Snapshot>, UnfError> {
         let timestamp = Utc::now();
 
-        let (content_hash, size_bytes, line_count, lines_added, lines_removed) = match event_type {
+        let snapshot_data = match event_type {
             EventType::Create | EventType::Modify => {
-                // Read file content from disk
-                let full_path = self.project_root.join(file_path);
-                let content = fs::read(&full_path).map_err(CasError::Io)?;
-
-                // Defense-in-depth: skip binary content even if extension wasn't caught
-                if crate::watcher::filter::is_likely_binary(&content) {
-                    return Ok(None);
-                }
-
-                let size = content.len() as u64;
-
-                // Hash and store in CAS
-                let hash = cas::hash_content(&content);
-                cas::store_object(&self.objects_path, &hash, &content)?;
-
-                // Compute line count for this snapshot
-                let line_count = cas::count_lines(&content);
-
-                // Look up the previous snapshot to compute diff stats
-                let (lines_added, lines_removed) =
-                    match self.get_latest_snapshot_for_file(file_path, timestamp) {
-                        Ok(Some(prev)) => {
-                            // If content hash is identical, skip recording (no actual change)
-                            if prev.content_hash == hash {
-                                return Ok(None);
-                            } else {
-                                // Load previous content and compute diff
-                                match self.load_content(&prev.content_hash) {
-                                    Ok(old_content) => {
-                                        let stats =
-                                            crate::diff::compute_diff_stats(&old_content, &content);
-                                        (stats.lines_added as u64, stats.lines_removed as u64)
-                                    }
-                                    Err(_) => {
-                                        // If we can't load previous content, fall back to zeros
-                                        (0, 0)
-                                    }
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            // First snapshot for this file: all lines are "added"
-                            (line_count, 0)
-                        }
-                        Err(_) => {
-                            // If lookup fails, fall back to zeros
-                            (0, 0)
-                        }
-                    };
-
-                (hash, size, line_count, lines_added, lines_removed)
+                self.snapshot_create_or_modify(file_path, timestamp)?
             }
-            EventType::Delete => {
-                // For delete events, get the previous snapshot to find how many lines were removed
-                let (lines_removed, line_count) =
-                    match self.get_latest_snapshot_for_file(file_path, timestamp) {
-                        Ok(Some(prev)) => (prev.line_count, 0),
-                        _ => (0, 0),
-                    };
+            EventType::Delete => self.snapshot_delete(file_path, timestamp)?,
+        };
 
-                // Use empty hash sentinel for deleted files
-                (
-                    ContentHash(EMPTY_HASH.to_string()),
-                    0,
-                    line_count,
-                    0,
-                    lines_removed,
-                )
-            }
+        // Return None if snapshot_data is None (binary file or no actual change)
+        let (content_hash, size_bytes, line_count, lines_added, lines_removed) = match snapshot_data
+        {
+            Some(data) => data,
+            None => return Ok(None),
         };
 
         // Insert snapshot record in database
@@ -275,6 +236,113 @@ impl Engine {
             lines_added,
             lines_removed,
         }))
+    }
+
+    /// Handles snapshot creation for Create/Modify events.
+    ///
+    /// Reads file content, validates against binary detection, hashes and stores in CAS,
+    /// and computes diff statistics against previous version.
+    ///
+    /// Returns `Ok(None)` if content is binary (defense-in-depth check) or
+    /// if hash matches previous snapshot (no actual change).
+    fn snapshot_create_or_modify(
+        &self,
+        file_path: &str,
+        timestamp: DateTime<Utc>,
+    ) -> Result<Option<SnapshotData>, UnfError> {
+        // Read file content from disk
+        let full_path = self.project_root.join(file_path);
+        let content = fs::read(&full_path).map_err(CasError::Io)?;
+
+        // Defense-in-depth: skip binary content even if extension wasn't caught
+        if crate::watcher::filter::is_likely_binary(&content) {
+            return Ok(None);
+        }
+
+        let size = content.len() as u64;
+
+        // Hash and store in CAS
+        let hash = cas::hash_content(&content);
+        cas::store_object(&self.objects_path, &hash, &content)?;
+
+        // Compute line count for this snapshot
+        let line_count = cas::count_lines(&content);
+
+        // Look up the previous snapshot to compute diff stats.
+        // Returns None if content hash is identical (dedup — no actual change).
+        let (lines_added, lines_removed) =
+            match self.compute_diff_stats(file_path, timestamp, &hash, &content, line_count)? {
+                Some(stats) => stats,
+                None => return Ok(None), // Hash matched previous — skip
+            };
+
+        Ok(Some((hash, size, line_count, lines_added, lines_removed)))
+    }
+
+    /// Handles snapshot creation for Delete events.
+    ///
+    /// Retrieves the previous snapshot to determine how many lines were removed.
+    fn snapshot_delete(
+        &self,
+        file_path: &str,
+        timestamp: DateTime<Utc>,
+    ) -> Result<Option<SnapshotData>, UnfError> {
+        // For delete events, get the previous snapshot to find how many lines were removed
+        let lines_removed = match self.get_latest_snapshot_for_file(file_path, timestamp) {
+            Ok(Some(prev)) => prev.line_count,
+            _ => 0,
+        };
+
+        // Use empty hash sentinel for deleted files
+        Ok(Some((
+            ContentHash(EMPTY_HASH.to_string()),
+            0,
+            0,
+            0,
+            lines_removed,
+        )))
+    }
+
+    /// Computes diff statistics between previous and current file content.
+    ///
+    /// Returns `Ok(None)` if content hash matches previous snapshot (dedup).
+    /// Returns `Ok(Some((added, removed)))` otherwise.
+    fn compute_diff_stats(
+        &self,
+        file_path: &str,
+        timestamp: DateTime<Utc>,
+        hash: &ContentHash,
+        content: &[u8],
+        line_count: u64,
+    ) -> Result<Option<(u64, u64)>, UnfError> {
+        match self.get_latest_snapshot_for_file(file_path, timestamp) {
+            Ok(Some(prev)) => {
+                // Content hash identical to previous — no actual change
+                if prev.content_hash == *hash {
+                    return Ok(None);
+                }
+
+                // Load previous content and compute diff
+                match self.load_content(&prev.content_hash) {
+                    Ok(old_content) => {
+                        let stats = crate::diff::compute_diff_stats(&old_content, content);
+                        Ok(Some((stats.lines_added as u64, stats.lines_removed as u64)))
+                    }
+                    Err(_) => {
+                        // If we can't load previous content, fall back to zeros
+                        Ok(Some((0, 0)))
+                    }
+                }
+            }
+            Ok(None) => {
+                // First snapshot for this file: all lines are "added"
+                Ok(Some((line_count, 0)))
+            }
+            Err(_) => {
+                // If lookup fails, fall back to zeros
+                Ok(Some((0, 0)))
+            }
+        }
     }
 
     /// Retrieves all snapshots for a specific file.
@@ -581,22 +649,7 @@ impl Engine {
     /// Returns `UnfError::Cas` if directory traversal fails.
     pub fn get_store_size(&self) -> Result<u64, UnfError> {
         let mut total_size = 0u64;
-
-        // Walk the objects directory recursively
-        fn walk_dir(path: &Path, total: &mut u64) -> Result<(), UnfError> {
-            if path.is_file() {
-                let metadata = fs::metadata(path).map_err(CasError::Io)?;
-                *total += metadata.len();
-            } else if path.is_dir() {
-                for entry in fs::read_dir(path).map_err(CasError::Io)? {
-                    let entry = entry.map_err(CasError::Io)?;
-                    walk_dir(&entry.path(), total)?;
-                }
-            }
-            Ok(())
-        }
-
-        walk_dir(&self.objects_path, &mut total_size)?;
+        walk_dir_sum(&self.objects_path, &mut total_size)?;
         Ok(total_size)
     }
 
@@ -623,25 +676,22 @@ impl Engine {
     /// Returns `UnfError::Db` if database operations fail, or
     /// `UnfError::Cas` if CAS operations fail.
     pub fn prune(&self, cutoff: DateTime<Utc>, dry_run: bool) -> Result<PruneStats, UnfError> {
-        let mut stats = PruneStats::default();
-
-        if dry_run {
-            stats.snapshots_removed = db::count_snapshots_before(&self.conn, cutoff)?;
-            // For dry-run CAS stats: get current referenced hashes, diff against all objects
-            // Note: this shows currently-orphaned objects, not what will be orphaned after pruning
-            let referenced = db::get_referenced_hashes(&self.conn)?;
-            let gc_stats = cas::gc_unreferenced(&self.objects_path, &referenced, true)?;
-            stats.objects_removed = gc_stats.objects_removed;
-            stats.bytes_freed = gc_stats.bytes_freed;
+        // Count or delete snapshots depending on dry_run mode
+        let snapshots_removed = if dry_run {
+            db::count_snapshots_before(&self.conn, cutoff)?
         } else {
-            stats.snapshots_removed = db::delete_snapshots_before(&self.conn, cutoff)?;
-            let referenced = db::get_referenced_hashes(&self.conn)?;
-            let gc_stats = cas::gc_unreferenced(&self.objects_path, &referenced, false)?;
-            stats.objects_removed = gc_stats.objects_removed;
-            stats.bytes_freed = gc_stats.bytes_freed;
-        }
+            db::delete_snapshots_before(&self.conn, cutoff)?
+        };
 
-        Ok(stats)
+        // Get current referenced hashes and garbage-collect unreferenced objects
+        let referenced = db::get_referenced_hashes(&self.conn)?;
+        let gc_stats = cas::gc_unreferenced(&self.objects_path, &referenced, dry_run)?;
+
+        Ok(PruneStats {
+            snapshots_removed,
+            objects_removed: gc_stats.objects_removed,
+            bytes_freed: gc_stats.bytes_freed,
+        })
     }
 }
 

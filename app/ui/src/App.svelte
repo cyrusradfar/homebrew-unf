@@ -18,7 +18,6 @@
     histogramStart,
     histogramEnd,
     loadPersistedTabs,
-    GLOBAL_TAB,
   } from "./lib/stores";
   import { GLOBAL_TAB as GLOBAL_TAB_CONST } from "./lib/types";
   import type { GlobalGroupedLogResponse, GroupedLogFile } from "./lib/types";
@@ -101,12 +100,16 @@
     error.set(null);
     try {
       const status = await selectProject(path);
-      if (get(activeTab) !== path) return; // User switched during await
+      // RACE: User may switch tabs during the await above. Check if we're still the active tab.
+      if (get(activeTab) !== path) return;
       projectStatus.set(status);
       await refreshAllData();
-      if (get(activeTab) !== path) return; // User switched during await
+      // RACE: User may switch tabs during refreshAllData. Verify before polling starts.
+      if (get(activeTab) !== path) return;
       startPolling(() => refreshAllData());
     } catch (e) {
+      // RACE: Only set error if we're still the active tab. Stale errors from old activations
+      // should not overwrite new tab's state.
       if (get(activeTab) === path) {
         error.set(`Failed to activate project: ${e}`);
       }
@@ -120,7 +123,14 @@
     projectStatus.set(null);
     try {
       await refreshGlobalData();
+      // RACE: User may switch away from global tab during refreshGlobalData.
+      // Only keep polling if we're still on the global tab. activateProject will
+      // handle polling restart if user switches to a project tab.
+      if (get(activeTab) === GLOBAL_TAB_CONST) {
+        startPolling(() => refreshGlobalData());
+      }
     } catch (e) {
+      // RACE: Only set error if we're still on global tab.
       if (get(activeTab) === GLOBAL_TAB_CONST) {
         error.set(`Failed to load global view: ${e}`);
       }
@@ -311,6 +321,11 @@
       const include = globs.length > 0 ? globs : undefined;
       const since = get(histogramStart);
       const until = get(histogramEnd);
+      // RACE: Multiple filter changes can trigger rapid-fire concurrent requests.
+      // If user types in filter box repeatedly, previous requests may complete after
+      // newer ones, overwriting fileTree/timelineEntries with stale data.
+      // Mitigation: Use timelineLoading guard in pagination, but filter changes bypass this.
+      // Consider: Add request ID or cancellation token for filter/histogram effects.
       if (isGlobal()) {
         loadGlobalTimeline(include, since, until);
         loadGlobalFileTree(include, since, until);
@@ -342,6 +357,10 @@
     if (get(activeTab)) {
       const globs = filtersToGlobs(get(fileFilters));
       const include = globs.length > 0 ? globs : undefined;
+      // RACE: Histogram range drags can fire multiple updates quickly. Concurrent
+      // loadTimeline/loadFileTree calls could complete out of order, corrupting the
+      // timeline/fileTree state with stale data.
+      // Mitigation: Consider debouncing histogram changes or using request IDs.
       if (isGlobal()) {
         loadGlobalTimeline(include, start, end);
         loadGlobalFileTree(include, start, end);
@@ -384,6 +403,10 @@
     {#if $activeTab}
       <FileTimeline onLoadMore={() => {
         if ($activeTab === GLOBAL_TAB_CONST) return; // No pagination in global mode
+        // RACE: Prevent multiple concurrent pagination requests. User clicking "Load More"
+        // while a previous pagination is in flight could cause out-of-order state updates
+        // (timelineEntries.update() concatenates, so order matters).
+        if ($timelineLoading) return;
         const cursor = $nextCursor;
         if (cursor) {
           const globs = filtersToGlobs(get(fileFilters));

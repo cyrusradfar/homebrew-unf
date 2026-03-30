@@ -20,10 +20,48 @@ use std::time::{Duration, Instant};
 
 use crate::cli::OutputFormat;
 use crate::error::UnfError;
+use crate::process::PidFile;
 
 // ---------------------------------------------------------------------------
-// Migration lock
+// Migration lock and state machine
 // ---------------------------------------------------------------------------
+
+/// The state of a migration operation.
+///
+/// States progress in order: Preflight → DaemonStopped → Copying →
+/// Swapped → Done (then lock removed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MigrationState {
+    Preflight,
+    DaemonStopped,
+    Copying,
+    Swapped,
+}
+
+impl std::fmt::Display for MigrationState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigrationState::Preflight => write!(f, "preflight"),
+            MigrationState::DaemonStopped => write!(f, "daemon_stopped"),
+            MigrationState::Copying => write!(f, "copying"),
+            MigrationState::Swapped => write!(f, "swapped"),
+        }
+    }
+}
+
+impl MigrationState {
+    /// Returns the next valid state after this one, or None if already at final state.
+    #[cfg(test)]
+    fn next(self) -> Option<MigrationState> {
+        match self {
+            MigrationState::Preflight => Some(MigrationState::DaemonStopped),
+            MigrationState::DaemonStopped => Some(MigrationState::Copying),
+            MigrationState::Copying => Some(MigrationState::Swapped),
+            MigrationState::Swapped => None,
+        }
+    }
+}
 
 /// Tracks the state of an in-progress or interrupted migration.
 ///
@@ -31,15 +69,12 @@ use crate::error::UnfError;
 /// effects begin. Removed on successful completion. If the process crashes or
 /// is interrupted, the lock file persists so subsequent commands can detect it
 /// and print recovery guidance.
-///
-/// States (in order): `"preflight"` → `"daemon_stopped"` → `"copying"` →
-/// `"swapped"` → `"done"` (lock removed before "done" is visible).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct MigrationLock {
     source: PathBuf,
     destination: PathBuf,
     started_at: String,
-    state: String,
+    state: MigrationState,
     total_bytes: u64,
     copied_bytes: u64,
     completed_projects: Vec<String>,
@@ -125,7 +160,7 @@ fn remove_lock() -> Result<(), UnfError> {
     Ok(())
 }
 
-/// Creates the initial migration lock at state `"preflight"`.
+/// Creates the initial migration lock at state `Preflight`.
 ///
 /// # Errors
 ///
@@ -140,7 +175,7 @@ fn create_initial_lock(
         source,
         destination,
         started_at: now,
-        state: "preflight".to_string(),
+        state: MigrationState::Preflight,
         total_bytes,
         copied_bytes: 0,
         completed_projects: Vec::new(),
@@ -158,7 +193,7 @@ fn create_initial_lock(
 ///
 /// Returns [`UnfError::Config`] if the lock cannot be read, parsed, or
 /// written.
-fn update_lock_state(new_state: &str) -> Result<(), UnfError> {
+fn update_lock_state(new_state: MigrationState) -> Result<(), UnfError> {
     let path = lock_path()?;
     let bytes = fs::read(&path).map_err(|e| {
         UnfError::Config(format!(
@@ -169,7 +204,7 @@ fn update_lock_state(new_state: &str) -> Result<(), UnfError> {
     })?;
     let mut lock: MigrationLock = serde_json::from_slice(&bytes)
         .map_err(|e| UnfError::Config(format!("Failed to parse migration lock: {}", e)))?;
-    lock.state = new_state.to_string();
+    lock.state = new_state;
     write_lock(&lock)
 }
 
@@ -206,45 +241,17 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
     let start = Instant::now();
 
     // 0. Detect an interrupted migration from a previous run.
-    //    If a lock file already exists, print recovery guidance and abort.
-    if lock_path().map(|p| p.exists()).unwrap_or(false) {
-        let source_hint = lock_path()
-            .ok()
-            .and_then(|p| fs::read(&p).ok())
-            .and_then(|b| serde_json::from_slice::<MigrationLock>(&b).ok())
-            .map(|l| l.source.display().to_string())
-            .unwrap_or_else(|| "~/.unfudged".to_string());
-
-        println!("Migration was interrupted.");
-        println!(
-            "Your data is safe at the original location: {}",
-            source_hint
-        );
-        println!(
-            "Run `unf config --move-storage <DEST>` to retry after removing the lock file, or"
-        );
-        println!(
-            "delete {} to clear the lock and proceed.",
-            lock_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default()
-        );
+    if handle_interrupted_migration()? {
         return Ok(());
     }
 
-    // 1. Resolve source and destination.
+    // 1-2. Resolve and validate.
     let source = crate::registry::global_dir()?;
     let (dest, is_default) = resolve_destination(dest_arg)?;
-
-    // 2. Pre-flight checks (before any side effects).
     preflight_checks(&source, &dest, force)?;
 
-    // 3. Get size / project info for progress output.
+    // 3. Initialize migration.
     let (total_bytes, project_count) = crate::config::storage_usage(&source).unwrap_or((0, 0));
-
-    // 3b. Create the migration lock BEFORE any side effects.
-    //     From this point forward, any interruption leaves the lock in place
-    //     so the next invocation detects it and prints recovery guidance.
     create_initial_lock(source.clone(), dest.clone(), total_bytes)?;
 
     emit_progress(
@@ -264,7 +271,7 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
 
     // 4. Stop daemon.
     stop_daemon();
-    update_lock_state("daemon_stopped")?;
+    update_lock_state(MigrationState::DaemonStopped)?;
 
     emit_progress(
         format,
@@ -273,12 +280,12 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
     );
 
     // 5. Copy data to destination.
-    update_lock_state("copying")?;
+    update_lock_state(MigrationState::Copying)?;
     copy_storage(&source, &dest, format)?;
 
-    // 6. Swap config.
+    // 6. Swap config and verify.
     swap_config(&dest, is_default)?;
-    update_lock_state("swapped")?;
+    update_lock_state(MigrationState::Swapped)?;
 
     emit_progress(
         format,
@@ -286,7 +293,6 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
         "Updating configuration...",
     );
 
-    // 7. Verify destination.
     verify_destination(&dest)?;
 
     emit_progress(
@@ -295,7 +301,7 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
         "Verifying new location...",
     );
 
-    // 8. Restart daemon.
+    // 7. Restart daemon and cleanup.
     restart_daemon()?;
 
     emit_progress(
@@ -304,10 +310,9 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
         "Restarting daemon...",
     );
 
-    // 9. Rename old directory to .migrated.
     let backup_path = cleanup_old(&source)?;
-
     let elapsed = start.elapsed().as_secs_f64();
+
     emit_progress(
         format,
         &serde_json::json!({
@@ -318,10 +323,41 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
         &format!("Done. Previous data saved at {}", backup_path.display()),
     );
 
-    // 10. Remove the lock now that migration is fully complete.
+    // 8. Remove the lock now that migration is fully complete.
     remove_lock()?;
 
     Ok(())
+}
+
+/// Handles detection and reporting of interrupted migrations.
+/// Returns true if a migration was interrupted (and we've reported it).
+fn handle_interrupted_migration() -> Result<bool, UnfError> {
+    let lock_exists = lock_path().map(|p| p.exists()).unwrap_or(false);
+    if !lock_exists {
+        return Ok(false);
+    }
+
+    let source_hint = lock_path()
+        .ok()
+        .and_then(|p| fs::read(&p).ok())
+        .and_then(|b| serde_json::from_slice::<MigrationLock>(&b).ok())
+        .map(|l| l.source.display().to_string())
+        .unwrap_or_else(|| "~/.unfudged".to_string());
+
+    println!("Migration was interrupted.");
+    println!(
+        "Your data is safe at the original location: {}",
+        source_hint
+    );
+    println!("Run `unf config --move-storage <DEST>` to retry after removing the lock file, or");
+    println!(
+        "delete {} to clear the lock and proceed.",
+        lock_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    );
+
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -384,55 +420,87 @@ pub fn resolve_destination(dest_arg: &str) -> Result<(PathBuf, bool), UnfError> 
 ///
 /// Returns `UnfError::InvalidArgument` with a "No changes made" message.
 pub fn preflight_checks(source: &Path, dest: &Path, force: bool) -> Result<(), UnfError> {
-    // Dest must not be the same as source.
+    check_dest_not_source(dest, source)?;
+    check_dest_not_inside_source(dest, source)?;
+    check_dest_empty_or_force(dest, force)?;
+    check_disk_space(source, dest)?;
+    Ok(())
+}
+
+/// Checks that destination is not the same as source.
+fn check_dest_not_source(dest: &Path, source: &Path) -> Result<(), UnfError> {
     if dest == source {
         return Err(UnfError::InvalidArgument(
             "Destination is the same as the current storage location. No changes made.".to_string(),
         ));
     }
+    Ok(())
+}
 
-    // Dest must not be inside source (would cause infinite recursive copy).
-    if let Ok(dest_canonical) = dest.canonicalize() {
-        if let Ok(source_canonical) = source.canonicalize() {
-            if dest_canonical.starts_with(&source_canonical) {
-                return Err(UnfError::InvalidArgument(format!(
-                    "{} is inside the current storage directory. No changes made.",
-                    dest.display()
-                )));
-            }
+/// Checks that destination is not inside source (would cause recursive copy).
+fn check_dest_not_inside_source(dest: &Path, source: &Path) -> Result<(), UnfError> {
+    // Try canonical paths first.
+    if let (Ok(dest_canonical), Ok(source_canonical)) = (dest.canonicalize(), source.canonicalize())
+    {
+        if dest_canonical.starts_with(&source_canonical) {
+            return Err(UnfError::InvalidArgument(format!(
+                "{} is inside the current storage directory. No changes made.",
+                dest.display()
+            )));
         }
     } else if dest.starts_with(source) {
-        // Destination doesn't exist yet but its non-existent path is a child of source.
+        // Destination doesn't exist yet but its path is a child of source.
         return Err(UnfError::InvalidArgument(format!(
             "{} is inside the current storage directory. No changes made.",
             dest.display()
         )));
     }
+    Ok(())
+}
 
-    // Destination must be empty or not exist (unless --force).
-    if dest.exists() {
-        let is_empty = fs::read_dir(dest)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-        if !is_empty && !force {
-            return Err(UnfError::InvalidArgument(format!(
-                "{} already contains data. Use --force to overwrite. No changes made.",
-                dest.display()
-            )));
-        }
-        if !is_empty && force {
-            // Remove existing data before migration
-            fs::remove_dir_all(dest).map_err(|e| {
-                UnfError::InvalidArgument(format!(
-                    "Failed to remove existing data at {}: {}. No changes made.",
-                    dest.display(),
-                    e
-                ))
-            })?;
-        }
+/// Checks that destination is empty or allows force overwrite.
+fn check_dest_empty_or_force(dest: &Path, force: bool) -> Result<(), UnfError> {
+    if !dest.exists() {
+        return Ok(());
     }
 
-    // Check parent directory is writable (we will create dest inside it).
+    let is_empty = fs::read_dir(dest)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(false);
+
+    if is_empty {
+        return Ok(());
+    }
+
+    if !force {
+        return Err(UnfError::InvalidArgument(format!(
+            "{} already contains data. Use --force to overwrite. No changes made.",
+            dest.display()
+        )));
+    }
+
+    // Force: remove existing data before migration.
+    fs::remove_dir_all(dest).map_err(|e| {
+        UnfError::InvalidArgument(format!(
+            "Failed to remove existing data at {}: {}. No changes made.",
+            dest.display(),
+            e
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Checks that sufficient disk space is available.
+fn check_disk_space(source: &Path, dest: &Path) -> Result<(), UnfError> {
+    let source_size = crate::config::storage_usage(source)
+        .map(|(bytes, _)| bytes)
+        .unwrap_or(0);
+
+    if source_size == 0 {
+        return Ok(());
+    }
+
     let parent = dest.parent().unwrap_or(Path::new("/"));
     let parent_to_check = if parent.exists() {
         parent
@@ -440,26 +508,15 @@ pub fn preflight_checks(source: &Path, dest: &Path, force: bool) -> Result<(), U
         Path::new("/tmp")
     };
 
-    // Disk space check using fs2.
-    let source_size = crate::config::storage_usage(source)
-        .map(|(bytes, _)| bytes)
-        .unwrap_or(0);
-
-    if source_size > 0 {
-        match available_space(parent_to_check) {
-            Ok(avail) if avail < source_size => {
-                return Err(UnfError::InvalidArgument(format!(
-                    "Not enough space at {}. Need {}, have {} available. No changes made.",
-                    dest.display(),
-                    crate::cli::format_size(source_size),
-                    crate::cli::format_size(avail),
-                )));
-            }
-            _ => {} // Either enough space or could not determine — proceed.
-        }
+    match available_space(parent_to_check) {
+        Ok(avail) if avail < source_size => Err(UnfError::InvalidArgument(format!(
+            "Not enough space at {}. Need {}, have {} available. No changes made.",
+            dest.display(),
+            crate::cli::format_size(source_size),
+            crate::cli::format_size(avail),
+        ))),
+        _ => Ok(()), // Either enough space or could not determine — proceed.
     }
-
-    Ok(())
 }
 
 /// Returns available disk space in bytes for the filesystem containing `path`.
@@ -501,17 +558,16 @@ fn stop_daemon() {
     }
 
     // Clean up PID file.
-    let _ = fs::remove_file(&global_pid_path);
+    let pid_file = PidFile::new(global_pid_path);
+    let _ = pid_file.remove();
 }
 
 /// Reads a PID from a file and returns it if the process is alive.
 fn read_live_pid(pid_path: &Path) -> Option<u32> {
-    let content = fs::read_to_string(pid_path).ok()?;
-    let pid: u32 = content.trim().parse().ok()?;
-    if crate::process::is_alive(pid) {
-        Some(pid)
-    } else {
-        None
+    let pid_file = PidFile::new(pid_path.to_path_buf());
+    match pid_file.read() {
+        Ok(Some(pid)) if crate::process::is_alive(pid) => Some(pid),
+        _ => None,
     }
 }
 
@@ -538,7 +594,14 @@ fn wait_for_exit(pid: u32, timeout_ms: u64) {
 ///
 /// Emits per-project progress events.
 fn copy_storage(source: &Path, dest: &Path, format: OutputFormat) -> Result<(), UnfError> {
-    // Ensure destination parent exists.
+    ensure_dest_parent(dest)?;
+    perform_copy(source, dest)?;
+    emit_project_progress(dest, format);
+    Ok(())
+}
+
+/// Ensures the parent directory of `dest` exists.
+fn ensure_dest_parent(dest: &Path) -> Result<(), UnfError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             UnfError::Config(format!(
@@ -548,58 +611,58 @@ fn copy_storage(source: &Path, dest: &Path, format: OutputFormat) -> Result<(), 
             ))
         })?;
     }
+    Ok(())
+}
 
-    // Try a same-filesystem rename for speed (only works before dest exists).
-    // We do NOT attempt rename here because we need the source preserved
-    // for safety: copy-then-swap is the contract.
-    // Fall straight through to file-by-file copy.
+/// Performs the actual recursive copy of source to destination.
+fn perform_copy(source: &Path, dest: &Path) -> Result<(), UnfError> {
     copy_dir_recursive(source, dest, SKIP_FILES, SKIP_EXTENSIONS).map_err(|e| {
-        // If copy fails, destination may be partially written. Source is intact.
         UnfError::Config(format!(
             "Copy failed: {}. Your data is safe at {}",
             e,
             source.display()
         ))
-    })?;
+    })
+}
 
-    // Emit per-project progress after the copy (registry read post-copy).
-    if let Ok(registry) = crate::registry::load() {
-        for entry in &registry.projects {
-            let project_name = entry
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| entry.path.display().to_string());
+/// Emits per-project progress after the copy.
+fn emit_project_progress(dest: &Path, format: OutputFormat) {
+    let Ok(registry) = crate::registry::load() else {
+        return;
+    };
 
-            // Size of this project's data in the new location.
-            let project_size = project_size_at_dest(&entry.path, dest).unwrap_or(0);
+    for entry in &registry.projects {
+        let project_name = entry
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| entry.path.display().to_string());
 
-            emit_progress(
-                format,
-                &serde_json::json!({
-                    "event": "project_start",
-                    "project": project_name,
-                    "bytes": project_size,
-                }),
-                &format!(
-                    "  {} ({})",
-                    project_name,
-                    crate::cli::format_size(project_size)
-                ),
-            );
+        let project_size = project_size_at_dest(&entry.path, dest).unwrap_or(0);
 
-            emit_progress(
-                format,
-                &serde_json::json!({
-                    "event": "project_done",
-                    "project": project_name,
-                }),
-                "",
-            );
-        }
+        emit_progress(
+            format,
+            &serde_json::json!({
+                "event": "project_start",
+                "project": project_name,
+                "bytes": project_size,
+            }),
+            &format!(
+                "  {} ({})",
+                project_name,
+                crate::cli::format_size(project_size)
+            ),
+        );
+
+        emit_progress(
+            format,
+            &serde_json::json!({
+                "event": "project_done",
+                "project": project_name,
+            }),
+            "",
+        );
     }
-
-    Ok(())
 }
 
 /// Estimates the size of one project's data at the destination.
@@ -635,34 +698,55 @@ pub fn copy_dir_recursive(
 
     for entry in fs::read_dir(src)? {
         let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let src_path = entry.path();
-        let dst_path = dst.join(&name);
-
-        // Skip runtime files by exact name.
-        if skip_files.iter().any(|&s| s == name_str.as_ref()) {
-            continue;
-        }
-
-        // Skip by extension.
-        if let Some(ext) = src_path.extension() {
-            let ext_str = ext.to_string_lossy();
-            if skip_extensions.iter().any(|&s| s == ext_str.as_ref()) {
-                continue;
-            }
-        }
-
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path, skip_files, skip_extensions)?;
-        } else if metadata.is_file() {
-            fs::copy(&src_path, &dst_path)?;
-        }
-        // Symlinks are intentionally skipped (UNFUDGED stores no symlinks).
+        process_copy_entry(&entry, dst, skip_files, skip_extensions)?;
     }
 
     Ok(())
+}
+
+/// Processes a single entry during recursive copy, dispatching based on file type.
+fn process_copy_entry(
+    entry: &fs::DirEntry,
+    dst_base: &Path,
+    skip_files: &[&str],
+    skip_extensions: &[&str],
+) -> std::io::Result<()> {
+    let name = entry.file_name();
+    let name_str = name.to_string_lossy();
+
+    // Skip by exact filename.
+    if skip_files.iter().any(|&s| s == name_str.as_ref()) {
+        return Ok(());
+    }
+
+    let src_path = entry.path();
+
+    // Skip by extension.
+    if should_skip_by_extension(&src_path, skip_extensions) {
+        return Ok(());
+    }
+
+    let dst_path = dst_base.join(&name);
+    let metadata = entry.metadata()?;
+
+    if metadata.is_dir() {
+        copy_dir_recursive(&src_path, &dst_path, skip_files, skip_extensions)?;
+    } else if metadata.is_file() {
+        fs::copy(&src_path, &dst_path)?;
+    }
+    // Symlinks are intentionally skipped (UNFUDGED stores no symlinks).
+
+    Ok(())
+}
+
+/// Checks if a file should be skipped based on its extension.
+fn should_skip_by_extension(path: &Path, skip_extensions: &[&str]) -> bool {
+    path.extension()
+        .map(|ext| {
+            let ext_str = ext.to_string_lossy();
+            skip_extensions.iter().any(|&s| s == ext_str.as_ref())
+        })
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -708,41 +792,67 @@ pub fn swap_config(dest: &Path, is_default: bool) -> Result<(), UnfError> {
 ///
 /// Returns `UnfError::Config` if verification fails.
 pub fn verify_destination(dest: &Path) -> Result<(), UnfError> {
-    // Check projects.json is readable.
+    verify_projects_json(dest)?;
+    verify_database(dest)?;
+    Ok(())
+}
+
+/// Verifies that `projects.json` is readable at the destination.
+fn verify_projects_json(dest: &Path) -> Result<(), UnfError> {
     let projects_json = dest.join("projects.json");
-    if projects_json.exists() {
-        fs::read(&projects_json).map_err(|e| {
-            UnfError::Config(format!(
-                "Verification failed: cannot read projects.json at {}: {}. Your data is safe at {}",
-                dest.display(),
-                e,
-                dest.display()
-            ))
-        })?;
+    if !projects_json.exists() {
+        return Ok(());
     }
 
-    // Attempt to open one SQLite database.
-    if let Ok(registry) = crate::registry::load() {
-        for entry in &registry.projects {
-            let relative = entry
-                .path
-                .to_string_lossy()
-                .trim_start_matches('/')
-                .to_owned();
-            let db_path = dest.join("data").join(&relative).join("db.sqlite3");
-            if db_path.exists() {
-                rusqlite::Connection::open(&db_path).map_err(|e| {
-                    UnfError::Config(format!(
-                        "Verification failed: cannot open database at {}: {}. Your data is safe at {}",
-                        db_path.display(),
-                        e,
-                        dest.display()
-                    ))
-                })?;
-                break; // One successful open is enough.
-            }
+    fs::read(&projects_json).map_err(|e| {
+        UnfError::Config(format!(
+            "Verification failed: cannot read projects.json at {}: {}. Your data is safe at {}",
+            dest.display(),
+            e,
+            dest.display()
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Verifies that at least one SQLite database can be opened at the destination.
+fn verify_database(dest: &Path) -> Result<(), UnfError> {
+    let registry = match crate::registry::load() {
+        Ok(r) => r,
+        Err(_) => return Ok(()), // No registry — nothing to verify.
+    };
+
+    for entry in &registry.projects {
+        if try_open_database(dest, &entry.path).is_ok() {
+            return Ok(());
         }
     }
+
+    Ok(())
+}
+
+/// Attempts to open one database for a project.
+/// Returns Ok(()) if the database exists and can be opened, or if no database exists.
+fn try_open_database(dest: &Path, project_path: &Path) -> Result<(), UnfError> {
+    let relative = project_path
+        .to_string_lossy()
+        .trim_start_matches('/')
+        .to_owned();
+    let db_path = dest.join("data").join(&relative).join("db.sqlite3");
+
+    if !db_path.exists() {
+        return Ok(());
+    }
+
+    rusqlite::Connection::open(&db_path).map_err(|e| {
+        UnfError::Config(format!(
+            "Verification failed: cannot open database at {}: {}. Your data is safe at {}",
+            db_path.display(),
+            e,
+            dest.display()
+        ))
+    })?;
 
     Ok(())
 }
@@ -794,21 +904,7 @@ pub fn restart_daemon() -> Result<(), UnfError> {
 ///
 /// Returns `UnfError::Config` if the rename fails.
 pub fn cleanup_old(source: &Path) -> Result<PathBuf, UnfError> {
-    let migrated_base = {
-        let name = source.to_string_lossy();
-        PathBuf::from(format!("{}.migrated", name))
-    };
-
-    let migrated_path = if migrated_base.exists() {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        PathBuf::from(format!("{}.{}", migrated_base.display(), ts))
-    } else {
-        migrated_base
-    };
-
+    let migrated_path = compute_migrated_path(source);
     fs::rename(source, &migrated_path).map_err(|e| {
         UnfError::Config(format!(
             "Failed to rename old storage directory: {}. Your data is safe at {}",
@@ -816,8 +912,23 @@ pub fn cleanup_old(source: &Path) -> Result<PathBuf, UnfError> {
             source.display()
         ))
     })?;
-
     Ok(migrated_path)
+}
+
+/// Computes the target path for the migrated directory.
+/// If `.migrated` exists, appends a timestamp to ensure uniqueness.
+fn compute_migrated_path(source: &Path) -> PathBuf {
+    let migrated_base = PathBuf::from(format!("{}.migrated", source.to_string_lossy()));
+
+    if !migrated_base.exists() {
+        return migrated_base;
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    PathBuf::from(format!("{}.{}", migrated_base.display(), ts))
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,6 +1250,81 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // MigrationState state machine
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn migration_state_display() {
+        assert_eq!(MigrationState::Preflight.to_string(), "preflight");
+        assert_eq!(MigrationState::DaemonStopped.to_string(), "daemon_stopped");
+        assert_eq!(MigrationState::Copying.to_string(), "copying");
+        assert_eq!(MigrationState::Swapped.to_string(), "swapped");
+    }
+
+    #[test]
+    fn migration_state_next_transitions() {
+        // Preflight -> DaemonStopped
+        let next = MigrationState::Preflight.next();
+        assert_eq!(next, Some(MigrationState::DaemonStopped));
+
+        // DaemonStopped -> Copying
+        let next = MigrationState::DaemonStopped.next();
+        assert_eq!(next, Some(MigrationState::Copying));
+
+        // Copying -> Swapped
+        let next = MigrationState::Copying.next();
+        assert_eq!(next, Some(MigrationState::Swapped));
+
+        // Swapped -> None (final state)
+        let next = MigrationState::Swapped.next();
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn migration_state_serialization() {
+        // Verify that serialization produces the right string keys
+        let preflight = serde_json::to_value(MigrationState::Preflight).unwrap();
+        assert_eq!(preflight, serde_json::json!("preflight"));
+
+        let daemon_stopped = serde_json::to_value(MigrationState::DaemonStopped).unwrap();
+        assert_eq!(daemon_stopped, serde_json::json!("daemon_stopped"));
+
+        let copying = serde_json::to_value(MigrationState::Copying).unwrap();
+        assert_eq!(copying, serde_json::json!("copying"));
+
+        let swapped = serde_json::to_value(MigrationState::Swapped).unwrap();
+        assert_eq!(swapped, serde_json::json!("swapped"));
+    }
+
+    #[test]
+    fn migration_state_deserialization() {
+        // Verify that deserialization from string keys works
+        let preflight: MigrationState =
+            serde_json::from_value(serde_json::json!("preflight")).unwrap();
+        assert_eq!(preflight, MigrationState::Preflight);
+
+        let daemon_stopped: MigrationState =
+            serde_json::from_value(serde_json::json!("daemon_stopped")).unwrap();
+        assert_eq!(daemon_stopped, MigrationState::DaemonStopped);
+
+        let copying: MigrationState = serde_json::from_value(serde_json::json!("copying")).unwrap();
+        assert_eq!(copying, MigrationState::Copying);
+
+        let swapped: MigrationState = serde_json::from_value(serde_json::json!("swapped")).unwrap();
+        assert_eq!(swapped, MigrationState::Swapped);
+    }
+
+    #[test]
+    fn migration_state_equality_and_copy() {
+        // Verify that MigrationState is Copy and Eq
+        let state1 = MigrationState::Copying;
+        let state2 = state1; // Copy semantics
+        assert_eq!(state1, state2);
+        assert_eq!(state1, MigrationState::Copying);
+        assert_ne!(state1, MigrationState::Swapped);
+    }
+
+    // -----------------------------------------------------------------------
     // MigrationLock helpers
     // -----------------------------------------------------------------------
 
@@ -1202,7 +1388,7 @@ mod tests {
             source: PathBuf::from("/old/storage"),
             destination: PathBuf::from("/new/storage"),
             started_at: "2026-03-24T10:30:00Z".to_string(),
-            state: "copying".to_string(),
+            state: MigrationState::Copying,
             total_bytes: 1024,
             copied_bytes: 512,
             completed_projects: vec!["project-a".to_string()],
@@ -1216,7 +1402,7 @@ mod tests {
 
         assert_eq!(read_back.source, PathBuf::from("/old/storage"));
         assert_eq!(read_back.destination, PathBuf::from("/new/storage"));
-        assert_eq!(read_back.state, "copying");
+        assert_eq!(read_back.state, MigrationState::Copying);
         assert_eq!(read_back.total_bytes, 1024);
         assert_eq!(read_back.copied_bytes, 512);
         assert_eq!(read_back.completed_projects, vec!["project-a"]);
@@ -1238,7 +1424,7 @@ mod tests {
             source: PathBuf::from("/src"),
             destination: PathBuf::from("/dst"),
             started_at: "2026-03-24T10:30:00Z".to_string(),
-            state: "preflight".to_string(),
+            state: MigrationState::Preflight,
             total_bytes: 0,
             copied_bytes: 0,
             completed_projects: Vec::new(),
@@ -1269,7 +1455,11 @@ mod tests {
         let bytes = fs::read(&path).expect("read lock");
         let lock: MigrationLock = serde_json::from_slice(&bytes).expect("deserialize");
 
-        assert_eq!(lock.state, "preflight", "initial state must be preflight");
+        assert_eq!(
+            lock.state,
+            MigrationState::Preflight,
+            "initial state must be preflight"
+        );
         assert_eq!(lock.source, PathBuf::from("/old/data"));
         assert_eq!(lock.destination, PathBuf::from("/new/data"));
         assert_eq!(lock.total_bytes, 8192);
