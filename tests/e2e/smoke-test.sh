@@ -402,8 +402,8 @@ unf unwatch || fail "Unwatch" "unf unwatch failed"
 sleep 1
 
 STATUS=$(unf status) || true
-if ! echo "$STATUS" | grep -qi "stopped"; then
-  fail "Unwatch" "Status should show stopped after unwatch:\n$STATUS"
+if ! echo "$STATUS" | grep -qi "not being watched\|not currently active"; then
+  fail "Unwatch" "Status should show not watched after unwatch:\n$STATUS"
 fi
 
 unf watch || fail "Re-watch" "unf watch (re-watch) failed"
