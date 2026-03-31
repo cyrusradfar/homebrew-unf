@@ -418,7 +418,8 @@ pub fn run_sentinel() -> Result<(), UnfError> {
 
         // 3. Data freshness check (every Nth tick)
         tick_count += 1;
-        if tick_count.is_multiple_of(FRESHNESS_CHECK_INTERVAL) {
+        #[allow(clippy::manual_is_multiple_of)]
+        if tick_count % FRESHNESS_CHECK_INTERVAL == 0 {
             if let Err(e) = check_data_freshness(&mut daemon_child) {
                 eprintln!("sentinel: freshness check error: {}", e);
             }
