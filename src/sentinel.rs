@@ -798,12 +798,14 @@ pub fn ensure_sentinel_running() -> Result<(), UnfError> {
 
 /// Kills the sentinel process if running.
 pub fn kill_sentinel() -> Result<(), UnfError> {
+    let my_pid = std::process::id();
+
+    // Kill sentinel from PID file
     let pid_path = storage::sentinel_pid_path()?;
     let pid_file = PidFile::new(pid_path);
     if let Ok(Some(pid)) = pid_file.read() {
         if crate::process::is_alive(pid) {
             let _ = crate::process::terminate(pid);
-            // Wait briefly for exit
             for _ in 0..20 {
                 if !crate::process::is_alive(pid) {
                     break;
@@ -813,6 +815,30 @@ pub fn kill_sentinel() -> Result<(), UnfError> {
         }
     }
     let _ = pid_file.remove();
+
+    // Kill any remaining sentinel processes not tracked by PID file.
+    // This prevents duplicate sentinels after restart (e.g. from launchd or stale processes).
+    // Skip in test environments (UNF_HOME set) to avoid killing other tests' sentinels.
+    if env::var("UNF_HOME").is_err() {
+        if let Ok(output) = std::process::Command::new("pgrep")
+            .args(["-f", "unf __sentinel"])
+            .output()
+        {
+            if output.status.success() {
+                let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter_map(|l| l.trim().parse::<u32>().ok())
+                    .filter(|&p| p != my_pid)
+                    .collect();
+                for pid in pids {
+                    let _ = crate::process::terminate(pid);
+                }
+                // Brief wait for all to exit
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+
     Ok(())
 }
 
