@@ -31,17 +31,33 @@ struct StatusOutput {
     newest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_mode: Option<u8>,
     auto_restart: bool,
+}
+
+/// Status modes for unwatched directories.
+///
+/// Mode 0: Never watched — directory has no history in the registry.
+/// Mode 1: Previously watched but inactive — directory was registered but daemon isn't active.
+/// Mode 2: Actively being watched — daemon is recording changes.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusMode {
+    /// Directory has never been watched.
+    NeverWatched = 0,
+    /// Directory was watched before but is currently inactive.
+    PreviouslyWatched = 1,
+    /// Directory is currently being watched.
+    ActivelyWatching = 2,
 }
 
 /// Executes the `unf status` command.
 ///
-/// Checks if `.unfudged/` exists in the current directory, verifies the daemon
-/// is alive, and prints status information including:
-/// - Recording duration
-/// - Snapshot count
-/// - Tracked file count
-/// - Total store size (human-readable format)
+/// Handles three modes for unwatched directories:
+/// - Mode 0 (Never watched): Directory has no registry entry
+/// - Mode 1 (Previously watched): Directory was registered but daemon isn't active
+/// - Mode 2 (Actively watching): Daemon is recording changes
 ///
 /// # Arguments
 ///
@@ -50,51 +66,73 @@ struct StatusOutput {
 ///
 /// # Errors
 ///
-/// Returns an error if the daemon PID file is malformed or database queries fail.
-/// Returns `Ok(())` if `.unfudged/` doesn't exist (printed message instead).
+/// Returns an error only if storage path cannot be resolved or database queries fail.
+/// Returns `Ok(())` for all unwatched directory modes (shows appropriate message).
 pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
-    // Step 1: Check if storage dir exists
+    // Step 1: Resolve storage dir (may or may not exist yet)
     let storage_dir = storage::resolve_storage_dir(project_root)?;
-    if !storage_dir.exists() {
-        return Err(UnfError::NotInitialized);
-    }
 
     // Query auto-restart state (used in all output paths)
     let auto_restart = crate::autostart::is_installed().unwrap_or(false);
 
-    // Step 2: Check if daemon is alive (global daemon first, then per-project fallback)
-    let is_recording = is_daemon_watching_project(project_root, &storage_dir);
+    // Determine the status mode
+    let canonical_project_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
 
-    if !is_recording {
-        // Not recording — show stopped/crashed message
-        let stopped_path = storage::stopped_path(&storage_dir);
-        let reason = if stopped_path.exists() {
-            "daemon_stopped"
-        } else {
-            "daemon_crashed"
-        };
+    let mode = determine_status_mode(project_root, &canonical_project_root, &storage_dir);
 
-        let output = StatusOutput {
-            recording: false,
-            since: None,
-            snapshots: None,
-            files_tracked: None,
-            store_bytes: None,
-            newest: None,
-            reason: Some(reason.to_string()),
-            auto_restart,
-        };
+    // Step 2: Handle each mode
+    match mode {
+        StatusMode::NeverWatched => {
+            // Mode 0: Directory has never been watched
+            let output = StatusOutput {
+                recording: false,
+                since: None,
+                snapshots: None,
+                files_tracked: None,
+                store_bytes: None,
+                newest: None,
+                reason: Some("never_watched".to_string()),
+                status_mode: Some(0),
+                auto_restart,
+            };
 
-        if format == OutputFormat::Json {
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        } else if stopped_path.exists() {
-            println!("Watching stopped.");
-            println!("Run 'unf watch' to resume. Your history is safe.");
-        } else {
-            println!("Watching stopped unexpectedly.");
-            println!("Run 'unf watch' to resume. Your history is safe.");
+            if format == OutputFormat::Json {
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                println!("This directory is not being watched.");
+                println!("Run 'unf watch' to start recording changes.");
+            }
+            return Ok(());
         }
-        return Ok(());
+
+        StatusMode::PreviouslyWatched => {
+            // Mode 1: Directory was watched but is currently inactive
+            let output = StatusOutput {
+                recording: false,
+                since: None,
+                snapshots: None,
+                files_tracked: None,
+                store_bytes: None,
+                newest: None,
+                reason: Some("previously_watched_inactive".to_string()),
+                status_mode: Some(1),
+                auto_restart,
+            };
+
+            if format == OutputFormat::Json {
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                println!("This directory was previously watched but is not currently active.");
+                println!("Run 'unf watch' to resume recording. Your history is safe.");
+            }
+            return Ok(());
+        }
+
+        StatusMode::ActivelyWatching => {
+            // Mode 2: Actively watching — continue to stats display
+        }
     }
 
     // Step 3: Open engine and query stats
@@ -118,6 +156,7 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         store_bytes: Some(store_size),
         newest: newest_time,
         reason: None,
+        status_mode: Some(2),
         auto_restart,
     };
 
@@ -135,6 +174,37 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     }
 
     Ok(())
+}
+
+/// Determines the status mode for a directory.
+///
+/// Mode 0 (NeverWatched): Directory is not in the registry and storage doesn't exist.
+/// Mode 1 (PreviouslyWatched): Directory is in the registry but daemon isn't watching.
+/// Mode 2 (ActivelyWatching): Daemon is alive and actively watching this directory.
+fn determine_status_mode(
+    project_root: &Path,
+    canonical_project_root: &Path,
+    storage_dir: &Path,
+) -> StatusMode {
+    // Check if daemon is currently watching
+    if is_daemon_watching_project(project_root, storage_dir) {
+        return StatusMode::ActivelyWatching;
+    }
+
+    // Daemon is not active. Now check if directory was ever registered.
+    if let Ok(registry) = crate::registry::load() {
+        if registry
+            .projects
+            .iter()
+            .any(|p| p.path == canonical_project_root)
+        {
+            // Found in registry but daemon not watching → Mode 1
+            return StatusMode::PreviouslyWatched;
+        }
+    }
+
+    // Not in registry → Mode 0
+    StatusMode::NeverWatched
 }
 
 /// Checks if the daemon is actively watching this project.
@@ -306,5 +376,62 @@ mod tests {
         // When there's no global PID file and no per-project PID, should return false
         let temp = tempfile::TempDir::new().expect("create temp");
         assert!(!is_daemon_watching_project(temp.path(), temp.path()));
+    }
+
+    #[test]
+    fn determine_mode_never_watched() {
+        // Test Mode 0: Directory never registered, daemon not watching
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+
+        let temp = tempfile::TempDir::new().expect("create temp");
+        std::env::set_var("HOME", temp.path());
+
+        let project_dir = temp.path().join("project");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+
+        let canonical = project_dir.canonicalize().expect("canonicalize");
+        let storage_dir = temp.path().join(".unfudged").join("data").join("project");
+
+        let mode = determine_status_mode(&project_dir, &canonical, &storage_dir);
+
+        assert_eq!(mode, StatusMode::NeverWatched);
+
+        // Cleanup
+        let original_home = std::env::var("HOME").ok();
+        if let Some(h) = original_home {
+            std::env::set_var("HOME", h);
+        }
+    }
+
+    #[test]
+    fn determine_mode_previously_watched() {
+        // Test Mode 1: Directory registered but daemon not watching
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+
+        let temp = tempfile::TempDir::new().expect("create temp");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        // Create project and registry directories
+        let project_dir = temp.path().join("project");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        std::fs::create_dir_all(temp.path().join(".unfudged")).expect("create .unfudged");
+
+        // Register the project
+        crate::registry::register_project(&project_dir).expect("register project");
+
+        let canonical = project_dir.canonicalize().expect("canonicalize");
+        let storage_dir = temp.path().join(".unfudged").join("data").join("project");
+
+        let mode = determine_status_mode(&project_dir, &canonical, &storage_dir);
+
+        assert_eq!(mode, StatusMode::PreviouslyWatched);
+
+        // Cleanup
+        if let Some(h) = original_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 }

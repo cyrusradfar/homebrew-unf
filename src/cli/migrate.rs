@@ -251,7 +251,9 @@ pub fn run(dest_arg: &str, force: bool, format: OutputFormat) -> Result<(), UnfE
     preflight_checks(&source, &dest, force)?;
 
     // 3. Initialize migration.
-    let (total_bytes, project_count) = crate::config::storage_usage(&source).unwrap_or((0, 0));
+    let total_bytes = crate::config::storage_usage(&source).unwrap_or(0);
+    let registry = crate::registry::load().unwrap_or_default();
+    let project_count = registry.projects.len();
     create_initial_lock(source.clone(), dest.clone(), total_bytes)?;
 
     emit_progress(
@@ -493,9 +495,7 @@ fn check_dest_empty_or_force(dest: &Path, force: bool) -> Result<(), UnfError> {
 
 /// Checks that sufficient disk space is available.
 fn check_disk_space(source: &Path, dest: &Path) -> Result<(), UnfError> {
-    let source_size = crate::config::storage_usage(source)
-        .map(|(bytes, _)| bytes)
-        .unwrap_or(0);
+    let source_size = crate::config::storage_usage(source).unwrap_or(0);
 
     if source_size == 0 {
         return Ok(());
@@ -673,9 +673,7 @@ fn project_size_at_dest(project_path: &Path, dest_root: &Path) -> Option<u64> {
         .trim_start_matches('/')
         .to_owned();
     let project_storage = dest_root.join("data").join(relative);
-    crate::config::storage_usage(&project_storage)
-        .map(|(b, _)| b)
-        .ok()
+    crate::config::storage_usage(&project_storage).ok()
 }
 
 /// Recursively copies `src` into `dst`, skipping runtime files.

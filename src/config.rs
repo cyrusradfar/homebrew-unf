@@ -18,11 +18,6 @@ const APP_NAME: &str = "unfudged";
 /// Config file name within the application config directory.
 const CONFIG_FILE: &str = "config.json";
 
-/// Subdirectory under storage root that contains per-project data.
-///
-/// Each immediate child of this directory is counted as one project.
-const DATA_SUBDIR: &str = "data";
-
 /// User configuration for UNFUDGED.
 ///
 /// Pure data struct — no behaviour, no I/O. Serializes to/from JSON via serde.
@@ -153,49 +148,27 @@ pub fn save(config: &Config) -> Result<(), UnfError> {
 /// Calculates disk usage under a storage root.
 ///
 /// Walks the entire directory tree under `storage_dir`, summing file sizes.
-/// Counts immediate child directories of `storage_dir/data/` as projects
-/// (each one mirrors a watched project root).
+/// Returns the total bytes used.
 ///
-/// Returns `(total_bytes, project_count)`.
+/// Note: Project count should be obtained from the registry (via `registry::load()`)
+/// to match the authoritative list from `unf list`, not from filesystem directories.
 ///
 /// # Errors
 ///
 /// Returns [`UnfError::Config`] if the directory cannot be read.
-pub fn storage_usage(storage_dir: &Path) -> Result<(u64, usize), UnfError> {
-    let mut total_bytes: u64 = 0;
-    let mut project_count: usize = 0;
-
-    // Count projects: each subdirectory under data/ is one project.
-    let data_dir = storage_dir.join(DATA_SUBDIR);
-    if data_dir.exists() {
-        let entries = fs::read_dir(&data_dir).map_err(|e| {
-            UnfError::Config(format!(
-                "Failed to read data directory {}: {}",
-                data_dir.display(),
-                e
-            ))
-        })?;
-        for entry in entries {
-            let entry = entry
-                .map_err(|e| UnfError::Config(format!("Failed to read directory entry: {}", e)))?;
-            if entry.path().is_dir() {
-                project_count += 1;
-            }
-        }
-    }
-
+pub fn storage_usage(storage_dir: &Path) -> Result<u64, UnfError> {
     // Sum all file sizes recursively under storage_dir.
     if storage_dir.exists() {
-        total_bytes = sum_dir_bytes(storage_dir).map_err(|e| {
+        sum_dir_bytes(storage_dir).map_err(|e| {
             UnfError::Config(format!(
                 "Failed to calculate size of {}: {}",
                 storage_dir.display(),
                 e
             ))
-        })?;
+        })
+    } else {
+        Ok(0)
     }
-
-    Ok((total_bytes, project_count))
 }
 
 // ---------------------------------------------------------------------------
@@ -414,20 +387,18 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn storage_usage_empty_dir_returns_zeros() {
+    fn storage_usage_empty_dir_returns_zero() {
         let tmp = TempDir::new().expect("create temp dir");
-        let (bytes, projects) = storage_usage(tmp.path()).expect("storage_usage");
+        let bytes = storage_usage(tmp.path()).expect("storage_usage");
         assert_eq!(bytes, 0);
-        assert_eq!(projects, 0);
     }
 
     #[test]
-    fn storage_usage_nonexistent_dir_returns_zeros() {
+    fn storage_usage_nonexistent_dir_returns_zero() {
         let tmp = TempDir::new().expect("create temp dir");
         let nonexistent = tmp.path().join("does_not_exist");
-        let (bytes, projects) = storage_usage(&nonexistent).expect("storage_usage");
+        let bytes = storage_usage(&nonexistent).expect("storage_usage");
         assert_eq!(bytes, 0);
-        assert_eq!(projects, 0);
     }
 
     #[test]
@@ -438,38 +409,36 @@ mod tests {
         fs::write(tmp.path().join("a.txt"), b"hello").unwrap(); // 5 bytes
         fs::write(tmp.path().join("b.txt"), b"world!!").unwrap(); // 7 bytes
 
-        let (bytes, projects) = storage_usage(tmp.path()).expect("storage_usage");
+        let bytes = storage_usage(tmp.path()).expect("storage_usage");
         assert_eq!(bytes, 12);
-        assert_eq!(projects, 0); // no data/ subdir yet
     }
 
     #[test]
-    fn storage_usage_counts_project_subdirs() {
+    fn storage_usage_ignores_directory_structure() {
         let tmp = TempDir::new().expect("create temp dir");
         let data = tmp.path().join("data");
 
-        // Create two project directories under data/.
+        // Create project directories under data/ (now ignored for disk usage).
+        // Only actual files count toward bytes.
         fs::create_dir_all(data.join("proj_a")).unwrap();
         fs::create_dir_all(data.join("proj_b")).unwrap();
 
-        let (bytes, projects) = storage_usage(tmp.path()).expect("storage_usage");
-        assert_eq!(projects, 2);
-        // No files, so bytes can be 0 (directories themselves have no counted size).
-        let _ = bytes; // we don't assert exact value; OS may vary
+        let bytes = storage_usage(tmp.path()).expect("storage_usage");
+        // Directories themselves add no size
+        assert_eq!(bytes, 0);
     }
 
     #[test]
-    fn storage_usage_files_only_count_under_project_dirs() {
+    fn storage_usage_recursive_file_count() {
         let tmp = TempDir::new().expect("create temp dir");
         let data = tmp.path().join("data");
 
-        // One project, with one object file inside.
+        // File inside a project directory.
         let proj = data.join("my_project");
         fs::create_dir_all(&proj).unwrap();
         fs::write(proj.join("object.blob"), b"12345678").unwrap(); // 8 bytes
 
-        let (bytes, projects) = storage_usage(tmp.path()).expect("storage_usage");
-        assert_eq!(projects, 1);
+        let bytes = storage_usage(tmp.path()).expect("storage_usage");
         assert_eq!(bytes, 8);
     }
 
@@ -484,7 +453,7 @@ mod tests {
         fs::write(tmp.path().join("level1").join("mid.txt"), b"bbbb").unwrap(); // 4
         fs::write(sub.join("deep.txt"), b"cccccccc").unwrap(); // 8
 
-        let (bytes, _) = storage_usage(tmp.path()).expect("storage_usage");
+        let bytes = storage_usage(tmp.path()).expect("storage_usage");
         assert_eq!(bytes, 14);
     }
 }

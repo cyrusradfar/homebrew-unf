@@ -75,10 +75,14 @@ pub fn run(format: OutputFormat) -> Result<(), UnfError> {
     // 5. Build a display path (replace $HOME prefix with ~)
     let display_path = home_relative(&storage_path);
 
-    // 6. Get usage stats
-    let (disk_usage_bytes, project_count) = crate::config::storage_usage(&storage_path)?;
+    // 6. Get usage stats (disk usage from filesystem)
+    let disk_usage_bytes = crate::config::storage_usage(&storage_path)?;
 
-    // 7. Print output
+    // 7. Get project count from registry (source of truth, matches `unf list`)
+    let reg = crate::registry::load()?;
+    let project_count = reg.projects.len();
+
+    // 8. Print output
     if format == OutputFormat::Json {
         let output = ConfigOutput {
             storage_dir: config.storage_dir.map(|p| p.display().to_string()),

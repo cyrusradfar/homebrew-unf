@@ -95,13 +95,13 @@ fn status_not_initialized() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run status without watch — error goes to stderr
+    // Run status without watch — Mode 0: never watched
     let mut cmd = isolated_cmd(unf_home.path());
     cmd.current_dir(temp.path())
         .arg("status")
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("not watching"));
+        .success()
+        .stdout(predicate::str::contains("not being watched"));
 }
 
 #[test]
@@ -537,13 +537,13 @@ fn status_after_stop_shows_stopped_message() {
         .assert()
         .success();
 
-    // After intentional stop, status should say "Watching stopped." (not "unexpectedly")
+    // After stop, status should show Mode 1: previously watched but inactive
     isolated_cmd(unf_home.path())
         .current_dir(temp.path())
         .arg("status")
         .assert()
         .stdout(
-            predicate::str::contains("Watching stopped.")
+            predicate::str::contains("previously watched")
                 .and(predicate::str::contains("unexpectedly").not()),
         );
 }
@@ -616,8 +616,8 @@ fn json_status_not_initialized() {
         .arg("--json")
         .arg("status")
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("\"error\""));
+        .success()
+        .stdout(predicate::str::contains("\"never_watched\""));
 }
 
 #[test]
