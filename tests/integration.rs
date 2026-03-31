@@ -15,13 +15,13 @@ mod common;
 use common::{isolated_cmd, resolve_storage_dir_isolated, unf_cmd, IsolatedDaemonGuard};
 
 #[test]
-fn init_creates_storage_directory() {
+fn watch_creates_storage_directory() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run init in temp directory
+    // Run watch in temp directory
     let mut cmd = isolated_cmd(unf_home.path());
-    cmd.current_dir(temp.path()).arg("init").assert().success();
+    cmd.current_dir(temp.path()).arg("watch").assert().success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
 
     // Verify centralized storage directory structure was created
@@ -51,14 +51,14 @@ fn init_creates_storage_directory() {
 }
 
 #[test]
-fn init_shows_watching_message() {
+fn watch_shows_watching_message() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run init and verify output message
+    // Run watch and verify output message
     let mut cmd = isolated_cmd(unf_home.path());
     cmd.current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success()
         .stdout(predicate::str::contains("Watching"));
@@ -66,25 +66,28 @@ fn init_shows_watching_message() {
 }
 
 #[test]
-fn double_init_shows_already_recording() {
+fn double_watch_is_idempotent() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // First init
+    // First watch
     let mut cmd1 = isolated_cmd(unf_home.path());
-    cmd1.current_dir(temp.path()).arg("init").assert().success();
+    cmd1.current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
 
     // Give daemon a moment to start
     thread::sleep(Duration::from_millis(100));
 
-    // Second init should report already recording
+    // Second watch succeeds (idempotent)
     let mut cmd2 = isolated_cmd(unf_home.path());
     cmd2.current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Already watching"));
+        .stdout(predicate::str::contains("Watching"));
 }
 
 #[test]
@@ -92,7 +95,7 @@ fn status_not_initialized() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run status without init — error goes to stderr
+    // Run status without watch — error goes to stderr
     let mut cmd = isolated_cmd(unf_home.path());
     cmd.current_dir(temp.path())
         .arg("status")
@@ -179,7 +182,7 @@ fn log_not_initialized() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run log without init (no target - shows all)
+    // Run log without watch (no target - shows all)
     let mut cmd = isolated_cmd(unf_home.path());
     cmd.current_dir(temp.path()).arg("log").assert().failure(); // Should fail without .unfudged directory
 }
@@ -189,7 +192,7 @@ fn log_not_initialized_with_file() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run log for a specific file without init
+    // Run log for a specific file without watch
     let mut cmd = isolated_cmd(unf_home.path());
     cmd.current_dir(temp.path())
         .arg("log")
@@ -207,7 +210,7 @@ fn log_empty_history() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -231,7 +234,7 @@ fn log_with_file_history() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Create a test file before init
+    // Create a test file before watch
     let test_file = temp.path().join("test.txt");
     fs::write(&test_file, "initial content").expect("Failed to write test file");
 
@@ -239,7 +242,7 @@ fn log_with_file_history() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -295,7 +298,7 @@ fn diff_not_initialized() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run diff without init
+    // Run diff without watch
     let mut cmd = isolated_cmd(unf_home.path());
     cmd.current_dir(temp.path())
         .arg("diff")
@@ -310,7 +313,7 @@ fn restore_not_initialized() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Run restore without init
+    // Run restore without watch
     let mut cmd = isolated_cmd(unf_home.path());
     cmd.current_dir(temp.path())
         .arg("restore")
@@ -331,16 +334,16 @@ fn invalid_command_shows_error() {
 }
 
 #[test]
-fn init_stop_cycle() {
+fn watch_stop_cycle() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
 
-    // First cycle: init -> stop
+    // First cycle: watch -> stop
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
 
@@ -355,11 +358,11 @@ fn init_stop_cycle() {
 
     thread::sleep(Duration::from_millis(100));
 
-    // Second cycle: init again after stopping
+    // Second cycle: watch again after stopping
     let mut init_cmd2 = isolated_cmd(unf_home.path());
     init_cmd2
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
 
@@ -411,7 +414,7 @@ fn restore_dry_run_shows_what_would_be_restored() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -440,7 +443,7 @@ fn log_all_history_no_target() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -461,7 +464,7 @@ fn log_since_filter() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -488,7 +491,7 @@ fn log_nonexistent_file_shows_no_history() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -622,7 +625,7 @@ fn json_init_outputs_json() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Watch with JSON (init is legacy and delegates to watch)
+    // Watch with JSON output
     let watch_out = isolated_cmd(unf_home.path())
         .current_dir(temp.path())
         .arg("--json")
@@ -714,7 +717,7 @@ fn json_log_empty() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -777,7 +780,7 @@ fn json_diff_no_changes() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -812,7 +815,7 @@ fn json_restore_dry_run() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -855,7 +858,7 @@ fn restore_yes_flag_works() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -885,7 +888,7 @@ fn restore_y_flag_works() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -912,7 +915,7 @@ fn restore_json_mode_auto_yes() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -963,7 +966,7 @@ fn cat_requires_at_or_snapshot() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1005,7 +1008,7 @@ fn diff_requires_at_or_from() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1024,7 +1027,7 @@ fn diff_at_and_from_conflict() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1071,7 +1074,7 @@ fn prune_dry_run_nothing_to_prune() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1096,7 +1099,7 @@ fn prune_older_than_flag_parses() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1122,7 +1125,7 @@ fn prune_json_mode() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1158,7 +1161,7 @@ fn prune_invalid_older_than() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1184,7 +1187,7 @@ fn prune_after_stop_with_data() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     thread::sleep(Duration::from_millis(200));
@@ -1241,7 +1244,7 @@ fn log_stats_with_file_history() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1276,7 +1279,7 @@ fn log_stats_short_flag() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1309,7 +1312,7 @@ fn log_stats_json_includes_lines() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1615,7 +1618,7 @@ fn log_group_by_file_with_multiple_files() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1653,7 +1656,7 @@ fn log_include_filter() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -1690,7 +1693,7 @@ fn log_exclude_filter() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -2047,7 +2050,7 @@ fn log_sessions_json() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Create a test file before init
+    // Create a test file before watch
     let test_file = temp.path().join("test.txt");
     fs::write(&test_file, "initial content").expect("Failed to write test file");
 
@@ -2055,7 +2058,7 @@ fn log_sessions_json() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -2428,7 +2431,7 @@ fn diff_session_latest() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Create a test file before init
+    // Create a test file before watch
     let test_file = temp.path().join("test.txt");
     fs::write(&test_file, "original content").expect("Failed to write test file");
 
@@ -2436,7 +2439,7 @@ fn diff_session_latest() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -2473,7 +2476,7 @@ fn restore_session_validates_conflicts() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Create a test file before init
+    // Create a test file before watch
     let test_file = temp.path().join("test.txt");
     fs::write(&test_file, "content").expect("Failed to write test file");
 
@@ -2481,7 +2484,7 @@ fn restore_session_validates_conflicts() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -2506,7 +2509,7 @@ fn diff_session_conflicts_with_at() {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
 
-    // Create a test file before init
+    // Create a test file before watch
     let test_file = temp.path().join("test.txt");
     fs::write(&test_file, "content").expect("Failed to write test file");
 
@@ -2514,7 +2517,7 @@ fn diff_session_conflicts_with_at() {
     let mut init_cmd = isolated_cmd(unf_home.path());
     init_cmd
         .current_dir(temp.path())
-        .arg("init")
+        .arg("watch")
         .assert()
         .success();
     let _guard = IsolatedDaemonGuard::new(unf_home.path());
@@ -2625,7 +2628,7 @@ fn recap_human() {
 fn recap_not_initialized() {
     let temp = TempDir::new().expect("Failed to create temp dir");
 
-    // Run recap without initialization
+    // Run recap without watch
     unf_cmd()
         .current_dir(temp.path())
         .arg("recap")

@@ -35,8 +35,8 @@ Resource targets: <1% CPU, <100MB RAM. Local-first, no data leaves the machine.
 - `unf diff --at "5m"` — Changes in last 5 minutes
 - `unf restore --at TIME` — Restore to a point in time
 - `unf cat --at TIME <file>` — Print file contents at TIME
-- `unf list --at TIME` — List tracked files at TIME
-- `unf prune --before TIME` — Remove old snapshots
+- `unf list -v` — List tracked files (verbose mode)
+- `unf prune --older-than TIME` — Remove old snapshots
 - `unf stop`, `unf restart` — Daemon control
 
 Time format: `"5m"`, `"2h"`, `"1d"`, or RFC3339 timestamp.

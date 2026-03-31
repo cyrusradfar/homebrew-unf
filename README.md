@@ -20,14 +20,14 @@ brew install cyrusradfar/unf/unf
 ### Debian / Ubuntu
 
 ```bash
-curl -fsSLO https://downloads.unfudged.io/releases/v0.17.16/unf_0.17.16_amd64.deb
-sudo dpkg -i unf_0.17.16_amd64.deb
+curl -fsSLO https://downloads.unfudged.io/releases/v0.18.0/unf_0.18.0_amd64.deb
+sudo dpkg -i unf_0.18.0_amd64.deb
 ```
 
 For ARM64:
 ```bash
-curl -fsSLO https://downloads.unfudged.io/releases/v0.17.16/unf_0.17.16_arm64.deb
-sudo dpkg -i unf_0.17.16_arm64.deb
+curl -fsSLO https://downloads.unfudged.io/releases/v0.18.0/unf_0.18.0_arm64.deb
+sudo dpkg -i unf_0.18.0_arm64.deb
 ```
 
 ### Desktop app (macOS)
@@ -65,7 +65,7 @@ unf restore --at 10m         # Roll back to 10 minutes ago
 | `unf status` | Watcher status and recent snapshot stats |
 | `unf log <file>` | Timeline of all recorded versions of a file |
 | `unf diff --at <time>` | Show changes since a point in time |
-| `unf diff --include <glob>` | Filter diff to matching files |
+| `unf log --include <glob>` | Filter log to matching files |
 | `unf restore --at <time>` | Restore files to a point in time |
 | `unf restore --at <time> <file>` | Restore a specific file |
 | `unf cat --at <time> <file>` | Print a file's contents at a point in time |

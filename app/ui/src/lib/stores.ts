@@ -206,6 +206,9 @@ export function openTab(tabId: string): void {
  * If closing the active tab, switches to an adjacent tab (or null if last tab).
  */
 export function closeTab(tabId: string): void {
+  // Global tab cannot be closed — it's the permanent default
+  if (tabId === GLOBAL_TAB) return;
+
   const currentTabs = get(openTabs);
   const filteredTabs = currentTabs.filter((p) => p !== tabId);
 

@@ -137,7 +137,7 @@
 
   /** Get display label for a tab */
   function tabLabel(tabId: string): string {
-    if (tabId === GLOBAL_TAB) return "All Projects";
+    if (tabId === GLOBAL_TAB) return "All";
     return tabId.split("/").pop() ?? tabId;
   }
 </script>
@@ -146,65 +146,7 @@
 <svelte:window onmousedown={handleClickOutside} />
 
 <div class="topbar">
-  <!-- Left: Project Dropdown -->
-  <div class="dropdown-container">
-    <button
-      bind:this={dropdownButtonRef}
-      class="dropdown-button"
-      onclick={toggleDropdown}
-      title="Open project list"
-    >
-      <span class="dropdown-label">Select project</span>
-      <span class="chevron">{dropdownOpen ? "▾" : "▸"}</span>
-    </button>
-
-    {#if dropdownOpen}
-      <div bind:this={dropdownRef} class="dropdown-panel">
-        {#if $projects.length === 0}
-          <div class="dropdown-empty">
-            <p>No projects available</p>
-          </div>
-        {:else}
-          <ul class="project-dropdown-list">
-            {#each $projects as project (project.path)}
-              <li>
-                <div class="dropdown-item" class:active-tab={$openTabs.includes(project.path)}>
-                  <button
-                    class="project-select-area"
-                    onclick={() => handleSelectProject(project.path)}
-                  >
-                    <span class="status-dot" style="background: {statusColor(project.status)}"></span>
-                    <div class="project-info">
-                      <span class="project-name">{project.path.split("/").pop()}</span>
-                      <span class="project-meta">
-                        {project.status}
-                        {#if project.snapshots !== null}
-                          &middot; {project.snapshots.toLocaleString()} snapshots
-                        {/if}
-                      </span>
-                    </div>
-                  </button>
-                  <button
-                    class="action-btn {actionStyle(project.status)}"
-                    onclick={(e) => handleAction(e, project)}
-                  >
-                    {actionLabel(project.status)}
-                  </button>
-                </div>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        <div class="dropdown-footer">
-          <button class="watch-folder-btn" onclick={handleWatchNewFolder}>
-            + Watch New Folder
-          </button>
-        </div>
-      </div>
-    {/if}
-  </div>
-
-  <!-- Center: Open Tabs -->
+  <!-- Tabs + Add button (inline) -->
   <div class="tabs-container">
     {#each $openTabs as tabPath (tabPath)}
       {#key tabPath}
@@ -215,16 +157,75 @@
           >
             {tabLabel(tabPath)}
           </button>
-          <button
-            class="tab-close"
-            onclick={() => closeTab(tabPath)}
-            title="Close tab"
-          >
-            ×
-          </button>
+          {#if tabPath !== GLOBAL_TAB}
+            <button
+              class="tab-close"
+              onclick={() => closeTab(tabPath)}
+              title="Close tab"
+            >
+              ×
+            </button>
+          {/if}
         </div>
       {/key}
     {/each}
+
+    <!-- Add tab button (inline after last tab) -->
+    <div class="dropdown-container">
+      <button
+        bind:this={dropdownButtonRef}
+        class="add-tab-button"
+        onclick={toggleDropdown}
+        title="Add project tab"
+      >
+        +
+      </button>
+
+      {#if dropdownOpen}
+        <div bind:this={dropdownRef} class="dropdown-panel">
+          {#if $projects.length === 0}
+            <div class="dropdown-empty">
+              <p>No projects available</p>
+            </div>
+          {:else}
+            <ul class="project-dropdown-list">
+              {#each $projects as project (project.path)}
+                <li>
+                  <div class="dropdown-item" class:active-tab={$openTabs.includes(project.path)}>
+                    <button
+                      class="project-select-area"
+                      onclick={() => handleSelectProject(project.path)}
+                    >
+                      <span class="status-dot" style="background: {statusColor(project.status)}"></span>
+                      <div class="project-info">
+                        <span class="project-name">{project.path.split("/").pop()}</span>
+                        <span class="project-meta">
+                          {project.status}
+                          {#if project.snapshots !== null}
+                            &middot; {project.snapshots.toLocaleString()} snapshots
+                          {/if}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      class="action-btn {actionStyle(project.status)}"
+                      onclick={(e) => handleAction(e, project)}
+                    >
+                      {actionLabel(project.status)}
+                    </button>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <div class="dropdown-footer">
+            <button class="watch-folder-btn" onclick={handleWatchNewFolder}>
+              + Watch New Folder
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
   </div>
 
   <!-- Right: Settings -->
@@ -258,34 +259,26 @@
   /* ===== DROPDOWN SECTION ===== */
   .dropdown-container {
     position: relative;
-    border-right: 1px solid var(--border);
     flex-shrink: 0;
   }
 
-  .dropdown-button {
+  .add-tab-button {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 12px;
+    justify-content: center;
+    width: 28px;
     height: 36px;
     border: none;
     background: none;
-    color: var(--text-primary);
-    font-family: var(--font-sans);
-    font-size: var(--text-sm);
+    color: var(--text-muted);
+    font-size: 16px;
     cursor: pointer;
-    white-space: nowrap;
+    transition: color 0.15s, background 0.15s;
   }
 
-  .dropdown-button:hover {
+  .add-tab-button:hover {
+    color: var(--text-primary);
     background: var(--accent-bg);
-  }
-
-  .dropdown-label {
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .chevron {
@@ -458,8 +451,6 @@
     display: flex;
     align-items: center;
     flex: 1;
-    overflow-x: auto;
-    overflow-y: hidden;
     gap: 0;
   }
 
