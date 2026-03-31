@@ -9,31 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.18.1] - 2026-03-31
 ### Fixed
-- Duplicate sentinel after `unf restart` (old sentinel not killed before spawning new one)
-- `unf config` project count now matches `unf list` (reads from registry)
-- `unf status` on unwatched directories: 3-mode feedback (never-watched / inactive / active)
-- Uninstall script now removes binaries, desktop app, and sentinel LaunchAgent
-- E2E smoke test updated for new status messages
+- `unf restart` no longer leaves a duplicate sentinel running
+- `unf config` now reports the correct project count (was undercounting)
+- `unf status` in an unwatched directory no longer says "stopped unexpectedly." Three cases now: never watched, previously watched but inactive, and actively watching
 
 ## [0.18.0] - 2026-03-31
 ### Changed
-- Split `log.rs` and `db.rs` into module directories for maintainability
-- Refactored CLI commands (diff, init, migrate, watch, stop, restart, status)
-- Desktop app: permanent "All" tab, inline "+" button for adding project tabs
-- Migrated all integration tests from legacy `init` to `watch`
+- Desktop app: "All" tab is now permanent (can't be closed). New "+" button to add project tabs
+- Internal: split large modules (`log`, `db`) into smaller files. No behavior change
 
 ### Fixed
-- Hanging `init_creates_storage_directory` test (blocked by `launchctl load` in autostart)
-- `double_init_shows_already_recording` test (watch is idempotent, no "Already watching" message)
-- Doc defects: invalid time format in demo, incorrect `--include` flag, stale install URLs
-- `--dry-run` claim in tech.html (only restore and prune support it)
+- Corrected `--include` flag reference in README (belongs to `log`, not `diff`)
+- Fixed invalid time format in website demo (`14:32:07` is not a valid `--at` value)
+- Website no longer claims every mutating command supports `--dry-run` (only `restore` and `prune` do)
+- Stale Debian install URLs in README
 
 ### Added
-- `--dry-run` flag for `release.sh`
-- `lint-app` justfile target (Biome)
-- Cross-platform `sed` in `set-version.sh`
-- CI workflow
-- Biome linting config for app UI
+- CI workflow on GitHub Actions
 
 ## [0.17.16] - 2026-03-28
 ### Fixed
