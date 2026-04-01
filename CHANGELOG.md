@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-04-01
+### Performance
+- Startup: eliminated tab waterfall (N×4 → 4 CLI process spawns)
+- Tab switch: show cached data immediately, skip redundant IPC calls (4 → 1)
+- Eliminated all race conditions via request generation counter
+- Filter changes debounced (150ms) to prevent rapid-fire IPC
+- Diff view: replaced `max-content` grid with `1fr` to avoid per-line layout measurement
+- File tree query limit reduced from 100,000 to 5,000 entries
+- `find_unf()` binary path cached for process lifetime (OnceLock)
+- Tab state persisted to localStorage for instant app restart (stale-while-revalidate)
+
+### Changed
+- CSS architecture: new `reset.css`, `fonts.css`, `layout.css` separation
+- Data-loading logic extracted from App.svelte to `data-loader.ts`
+- Diff rendering helpers extracted to `diff-helpers.ts`
+- App.svelte reduced from 468 to 190 lines
+
+### Fixed
+- Global tab polling was silently skipped (selectedProject guard)
+- Biome linter now checks all 28 TypeScript/Svelte files (was only 5 config files)
+
 ## [0.18.1] - 2026-03-31
 ### Fixed
 - `unf restart` no longer leaves a duplicate sentinel running
