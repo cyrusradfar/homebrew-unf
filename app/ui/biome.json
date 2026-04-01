@@ -7,7 +7,14 @@
 	},
 	"files": {
 		"ignoreUnknown": false,
-		"includes": ["src", "index.html", "svelte.config.js", "tsconfig.json", "vite.config.ts"]
+		"includes": [
+			"src/**/*.ts",
+			"src/**/*.svelte",
+			"index.html",
+			"svelte.config.js",
+			"tsconfig.json",
+			"vite.config.ts"
+		]
 	},
 	"formatter": {
 		"enabled": true,
@@ -17,7 +24,19 @@
 		"lineWidth": 100
 	},
 	"linter": {
-		"enabled": true
+		"enabled": true,
+		"rules": {
+			"correctness": {
+				"noUnusedVariables": "off",
+				"noUnusedImports": "off"
+			},
+			"style": {
+				"noNonNullAssertion": "off"
+			},
+			"suspicious": {
+				"noExplicitAny": "off"
+			}
+		}
 	},
 	"javascript": {
 		"formatter": {

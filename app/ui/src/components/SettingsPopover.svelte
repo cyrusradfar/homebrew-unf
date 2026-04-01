@@ -1,105 +1,105 @@
 <script lang="ts">
-  import { tick } from "svelte";
-  import { getConfig, moveStorage } from "../lib/api";
-  import { open } from "@tauri-apps/plugin-dialog";
-  import type { ConfigResponse } from "../lib/types";
+import { open } from "@tauri-apps/plugin-dialog";
+import { tick } from "svelte";
+import { getConfig, moveStorage } from "../lib/api";
+import type { ConfigResponse } from "../lib/types";
 
-  interface Props {
-    visible: boolean;
-    onClose: () => void;
-  }
+interface Props {
+	visible: boolean;
+	onClose: () => void;
+}
 
-  let { visible, onClose }: Props = $props();
+let { visible, onClose }: Props = $props();
 
-  let state = $state('idle');
-  let config = $state<ConfigResponse | null>(null);
-  let selectedPath = $state('');
-  let errorMessage = $state('');
-  let backupPath = $state('');
-  let migratingStep = $state('');
-  let loading = $state(false);
+let state = $state("idle");
+let config = $state<ConfigResponse | null>(null);
+let selectedPath = $state("");
+let errorMessage = $state("");
+let backupPath = $state("");
+let migratingStep = $state("");
+let loading = $state(false);
 
-  // Load config when popover becomes visible
-  $effect(() => {
-    if (visible && state === 'idle') {
-      loadConfig();
-    }
-  });
+// Load config when popover becomes visible
+$effect(() => {
+	if (visible && state === "idle") {
+		loadConfig();
+	}
+});
 
-  async function loadConfig() {
-    loading = true;
-    try {
-      config = await getConfig();
-    } catch (err) {
-      config = null;
-    }
-    loading = false;
-  }
+async function loadConfig() {
+	loading = true;
+	try {
+		config = await getConfig();
+	} catch (err) {
+		config = null;
+	}
+	loading = false;
+}
 
-  function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
 
-  async function handleChangeLocation() {
-    try {
-      const selected = await open({ directory: true, title: "Choose new storage location" });
-      if (selected && typeof selected === 'string') {
-        selectedPath = selected;
-        state = 'confirm';
-      }
-    } catch (err) {
-      // User cancelled
-    }
-  }
+async function handleChangeLocation() {
+	try {
+		const selected = await open({ directory: true, title: "Choose new storage location" });
+		if (selected && typeof selected === "string") {
+			selectedPath = selected;
+			state = "confirm";
+		}
+	} catch (err) {
+		// User cancelled
+	}
+}
 
-  function handleCancel() {
-    state = 'idle';
-    selectedPath = '';
-  }
+function handleCancel() {
+	state = "idle";
+	selectedPath = "";
+}
 
-  async function handleMoveStorage() {
-    state = 'migrating';
-    migratingStep = `Copying ${config ? formatBytes(config.disk_usage_bytes) : 'data'}...`;
-    // Yield so Svelte updates the DOM before the async IPC call
-    await tick();
-    try {
-      const result = await moveStorage(selectedPath);
-      backupPath = result.backup_path || '';
-      state = 'success';
-      // Reload config to reflect new state
-      await loadConfig();
-      // Auto-dismiss success after 10s
-      setTimeout(() => {
-        if (state === 'success') {
-          state = 'idle';
-        }
-      }, 10000);
-    } catch (err: any) {
-      state = 'error';
-      errorMessage = err?.message || String(err) || 'Migration failed';
-    }
-  }
+async function handleMoveStorage() {
+	state = "migrating";
+	migratingStep = `Copying ${config ? formatBytes(config.disk_usage_bytes) : "data"}...`;
+	// Yield so Svelte updates the DOM before the async IPC call
+	await tick();
+	try {
+		const result = await moveStorage(selectedPath);
+		backupPath = result.backup_path || "";
+		state = "success";
+		// Reload config to reflect new state
+		await loadConfig();
+		// Auto-dismiss success after 10s
+		setTimeout(() => {
+			if (state === "success") {
+				state = "idle";
+			}
+		}, 10000);
+	} catch (err: any) {
+		state = "error";
+		errorMessage = err?.message || String(err) || "Migration failed";
+	}
+}
 
-  function handleDismissError() {
-    state = 'idle';
-    errorMessage = '';
-    loadConfig();
-  }
+function handleDismissError() {
+	state = "idle";
+	errorMessage = "";
+	loadConfig();
+}
 
-  function handleClose() {
-    if (state === 'migrating') return; // Can't close during migration
-    onClose();
-  }
+function handleClose() {
+	if (state === "migrating") return; // Can't close during migration
+	onClose();
+}
 
-  // Handle Escape key
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && visible && state !== 'migrating') {
-      handleClose();
-    }
-  }
+// Handle Escape key
+function handleKeydown(e: KeyboardEvent) {
+	if (e.key === "Escape" && visible && state !== "migrating") {
+		handleClose();
+	}
+}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />

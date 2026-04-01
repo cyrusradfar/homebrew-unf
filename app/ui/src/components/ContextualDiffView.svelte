@@ -1,334 +1,327 @@
 <script lang="ts">
-  import { selectedEntry, diffData, contentData, contentLoading, viewMode, error } from "../lib/stores";
-  import { getDiff, getFileContent } from "../lib/api";
-  import type { DiffHunk, DiffHunkLine } from "../lib/types";
-  import { highlightLines } from "../lib/highlight";
-  import { detectLanguage, getFunctionPattern, extractFunctionName } from "../lib/language-map";
-  import { computeWordDiff, type WordSegment } from "../lib/word-diff";
+import { getDiff, getFileContent } from "../lib/api";
+import { highlightLines } from "../lib/highlight";
+import { detectLanguage, extractFunctionName, getFunctionPattern } from "../lib/language-map";
+import { contentData, contentLoading, diffData, error } from "../lib/stores";
+import type { DiffHunk, DiffHunkLine } from "../lib/types";
+import { computeWordDiff, type WordSegment } from "../lib/word-diff";
 
-  // Track which entry is currently loaded to avoid redundant fetches
-  let currentEntryId = $state<number | null>(null);
-  let currentViewMode = $state<"diff" | "content" | null>(null);
+// Track which entry is currently loaded to avoid redundant fetches
+let currentEntryId = $state<number | null>(null);
+let currentViewMode = $state<"diff" | "content" | null>(null);
 
-  // Unified effect: fetch diff or content based on viewMode and selected entry
-  $effect(() => {
-    const entry = $selectedEntry;
-    const mode = $viewMode;
+// Unified effect: fetch diff or content based on viewMode and selected entry
+$effect(() => {
+	const entry = $selectedEntry;
+	const mode = $viewMode;
 
-    if (!entry) return;
+	if (!entry) return;
 
-    // Reset tracking if entry or mode changed
-    if (entry.id !== currentEntryId || mode !== currentViewMode) {
-      currentEntryId = entry.id;
-      currentViewMode = mode;
-      contentLoading.set(true);
+	// Reset tracking if entry or mode changed
+	if (entry.id !== currentEntryId || mode !== currentViewMode) {
+		currentEntryId = entry.id;
+		currentViewMode = mode;
+		contentLoading.set(true);
 
-      if (mode === "content") {
-        // Fetch file content (pass project for global mode entries)
-        getFileContent({ file: entry.file, at: entry.timestamp, project: entry.project })
-          .then((result) => {
-            contentData.set(result);
-          })
-          .catch((e) => {
-            error.set(`Failed to load content: ${e}`);
-            contentData.set(null);
-          })
-          .finally(() => {
-            contentLoading.set(false);
-          });
-      } else {
-        // Fetch diff (pass project for global mode entries)
-        getDiff({ snapshot: entry.id, project: entry.project })
-          .then((result) => {
-            diffData.set(result);
-          })
-          .catch((e) => {
-            error.set(`Failed to load diff: ${e}`);
-            diffData.set(null);
-          })
-          .finally(() => {
-            contentLoading.set(false);
-          });
-      }
-    }
-  });
+		if (mode === "content") {
+			// Fetch file content (pass project for global mode entries)
+			getFileContent({ file: entry.file, at: entry.timestamp, project: entry.project })
+				.then((result) => {
+					contentData.set(result);
+				})
+				.catch((e) => {
+					error.set(`Failed to load content: ${e}`);
+					contentData.set(null);
+				})
+				.finally(() => {
+					contentLoading.set(false);
+				});
+		} else {
+			// Fetch diff (pass project for global mode entries)
+			getDiff({ snapshot: entry.id, project: entry.project })
+				.then((result) => {
+					diffData.set(result);
+				})
+				.catch((e) => {
+					error.set(`Failed to load diff: ${e}`);
+					diffData.set(null);
+				})
+				.finally(() => {
+					contentLoading.set(false);
+				});
+		}
+	}
+});
 
-  // Map from line content to highlighted HTML (used in both diff and raw modes)
-  let highlightedMap = $state(new Map<string, string>());
+// Map from line content to highlighted HTML (used in both diff and raw modes)
+let highlightedMap = $state(new Map<string, string>());
 
-  // Highlight all lines when diff data changes or in raw content mode
-  // NOTE: Do NOT use highlightedMap.clear() here — reading the $state variable
-  // inside the effect creates a dependency, and the async reassignment below
-  // would re-trigger this effect infinitely. Assigning a new Map avoids the read.
-  $effect(() => {
-    highlightedMap = new Map();
+// Highlight all lines when diff data changes or in raw content mode
+// NOTE: Do NOT use highlightedMap.clear() here — reading the $state variable
+// inside the effect creates a dependency, and the async reassignment below
+// would re-trigger this effect infinitely. Assigning a new Map avoids the read.
+$effect(() => {
+	highlightedMap = new Map();
 
-    if ($viewMode === "diff") {
-      const data = $diffData;
-      if (!data || data.changes.length === 0) {
-        return;
-      }
+	if ($viewMode === "diff") {
+		const data = $diffData;
+		if (!data || data.changes.length === 0) {
+			return;
+		}
 
-      const change = data.changes[0];
-      if (!change.hunks) {
-        return;
-      }
+		const change = data.changes[0];
+		if (!change.hunks) {
+			return;
+		}
 
-      const lang = detectLanguage(change.file);
-      if (!lang) {
-        return;
-      }
+		const lang = detectLanguage(change.file);
+		if (!lang) {
+			return;
+		}
 
-      // Collect all unique line contents from diff hunks
-      const allLines = change.hunks.flatMap((h) => h.lines.map((l) => l.content));
+		// Collect all unique line contents from diff hunks
+		const allLines = change.hunks.flatMap((h) => h.lines.map((l) => l.content));
 
-      highlightLines(allLines, lang).then((htmls) => {
-        const map = new Map<string, string>();
-        allLines.forEach((line, i) => {
-          if (!map.has(line)) {
-            map.set(line, htmls[i]);
-          }
-        });
-        highlightedMap = map;
-      });
-    } else if ($viewMode === "content") {
-      const data = $contentData;
-      if (!data || !data.content) {
-        return;
-      }
+		highlightLines(allLines, lang).then((htmls) => {
+			const map = new Map<string, string>();
+			allLines.forEach((line, i) => {
+				if (!map.has(line)) {
+					map.set(line, htmls[i]);
+				}
+			});
+			highlightedMap = map;
+		});
+	} else if ($viewMode === "content") {
+		const data = $contentData;
+		if (!data?.content) {
+			return;
+		}
 
-      const lang = detectLanguage(data.file);
-      if (!lang) {
-        return;
-      }
+		const lang = detectLanguage(data.file);
+		if (!lang) {
+			return;
+		}
 
-      // Collect all lines from raw content
-      const allLines = data.content.split("\n");
+		// Collect all lines from raw content
+		const allLines = data.content.split("\n");
 
-      highlightLines(allLines, lang).then((htmls) => {
-        const map = new Map<string, string>();
-        allLines.forEach((line, i) => {
-          if (!map.has(line)) {
-            map.set(line, htmls[i]);
-          }
-        });
-        highlightedMap = map;
-      });
-    }
-  });
+		highlightLines(allLines, lang).then((htmls) => {
+			const map = new Map<string, string>();
+			allLines.forEach((line, i) => {
+				if (!map.has(line)) {
+					map.set(line, htmls[i]);
+				}
+			});
+			highlightedMap = map;
+		});
+	}
+});
 
-  /**
-   * Find word-diff pairs in a sequence of hunk lines.
-   * Groups consecutive deletes followed by consecutive inserts and computes
-   * word-level diffs for paired lines.
-   *
-   * @param lines - All lines in a hunk
-   * @returns Map from line index to word segments
-   */
-  function findWordDiffPairs(
-    lines: DiffHunkLine[]
-  ): Map<number, WordSegment[]> {
-    const result = new Map<number, WordSegment[]>();
-    let i = 0;
+/**
+ * Find word-diff pairs in a sequence of hunk lines.
+ * Groups consecutive deletes followed by consecutive inserts and computes
+ * word-level diffs for paired lines.
+ *
+ * @param lines - All lines in a hunk
+ * @returns Map from line index to word segments
+ */
+function findWordDiffPairs(lines: DiffHunkLine[]): Map<number, WordSegment[]> {
+	const result = new Map<number, WordSegment[]>();
+	let i = 0;
 
-    while (i < lines.length) {
-      // Find a run of deletes
-      const deleteStart = i;
-      while (i < lines.length && lines[i].op === "delete") i++;
-      const deleteEnd = i;
+	while (i < lines.length) {
+		// Find a run of deletes
+		const deleteStart = i;
+		while (i < lines.length && lines[i].op === "delete") i++;
+		const deleteEnd = i;
 
-      // Find a run of inserts immediately after
-      const insertStart = i;
-      while (i < lines.length && lines[i].op === "insert") i++;
-      const insertEnd = i;
+		// Find a run of inserts immediately after
+		const insertStart = i;
+		while (i < lines.length && lines[i].op === "insert") i++;
+		const insertEnd = i;
 
-      // Pair up deletes and inserts
-      const deleteCount = deleteEnd - deleteStart;
-      const insertCount = insertEnd - insertStart;
-      const pairCount = Math.min(deleteCount, insertCount);
+		// Pair up deletes and inserts
+		const deleteCount = deleteEnd - deleteStart;
+		const insertCount = insertEnd - insertStart;
+		const pairCount = Math.min(deleteCount, insertCount);
 
-      for (let p = 0; p < pairCount; p++) {
-        const delIdx = deleteStart + p;
-        const insIdx = insertStart + p;
-        const { deleted, inserted } = computeWordDiff(
-          lines[delIdx].content,
-          lines[insIdx].content
-        );
-        result.set(delIdx, deleted);
-        result.set(insIdx, inserted);
-      }
+		for (let p = 0; p < pairCount; p++) {
+			const delIdx = deleteStart + p;
+			const insIdx = insertStart + p;
+			const { deleted, inserted } = computeWordDiff(lines[delIdx].content, lines[insIdx].content);
+			result.set(delIdx, deleted);
+			result.set(insIdx, inserted);
+		}
 
-      // Skip past equal lines or anything else
-      if (deleteCount === 0 && insertCount === 0) i++;
-    }
+		// Skip past equal lines or anything else
+		if (deleteCount === 0 && insertCount === 0) i++;
+	}
 
-    return result;
-  }
+	return result;
+}
 
-  /**
-   * Compute word diffs for all hunks.
-   * Returns an array of Maps (one per hunk) from line index to word segments.
-   */
-  let wordDiffsByHunk = $derived(
-    ($diffData?.changes[0]?.hunks ?? []).map((hunk) =>
-      findWordDiffPairs(hunk.lines)
-    )
-  );
+/**
+ * Compute word diffs for all hunks.
+ * Returns an array of Maps (one per hunk) from line index to word segments.
+ */
+let wordDiffsByHunk = $derived(
+	($diffData?.changes[0]?.hunks ?? []).map((hunk) => findWordDiffPairs(hunk.lines))
+);
 
-  /**
-   * Represents a collapsed region between hunks.
-   */
-  interface CollapsedRegion {
-    startLine: number;
-    endLine: number;
-    lineCount: number;
-    regionIndex: number;
-    functionName: string | null;
-  }
+/**
+ * Represents a collapsed region between hunks.
+ */
+interface CollapsedRegion {
+	startLine: number;
+	endLine: number;
+	lineCount: number;
+	regionIndex: number;
+	functionName: string | null;
+}
 
-  /**
-   * Find the enclosing function name by scanning backward through preceding hunk context.
-   * Looks at the last 10 lines of all preceding hunks for a function definition.
-   */
-  function findEnclosingFunction(
-    hunks: DiffHunk[],
-    regionIndex: number,
-    lang: string | null
-  ): string | null {
-    if (!lang) return null;
-    const pattern = getFunctionPattern(lang);
-    if (!pattern) return null;
+/**
+ * Find the enclosing function name by scanning backward through preceding hunk context.
+ * Looks at the last 10 lines of all preceding hunks for a function definition.
+ */
+function findEnclosingFunction(
+	hunks: DiffHunk[],
+	regionIndex: number,
+	lang: string | null
+): string | null {
+	if (!lang) return null;
+	const pattern = getFunctionPattern(lang);
+	if (!pattern) return null;
 
-    // Scan backward through all preceding hunks, checking the last 10 lines of each
-    for (let h = regionIndex; h >= 0; h--) {
-      if (h >= hunks.length) continue;
-      const hunk = hunks[h];
-      // Scan lines of this hunk in reverse
-      for (let i = hunk.lines.length - 1; i >= 0 && i >= hunk.lines.length - 10; i--) {
-        const line = hunk.lines[i];
-        if (pattern.test(line.content)) {
-          return extractFunctionName(line.content, lang);
-        }
-      }
-    }
+	// Scan backward through all preceding hunks, checking the last 10 lines of each
+	for (let h = regionIndex; h >= 0; h--) {
+		if (h >= hunks.length) continue;
+		const hunk = hunks[h];
+		// Scan lines of this hunk in reverse
+		for (let i = hunk.lines.length - 1; i >= 0 && i >= hunk.lines.length - 10; i--) {
+			const line = hunk.lines[i];
+			if (pattern.test(line.content)) {
+				return extractFunctionName(line.content, lang);
+			}
+		}
+	}
 
-    return null;
-  }
+	return null;
+}
 
-  /**
-   * Calculate which collapsed regions exist between hunks.
-   * Returns an array of { startLine, endLine, lineCount, regionIndex, functionName }
-   */
-  function calculateCollapsedRegions(hunks: DiffHunk[], lang: string | null): CollapsedRegion[] {
-    const regions: CollapsedRegion[] = [];
-    let regionIndex = 0;
+/**
+ * Calculate which collapsed regions exist between hunks.
+ * Returns an array of { startLine, endLine, lineCount, regionIndex, functionName }
+ */
+function calculateCollapsedRegions(hunks: DiffHunk[], lang: string | null): CollapsedRegion[] {
+	const regions: CollapsedRegion[] = [];
+	let regionIndex = 0;
 
-    if (!hunks || hunks.length === 0) return regions;
+	if (!hunks || hunks.length === 0) return regions;
 
-    // Region before the first hunk (if first hunk doesn't start at line 1)
-    if (hunks[0].old_start > 1) {
-      const lineCount = hunks[0].old_start - 1;
-      regions.push({
-        startLine: 1,
-        endLine: hunks[0].old_start - 1,
-        lineCount,
-        regionIndex: regionIndex++,
-        functionName: findEnclosingFunction(hunks, -1, lang),
-      });
-    }
+	// Region before the first hunk (if first hunk doesn't start at line 1)
+	if (hunks[0].old_start > 1) {
+		const lineCount = hunks[0].old_start - 1;
+		regions.push({
+			startLine: 1,
+			endLine: hunks[0].old_start - 1,
+			lineCount,
+			regionIndex: regionIndex++,
+			functionName: findEnclosingFunction(hunks, -1, lang),
+		});
+	}
 
-    // Regions between consecutive hunks
-    for (let i = 0; i < hunks.length - 1; i++) {
-      const currentHunk = hunks[i];
-      const nextHunk = hunks[i + 1];
-      const gapStart = currentHunk.old_start + currentHunk.old_count;
-      const gapEnd = nextHunk.old_start - 1;
+	// Regions between consecutive hunks
+	for (let i = 0; i < hunks.length - 1; i++) {
+		const currentHunk = hunks[i];
+		const nextHunk = hunks[i + 1];
+		const gapStart = currentHunk.old_start + currentHunk.old_count;
+		const gapEnd = nextHunk.old_start - 1;
 
-      if (gapEnd >= gapStart) {
-        const lineCount = gapEnd - gapStart + 1;
-        regions.push({
-          startLine: gapStart,
-          endLine: gapEnd,
-          lineCount,
-          regionIndex: regionIndex++,
-          functionName: findEnclosingFunction(hunks, i, lang),
-        });
-      }
-    }
+		if (gapEnd >= gapStart) {
+			const lineCount = gapEnd - gapStart + 1;
+			regions.push({
+				startLine: gapStart,
+				endLine: gapEnd,
+				lineCount,
+				regionIndex: regionIndex++,
+				functionName: findEnclosingFunction(hunks, i, lang),
+			});
+		}
+	}
 
-    return regions;
-  }
+	return regions;
+}
 
-  /**
-   * Build a flat list of { type, data } items to render, interleaving hunks and collapsed regions.
-   * Includes hunk index and line index for word-diff lookups.
-   */
-  function buildRenderItems(hunks: DiffHunk[], lang: string | null) {
-    const items: Array<{
-      type: "region" | "hunk-header" | "line";
-      data: any;
-      hunkIndex?: number;
-      lineIndex?: number;
-    }> = [];
+/**
+ * Build a flat list of { type, data } items to render, interleaving hunks and collapsed regions.
+ * Includes hunk index and line index for word-diff lookups.
+ */
+function buildRenderItems(hunks: DiffHunk[], lang: string | null) {
+	const items: Array<{
+		type: "region" | "hunk-header" | "line";
+		data: any;
+		hunkIndex?: number;
+		lineIndex?: number;
+	}> = [];
 
-    if (!hunks || hunks.length === 0) return items;
+	if (!hunks || hunks.length === 0) return items;
 
-    const collapsedRegions = calculateCollapsedRegions(hunks, lang);
-    const regionMap = new Map(collapsedRegions.map((r) => [r.regionIndex, r]));
+	const collapsedRegions = calculateCollapsedRegions(hunks, lang);
+	const regionMap = new Map(collapsedRegions.map((r) => [r.regionIndex, r]));
 
-    let regionIdx = 0;
+	let regionIdx = 0;
 
-    // Region before first hunk
-    if (regionMap.has(regionIdx)) {
-      const region = regionMap.get(regionIdx)!;
-      items.push({ type: "region", data: region });
-      regionIdx++;
-    }
+	// Region before first hunk
+	if (regionMap.has(regionIdx)) {
+		const region = regionMap.get(regionIdx)!;
+		items.push({ type: "region", data: region });
+		regionIdx++;
+	}
 
-    // Each hunk and the gap after it
-    for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {
-      const hunk = hunks[hunkIndex];
-      items.push({ type: "hunk-header", data: hunk });
+	// Each hunk and the gap after it
+	for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {
+		const hunk = hunks[hunkIndex];
+		items.push({ type: "hunk-header", data: hunk });
 
-      // All lines in this hunk
-      for (let lineIndex = 0; lineIndex < hunk.lines.length; lineIndex++) {
-        const line = hunk.lines[lineIndex];
-        items.push({
-          type: "line",
-          data: line,
-          hunkIndex,
-          lineIndex,
-        });
-      }
+		// All lines in this hunk
+		for (let lineIndex = 0; lineIndex < hunk.lines.length; lineIndex++) {
+			const line = hunk.lines[lineIndex];
+			items.push({
+				type: "line",
+				data: line,
+				hunkIndex,
+				lineIndex,
+			});
+		}
 
-      // Gap after this hunk
-      if (regionMap.has(regionIdx)) {
-        const region = regionMap.get(regionIdx)!;
-        items.push({ type: "region", data: region });
-        regionIdx++;
-      }
-    }
+		// Gap after this hunk
+		if (regionMap.has(regionIdx)) {
+			const region = regionMap.get(regionIdx)!;
+			items.push({ type: "region", data: region });
+			regionIdx++;
+		}
+	}
 
-    return items;
-  }
+	return items;
+}
 
-  // Track which collapsed regions are expanded
-  let expandedRegions = $state(new Set<number>());
+// Track which collapsed regions are expanded
+let expandedRegions = $state(new Set<number>());
 
-  function toggleCollapsedRegion(regionIndex: number) {
-    if (expandedRegions.has(regionIndex)) {
-      expandedRegions.delete(regionIndex);
-    } else {
-      expandedRegions.add(regionIndex);
-    }
-  }
+function toggleCollapsedRegion(regionIndex: number) {
+	if (expandedRegions.has(regionIndex)) {
+		expandedRegions.delete(regionIndex);
+	} else {
+		expandedRegions.add(regionIndex);
+	}
+}
 
-  /**
-   * Format a hunk header in unified diff format.
-   */
-  function formatHunkHeader(hunk: DiffHunk): string {
-    return `@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`;
-  }
+/**
+ * Format a hunk header in unified diff format.
+ */
+function formatHunkHeader(hunk: DiffHunk): string {
+	return `@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`;
+}
 </script>
 
 <div class="diff-container">

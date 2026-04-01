@@ -1,27 +1,27 @@
 <script lang="ts">
-  import { error } from "../lib/stores";
+import { error } from "../lib/stores";
 
-  let visible = $state(false);
-  let message = $state("");
-  let timer: ReturnType<typeof setTimeout> | null = null;
+let visible = $state(false);
+let message = $state("");
+let timer: ReturnType<typeof setTimeout> | null = null;
 
-  error.subscribe((val) => {
-    if (val) {
-      message = val;
-      visible = true;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        visible = false;
-        error.set(null);
-      }, 5000);
-    }
-  });
+error.subscribe((val) => {
+	if (val) {
+		message = val;
+		visible = true;
+		if (timer) clearTimeout(timer);
+		timer = setTimeout(() => {
+			visible = false;
+			error.set(null);
+		}, 5000);
+	}
+});
 
-  function dismiss() {
-    visible = false;
-    error.set(null);
-    if (timer) clearTimeout(timer);
-  }
+function dismiss() {
+	visible = false;
+	error.set(null);
+	if (timer) clearTimeout(timer);
+}
 </script>
 
 {#if visible}

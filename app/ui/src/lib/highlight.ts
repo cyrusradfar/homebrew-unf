@@ -8,13 +8,13 @@ const loadedLanguages = new Set<string>();
  * Initializes with github-light theme and lazy-loads languages on demand.
  */
 async function getHighlighter(): Promise<Highlighter> {
-  if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: ["github-light"],
-      langs: [], // Start empty, load on demand
-    });
-  }
-  return highlighterPromise;
+	if (!highlighterPromise) {
+		highlighterPromise = createHighlighter({
+			themes: ["github-light"],
+			langs: [], // Start empty, load on demand
+		});
+	}
+	return highlighterPromise;
 }
 
 /**
@@ -25,37 +25,34 @@ async function getHighlighter(): Promise<Highlighter> {
  * @param lang - The Shiki language identifier (e.g., "typescript", "rust")
  * @returns HTML string with syntax highlighting or escaped plain text
  */
-export async function highlightLine(
-  code: string,
-  lang: string
-): Promise<string> {
-  try {
-    const highlighter = await getHighlighter();
+export async function highlightLine(code: string, lang: string): Promise<string> {
+	try {
+		const highlighter = await getHighlighter();
 
-    // Lazy load the language if not already loaded
-    if (!loadedLanguages.has(lang)) {
-      try {
-        await highlighter.loadLanguage(lang as any);
-        loadedLanguages.add(lang);
-      } catch {
-        // Language not available, return escaped text
-        return escapeHtml(code);
-      }
-    }
+		// Lazy load the language if not already loaded
+		if (!loadedLanguages.has(lang)) {
+			try {
+				await highlighter.loadLanguage(lang as any);
+				loadedLanguages.add(lang);
+			} catch {
+				// Language not available, return escaped text
+				return escapeHtml(code);
+			}
+		}
 
-    // Use codeToHtml and strip the wrapper tags to get just the highlighted tokens
-    const html = highlighter.codeToHtml(code, {
-      lang,
-      theme: "github-light",
-    });
+		// Use codeToHtml and strip the wrapper tags to get just the highlighted tokens
+		const html = highlighter.codeToHtml(code, {
+			lang,
+			theme: "github-light",
+		});
 
-    // codeToHtml wraps in <pre><code>...</code></pre> with <span class="line">...</span>
-    // Extract just the inner content
-    const match = html.match(/<code[^>]*><span class="line">(.*?)<\/span><\/code>/s);
-    return match ? match[1] : escapeHtml(code);
-  } catch {
-    return escapeHtml(code);
-  }
+		// codeToHtml wraps in <pre><code>...</code></pre> with <span class="line">...</span>
+		// Extract just the inner content
+		const match = html.match(/<code[^>]*><span class="line">(.*?)<\/span><\/code>/s);
+		return match ? match[1] : escapeHtml(code);
+	} catch {
+		return escapeHtml(code);
+	}
 }
 
 /**
@@ -66,42 +63,39 @@ export async function highlightLine(
  * @param lang - The Shiki language identifier
  * @returns Array of HTML strings, one per line, in the same order as input
  */
-export async function highlightLines(
-  lines: string[],
-  lang: string
-): Promise<string[]> {
-  try {
-    const highlighter = await getHighlighter();
+export async function highlightLines(lines: string[], lang: string): Promise<string[]> {
+	try {
+		const highlighter = await getHighlighter();
 
-    if (!loadedLanguages.has(lang)) {
-      try {
-        await highlighter.loadLanguage(lang as any);
-        loadedLanguages.add(lang);
-      } catch {
-        return lines.map(escapeHtml);
-      }
-    }
+		if (!loadedLanguages.has(lang)) {
+			try {
+				await highlighter.loadLanguage(lang as any);
+				loadedLanguages.add(lang);
+			} catch {
+				return lines.map(escapeHtml);
+			}
+		}
 
-    // Join lines and highlight as a single block for accurate cross-line tokenization
-    const fullCode = lines.join("\n");
-    const html = highlighter.codeToHtml(fullCode, {
-      lang,
-      theme: "github-light",
-    });
+		// Join lines and highlight as a single block for accurate cross-line tokenization
+		const fullCode = lines.join("\n");
+		const html = highlighter.codeToHtml(fullCode, {
+			lang,
+			theme: "github-light",
+		});
 
-    // Extract each <span class="line">...</span>
-    const lineMatches = html.match(/<span class="line">(.*?)<\/span>/gs);
-    if (!lineMatches || lineMatches.length !== lines.length) {
-      return lines.map(escapeHtml);
-    }
+		// Extract each <span class="line">...</span>
+		const lineMatches = html.match(/<span class="line">(.*?)<\/span>/gs);
+		if (!lineMatches || lineMatches.length !== lines.length) {
+			return lines.map(escapeHtml);
+		}
 
-    return lineMatches.map((m) => {
-      const inner = m.match(/<span class="line">(.*)<\/span>/s);
-      return inner ? inner[1] : "";
-    });
-  } catch {
-    return lines.map(escapeHtml);
-  }
+		return lineMatches.map((m) => {
+			const inner = m.match(/<span class="line">(.*)<\/span>/s);
+			return inner ? inner[1] : "";
+		});
+	} catch {
+		return lines.map(escapeHtml);
+	}
 }
 
 /**
@@ -109,9 +103,9 @@ export async function highlightLines(
  * Used for fallback when syntax highlighting is not available.
  */
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }

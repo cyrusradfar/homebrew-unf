@@ -15,34 +15,38 @@ export type OnNewData = () => void;
  * showing cached tab data that may be stale).
  */
 export function startPolling(onNewData: OnNewData, forceFirstRefresh = false): void {
-  stopPolling();
-  lastNewest = forceFirstRefresh ? null : (get(projectStatus)?.newest ?? null);
+	stopPolling();
+	lastNewest = forceFirstRefresh ? null : (get(projectStatus)?.newest ?? null);
 
-  intervalId = setInterval(async () => {
-    if (!document.hasFocus()) return;
+	intervalId = setInterval(async () => {
+		if (!document.hasFocus()) return;
 
-    // Global mode: no project status to check, refresh unconditionally
-    if (!get(selectedProject)) {
-      try { onNewData(); } catch (_e) { /* non-critical */ }
-      return;
-    }
+		// Global mode: no project status to check, refresh unconditionally
+		if (!get(selectedProject)) {
+			try {
+				onNewData();
+			} catch (_e) {
+				/* non-critical */
+			}
+			return;
+		}
 
-    try {
-      const status = await getProjectStatus();
-      projectStatus.set(status);
-      if (status.newest && status.newest !== lastNewest) {
-        lastNewest = status.newest;
-        onNewData();
-      }
-    } catch (_e) {
-      // Polling failures are non-critical
-    }
-  }, 5000);
+		try {
+			const status = await getProjectStatus();
+			projectStatus.set(status);
+			if (status.newest && status.newest !== lastNewest) {
+				lastNewest = status.newest;
+				onNewData();
+			}
+		} catch (_e) {
+			// Polling failures are non-critical
+		}
+	}, 5000);
 }
 
 export function stopPolling(): void {
-  if (intervalId !== null) {
-    clearInterval(intervalId);
-    intervalId = null;
-  }
+	if (intervalId !== null) {
+		clearInterval(intervalId);
+		intervalId = null;
+	}
 }

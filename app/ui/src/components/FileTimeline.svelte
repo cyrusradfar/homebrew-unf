@@ -1,239 +1,227 @@
 <script lang="ts">
-  import {
-    timelineEntries,
-    timelineLoading,
-    nextCursor,
-    selectedEntry,
-    fileFilters,
-    fileTree,
-    projectStatus,
-    timelineViewMode,
-    projects,
-    selectedProject,
-    activeTab,
-    histogramStart,
-    histogramEnd,
-    histogramIsSession,
-    GLOBAL_TAB,
-  } from "../lib/stores";
-  import HistogramRange from "./HistogramRange.svelte";
-  import FilterAutocomplete from "./FilterAutocomplete.svelte";
-  import { formatTimeRange } from "../lib/timeFormat";
-  import { extractCandidates } from "../lib/filterUtils";
-  import type { LogEntry } from "../lib/types";
+import { extractCandidates } from "../lib/filterUtils";
+import {
+	fileFilters,
+	GLOBAL_TAB,
+	histogramEnd,
+	histogramIsSession,
+	histogramStart,
+	selectedEntry,
+} from "../lib/stores";
+import { formatTimeRange } from "../lib/timeFormat";
+import type { LogEntry } from "../lib/types";
 
-  interface Props {
-    onLoadMore: () => void;
-  }
-  let { onLoadMore }: Props = $props();
+interface Props {
+	onLoadMore: () => void;
+}
+let { onLoadMore }: Props = $props();
 
-  let listEl: HTMLDivElement | undefined = $state();
-  let expandedFiles = $state<Set<string>>(new Set());
-  let pulsing = $state(false);
-  let prevSnapshots = $state<number | null>(null);
+let listEl: HTMLDivElement | undefined = $state();
+let expandedFiles = $state<Set<string>>(new Set());
+let pulsing = $state(false);
+let prevSnapshots = $state<number | null>(null);
 
-  let isGlobal = $derived($activeTab === GLOBAL_TAB);
+let isGlobal = $derived($activeTab === GLOBAL_TAB);
 
-  // Pulse animation when snapshot count changes
-  $effect(() => {
-    const snapshots = totalSnapshots;
-    if (prevSnapshots !== null && snapshots > 0 && snapshots !== prevSnapshots) {
-      pulsing = true;
-      setTimeout(() => { pulsing = false; }, 600);
-    }
-    prevSnapshots = snapshots;
-  });
+// Pulse animation when snapshot count changes
+$effect(() => {
+	const snapshots = totalSnapshots;
+	if (prevSnapshots !== null && snapshots > 0 && snapshots !== prevSnapshots) {
+		pulsing = true;
+		setTimeout(() => {
+			pulsing = false;
+		}, 600);
+	}
+	prevSnapshots = snapshots;
+});
 
-  function handleScroll() {
-    if (!listEl || $timelineLoading || !$nextCursor) return;
-    const { scrollTop, scrollHeight, clientHeight } = listEl;
-    if (scrollHeight - scrollTop - clientHeight < 200) {
-      onLoadMore();
-    }
-  }
+function handleScroll() {
+	if (!listEl || $timelineLoading || !$nextCursor) return;
+	const { scrollTop, scrollHeight, clientHeight } = listEl;
+	if (scrollHeight - scrollTop - clientHeight < 200) {
+		onLoadMore();
+	}
+}
 
-  function selectEntry(entry: LogEntry) {
-    selectedEntry.set(entry);
-  }
+function selectEntry(entry: LogEntry) {
+	selectedEntry.set(entry);
+}
 
-  function toggleFile(key: string) {
-    expandedFiles = new Set(expandedFiles);
-    if (expandedFiles.has(key)) {
-      expandedFiles.delete(key);
-    } else {
-      expandedFiles.add(key);
-    }
-  }
+function toggleFile(key: string) {
+	expandedFiles = new Set(expandedFiles);
+	if (expandedFiles.has(key)) {
+		expandedFiles.delete(key);
+	} else {
+		expandedFiles.add(key);
+	}
+}
 
-  function formatTime(ts: string): string {
-    const d = new Date(ts);
-    const now = new Date();
-    const isToday = d.toDateString() === now.toDateString();
-    const timePart = d.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    if (isToday) {
-      return timePart;
-    }
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + timePart;
-  }
+function formatTime(ts: string): string {
+	const d = new Date(ts);
+	const now = new Date();
+	const isToday = d.toDateString() === now.toDateString();
+	const timePart = d.toLocaleTimeString(undefined, {
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+	});
+	if (isToday) {
+		return timePart;
+	}
+	return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${timePart}`;
+}
 
-  function eventColor(event: string): string {
-    switch (event) {
-      case "created": return "var(--addition)";
-      case "deleted": return "var(--deletion)";
-      default: return "var(--text-secondary)";
-    }
-  }
+function eventColor(event: string): string {
+	switch (event) {
+		case "created":
+			return "var(--addition)";
+		case "deleted":
+			return "var(--deletion)";
+		default:
+			return "var(--text-secondary)";
+	}
+}
 
-  function truncatePath(path: string): string {
-    if (path.length <= 40) return path;
-    const parts = path.split("/");
-    if (parts.length <= 2) return path;
-    return "..." + parts.slice(-2).join("/");
-  }
+function truncatePath(path: string): string {
+	if (path.length <= 40) return path;
+	const parts = path.split("/");
+	if (parts.length <= 2) return path;
+	return `...${parts.slice(-2).join("/")}`;
+}
 
-  function formatFileName(path: string): string {
-    return path.split("/").pop() ?? path;
-  }
+function formatFileName(path: string): string {
+	return path.split("/").pop() ?? path;
+}
 
-  /** Get short project name from full path */
-  function projectShortName(projectPath: string): string {
-    return projectPath.split("/").pop() ?? projectPath;
-  }
+/** Get short project name from full path */
+function projectShortName(projectPath: string): string {
+	return projectPath.split("/").pop() ?? projectPath;
+}
 
-  /** Remove consecutive entries with the same hash (watcher debounce duplicates) */
-  function deduplicateConsecutive(entries: LogEntry[]): LogEntry[] {
-    return entries.filter((e, i) => i === 0 || e.hash !== entries[i - 1].hash);
-  }
+/** Remove consecutive entries with the same hash (watcher debounce duplicates) */
+function deduplicateConsecutive(entries: LogEntry[]): LogEntry[] {
+	return entries.filter((e, i) => i === 0 || e.hash !== entries[i - 1].hash);
+}
 
-  let isGrouped = $derived($timelineViewMode === "grouped");
+let isGrouped = $derived($timelineViewMode === "grouped");
 
-  // Fall back to project list data when status doesn't include counts (daemon stopped)
-  let selectedProjectData = $derived(
-    $projects.find((p) => p.path === $selectedProject)
-  );
+// Fall back to project list data when status doesn't include counts (daemon stopped)
+let selectedProjectData = $derived($projects.find((p) => p.path === $selectedProject));
 
-  // In global mode, compute totals from the file tree data
-  let totalSnapshots = $derived(
-    isGlobal
-      ? $fileTree.reduce((sum, g) => sum + g.entries.length, 0)
-      : ($projectStatus?.snapshots ?? selectedProjectData?.snapshots ?? 0)
-  );
-  let totalFiles = $derived(
-    isGlobal
-      ? $fileTree.length
-      : ($projectStatus?.files_tracked ?? selectedProjectData?.tracked_files ?? 0)
-  );
+// In global mode, compute totals from the file tree data
+let totalSnapshots = $derived(
+	isGlobal
+		? $fileTree.reduce((sum, g) => sum + g.entries.length, 0)
+		: ($projectStatus?.snapshots ?? selectedProjectData?.snapshots ?? 0)
+);
+let totalFiles = $derived(
+	isGlobal
+		? $fileTree.length
+		: ($projectStatus?.files_tracked ?? selectedProjectData?.tracked_files ?? 0)
+);
 
-  // Count unique projects in global mode
-  let totalProjects = $derived(
-    isGlobal
-      ? new Set($fileTree.map((g) => g.project).filter(Boolean)).size
-      : 0
-  );
+// Count unique projects in global mode
+let totalProjects = $derived(
+	isGlobal ? new Set($fileTree.map((g) => g.project).filter(Boolean)).size : 0
+);
 
-  // Filtered counts from fileTree (already filtered by backend when filter/time is active)
-  let filteredSnapshotCount = $derived(
-    $fileTree.reduce((sum, g) => sum + g.entries.length, 0)
-  );
-  let filteredFileCount = $derived($fileTree.length);
-  let isFiltered = $derived($fileFilters.length > 0 || $histogramStart !== null);
+// Filtered counts from fileTree (already filtered by backend when filter/time is active)
+let filteredSnapshotCount = $derived($fileTree.reduce((sum, g) => sum + g.entries.length, 0));
+let filteredFileCount = $derived($fileTree.length);
+let isFiltered = $derived($fileFilters.length > 0 || $histogramStart !== null);
 
-  // In global mode, group files by project first, then by directory within each project
-  let sortedFiles = $derived(
-    [...$fileTree]
-      .map((g) => ({ ...g, entries: deduplicateConsecutive(g.entries) }))
-      .sort((a, b) => {
-        // In global mode, sort by project first, then by activity
-        if (isGlobal && a.project !== b.project) {
-          return (a.project ?? "").localeCompare(b.project ?? "");
-        }
-        const aTime = a.entries.length > 0 ? new Date(a.entries[0].timestamp).getTime() : 0;
-        const bTime = b.entries.length > 0 ? new Date(b.entries[0].timestamp).getTime() : 0;
-        return bTime - aTime;
-      })
-  );
+// In global mode, group files by project first, then by directory within each project
+let sortedFiles = $derived(
+	[...$fileTree]
+		.map((g) => ({ ...g, entries: deduplicateConsecutive(g.entries) }))
+		.sort((a, b) => {
+			// In global mode, sort by project first, then by activity
+			if (isGlobal && a.project !== b.project) {
+				return (a.project ?? "").localeCompare(b.project ?? "");
+			}
+			const aTime = a.entries.length > 0 ? new Date(a.entries[0].timestamp).getTime() : 0;
+			const bTime = b.entries.length > 0 ? new Date(b.entries[0].timestamp).getTime() : 0;
+			return bTime - aTime;
+		})
+);
 
-  /** Extract parent directory from a file path */
-  function parentDir(path: string): string {
-    const parts = path.split("/");
-    return parts.length > 1 ? parts.slice(0, -1).join("/") + "/" : "";
-  }
+/** Extract parent directory from a file path */
+function parentDir(path: string): string {
+	const parts = path.split("/");
+	return parts.length > 1 ? `${parts.slice(0, -1).join("/")}/` : "";
+}
 
-  /** Group sorted files by parent directory (or project + directory in global mode) */
-  let dirGroups = $derived.by(() => {
-    const dirMap = new Map<string, typeof sortedFiles[number][]>();
+/** Group sorted files by parent directory (or project + directory in global mode) */
+let dirGroups = $derived.by(() => {
+	const dirMap = new Map<string, (typeof sortedFiles)[number][]>();
 
-    for (const file of sortedFiles) {
-      let dir: string;
-      if (isGlobal && file.project) {
-        // In global mode, prefix dir with project short name
-        const projName = projectShortName(file.project);
-        const fileDir = parentDir(file.path);
-        dir = fileDir ? `${projName}/${fileDir}` : `${projName}/`;
-      } else {
-        dir = parentDir(file.path);
-      }
-      if (!dirMap.has(dir)) {
-        dirMap.set(dir, []);
-      }
-      dirMap.get(dir)!.push(file);
-    }
+	for (const file of sortedFiles) {
+		let dir: string;
+		if (isGlobal && file.project) {
+			// In global mode, prefix dir with project short name
+			const projName = projectShortName(file.project);
+			const fileDir = parentDir(file.path);
+			dir = fileDir ? `${projName}/${fileDir}` : `${projName}/`;
+		} else {
+			dir = parentDir(file.path);
+		}
+		if (!dirMap.has(dir)) {
+			dirMap.set(dir, []);
+		}
+		dirMap.get(dir)!.push(file);
+	}
 
-    return Array.from(dirMap.entries())
-      .map(([dir, files]) => ({ dir, files }))
-      .sort((a, b) => {
-        // Root files (empty dir) always first
-        if (!a.dir && b.dir) return -1;
-        if (a.dir && !b.dir) return 1;
-        // Shallowest directories first, then alphabetical
-        const aDepth = a.dir.split("/").length;
-        const bDepth = b.dir.split("/").length;
-        if (aDepth !== bDepth) return aDepth - bDepth;
-        return a.dir.localeCompare(b.dir);
-      });
-  });
+	return Array.from(dirMap.entries())
+		.map(([dir, files]) => ({ dir, files }))
+		.sort((a, b) => {
+			// Root files (empty dir) always first
+			if (!a.dir && b.dir) return -1;
+			if (a.dir && !b.dir) return 1;
+			// Shallowest directories first, then alphabetical
+			const aDepth = a.dir.split("/").length;
+			const bDepth = b.dir.split("/").length;
+			if (aDepth !== bDepth) return aDepth - bDepth;
+			return a.dir.localeCompare(b.dir);
+		});
+});
 
-  /** Human-friendly time range description for the filter status bar */
-  let timeRange = $derived(
-    $histogramStart && $histogramEnd
-      ? formatTimeRange($histogramStart, $histogramEnd, $histogramIsSession)
-      : null
-  );
+/** Human-friendly time range description for the filter status bar */
+let timeRange = $derived(
+	$histogramStart && $histogramEnd
+		? formatTimeRange($histogramStart, $histogramEnd, $histogramIsSession)
+		: null
+);
 
-  /** Autocomplete candidates derived from file tree */
-  let candidates = $derived(extractCandidates($fileTree));
+/** Autocomplete candidates derived from file tree */
+let candidates = $derived(extractCandidates($fileTree));
 
-  /** Handle filter changes from autocomplete component */
-  function handleFiltersChange(newFilters: string[]) {
-    fileFilters.set(newFilters);
-  }
+/** Handle filter changes from autocomplete component */
+function handleFiltersChange(newFilters: string[]) {
+	fileFilters.set(newFilters);
+}
 
-  /** Remove a single file filter */
-  function removeFileFilter(path: string) {
-    fileFilters.set($fileFilters.filter((f) => f !== path));
-  }
+/** Remove a single file filter */
+function removeFileFilter(path: string) {
+	fileFilters.set($fileFilters.filter((f) => f !== path));
+}
 
-  /** Clear the time range filter */
-  function clearTimeRange() {
-    histogramStart.set(null);
-    histogramEnd.set(null);
-    histogramIsSession.set(false);
-  }
+/** Clear the time range filter */
+function clearTimeRange() {
+	histogramStart.set(null);
+	histogramEnd.set(null);
+	histogramIsSession.set(false);
+}
 
-  /** Clear all active filters */
-  function clearAllFilters() {
-    fileFilters.set([]);
-    clearTimeRange();
-  }
+/** Clear all active filters */
+function clearAllFilters() {
+	fileFilters.set([]);
+	clearTimeRange();
+}
 
-  /** Unique key for file in accordion (includes project in global mode) */
-  function fileKey(group: { path: string; project?: string }): string {
-    return group.project ? `${group.project}:${group.path}` : group.path;
-  }
+/** Unique key for file in accordion (includes project in global mode) */
+function fileKey(group: { path: string; project?: string }): string {
+	return group.project ? `${group.project}:${group.path}` : group.path;
+}
 </script>
 
 <div class="timeline-container">

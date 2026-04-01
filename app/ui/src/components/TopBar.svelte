@@ -1,145 +1,166 @@
 <script lang="ts">
-  import { projects, openTabs, activeTab, GLOBAL_TAB, error } from "../lib/stores";
-  import { closeTab, switchTab } from "../lib/stores";
-  import { listProjects, removeProject, watchProject, unwatchProject } from "../lib/api";
-  import { open } from "@tauri-apps/plugin-dialog";
-  import type { ProjectEntry } from "../lib/types";
-  import SettingsPopover from "./SettingsPopover.svelte";
+import { open } from "@tauri-apps/plugin-dialog";
+import { listProjects, removeProject, unwatchProject, watchProject } from "../lib/api";
+import { error, GLOBAL_TAB, projects } from "../lib/stores";
+import type { ProjectEntry } from "../lib/types";
 
-  interface Props {
-    onProjectOpened: (path: string) => void;
-  }
+interface Props {
+	onProjectOpened: (path: string) => void;
+}
 
-  let { onProjectOpened }: Props = $props();
+let { onProjectOpened }: Props = $props();
 
-  let dropdownOpen = $state(false);
-  let dropdownButtonRef: HTMLButtonElement | undefined = $state();
-  let dropdownRef: HTMLDivElement | undefined = $state();
-  let settingsOpen = $state(false);
+let dropdownOpen = $state(false);
+let dropdownButtonRef: HTMLButtonElement | undefined = $state();
+let dropdownRef: HTMLDivElement | undefined = $state();
+let settingsOpen = $state(false);
 
-  // Helper: status color for indicator dot
-  function statusColor(status: ProjectEntry["status"]): string {
-    switch (status) {
-      case "watching": return "var(--addition)";
-      case "stopped": return "var(--text-muted)";
-      case "crashed":
-      case "orphaned":
-      case "error": return "var(--deletion)";
-      default: return "var(--text-muted)";
-    }
-  }
+// Helper: status color for indicator dot
+function statusColor(status: ProjectEntry["status"]): string {
+	switch (status) {
+		case "watching":
+			return "var(--addition)";
+		case "stopped":
+			return "var(--text-muted)";
+		case "crashed":
+		case "orphaned":
+		case "error":
+			return "var(--deletion)";
+		default:
+			return "var(--text-muted)";
+	}
+}
 
-  // Helper: get action button label for a project status
-  function actionLabel(status: ProjectEntry["status"]): string {
-    switch (status) {
-      case "watching": return "Stop";
-      case "stopped": return "Start";
-      case "crashed": return "Restart";
-      case "orphaned":
-      case "error": return "Remove";
-      default: return "";
-    }
-  }
+// Helper: get action button label for a project status
+function actionLabel(status: ProjectEntry["status"]): string {
+	switch (status) {
+		case "watching":
+			return "Stop";
+		case "stopped":
+			return "Start";
+		case "crashed":
+			return "Restart";
+		case "orphaned":
+		case "error":
+			return "Remove";
+		default:
+			return "";
+	}
+}
 
-  // Helper: get action button style class for a project status
-  function actionStyle(status: ProjectEntry["status"]): string {
-    switch (status) {
-      case "watching": return "action-muted";
-      case "stopped": return "action-accent";
-      case "crashed": return "action-warning";
-      case "orphaned":
-      case "error": return "action-danger";
-      default: return "";
-    }
-  }
+// Helper: get action button style class for a project status
+function actionStyle(status: ProjectEntry["status"]): string {
+	switch (status) {
+		case "watching":
+			return "action-muted";
+		case "stopped":
+			return "action-accent";
+		case "crashed":
+			return "action-warning";
+		case "orphaned":
+		case "error":
+			return "action-danger";
+		default:
+			return "";
+	}
+}
 
-  // Close dropdown when clicking outside
-  function handleClickOutside(event: MouseEvent) {
-    if (!dropdownOpen) return;
-    const target = event.target as HTMLElement;
-    if (dropdownRef && !dropdownRef.contains(target) &&
-        dropdownButtonRef && !dropdownButtonRef.contains(target)) {
-      dropdownOpen = false;
-    }
-  }
+// Close dropdown when clicking outside
+function handleClickOutside(event: MouseEvent) {
+	if (!dropdownOpen) return;
+	const target = event.target as HTMLElement;
+	if (
+		dropdownRef &&
+		!dropdownRef.contains(target) &&
+		dropdownButtonRef &&
+		!dropdownButtonRef.contains(target)
+	) {
+		dropdownOpen = false;
+	}
+}
 
-  // Handle selecting a project from the dropdown
-  function handleSelectProject(path: string) {
-    dropdownOpen = false;
-    onProjectOpened(path);
-  }
+// Handle selecting a project from the dropdown
+function handleSelectProject(path: string) {
+	dropdownOpen = false;
+	onProjectOpened(path);
+}
 
-  // Handle per-project action buttons (Start/Stop/Restart/Remove)
-  async function handleAction(e: MouseEvent, project: ProjectEntry) {
-    e.stopPropagation();
-    const path = project.path;
-    try {
-      switch (project.status) {
-        case "watching":
-          await unwatchProject(path);
-          break;
-        case "stopped":
-        case "crashed":
-          await watchProject(path);
-          break;
-        case "orphaned":
-        case "error":
-          await removeProject(path);
-          break;
-      }
-      // Refresh project list
-      const result = await listProjects();
-      projects.set(result.projects);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      error.set(`Failed to ${getActionVerb(project.status)}: ${errorMessage}`);
-      console.error("Action failed:", err);
-    }
-  }
+// Handle per-project action buttons (Start/Stop/Restart/Remove)
+async function handleAction(e: MouseEvent, project: ProjectEntry) {
+	e.stopPropagation();
+	const path = project.path;
+	try {
+		switch (project.status) {
+			case "watching":
+				await unwatchProject(path);
+				break;
+			case "stopped":
+			case "crashed":
+				await watchProject(path);
+				break;
+			case "orphaned":
+			case "error":
+				await removeProject(path);
+				break;
+		}
+		// Refresh project list
+		const result = await listProjects();
+		projects.set(result.projects);
+	} catch (err) {
+		const errorMessage = err instanceof Error ? err.message : String(err);
+		error.set(`Failed to ${getActionVerb(project.status)}: ${errorMessage}`);
+		console.error("Action failed:", err);
+	}
+}
 
-  // Helper: get action verb for error message
-  function getActionVerb(status: ProjectEntry["status"]): string {
-    switch (status) {
-      case "watching": return "stop watching";
-      case "stopped": return "start watching";
-      case "crashed": return "restart";
-      case "orphaned":
-      case "error": return "remove";
-      default: return "perform action on";
-    }
-  }
+// Helper: get action verb for error message
+function getActionVerb(status: ProjectEntry["status"]): string {
+	switch (status) {
+		case "watching":
+			return "stop watching";
+		case "stopped":
+			return "start watching";
+		case "crashed":
+			return "restart";
+		case "orphaned":
+		case "error":
+			return "remove";
+		default:
+			return "perform action on";
+	}
+}
 
-  // Handle watch new folder button
-  async function handleWatchNewFolder() {
-    try {
-      const selected = await open({ directory: true, title: "Select folder to watch" });
-      if (selected && typeof selected === "string") {
-        await watchProject(selected);
-        const result = await listProjects();
-        projects.set(result.projects);
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      error.set(`Failed to watch folder: ${errorMessage}`);
-      console.error("Watch folder failed:", err);
-    }
-  }
+// Handle watch new folder button
+async function handleWatchNewFolder() {
+	try {
+		const selected = await open({ directory: true, title: "Select folder to watch" });
+		if (selected && typeof selected === "string") {
+			await watchProject(selected);
+			const result = await listProjects();
+			projects.set(result.projects);
+		}
+	} catch (err) {
+		const errorMessage = err instanceof Error ? err.message : String(err);
+		error.set(`Failed to watch folder: ${errorMessage}`);
+		console.error("Watch folder failed:", err);
+	}
+}
 
-  // Toggle dropdown
-  function toggleDropdown() {
-    dropdownOpen = !dropdownOpen;
-  }
+// Toggle dropdown
+function toggleDropdown() {
+	dropdownOpen = !dropdownOpen;
+}
 
-  // Toggle settings popover
-  function toggleSettings() {
-    settingsOpen = !settingsOpen;
-  }
+// Toggle settings popover
+function toggleSettings() {
+	settingsOpen = !settingsOpen;
+}
 
-  /** Get display label for a tab */
-  function tabLabel(tabId: string): string {
-    if (tabId === GLOBAL_TAB) return "All";
-    return tabId.split("/").pop() ?? tabId;
-  }
+/** Get display label for a tab */
+function tabLabel(tabId: string): string {
+	if (tabId === GLOBAL_TAB) return "All";
+	return tabId.split("/").pop() ?? tabId;
+}
 </script>
 
 <!-- Click outside detector -->

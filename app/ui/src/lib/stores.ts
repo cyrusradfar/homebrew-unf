@@ -1,13 +1,13 @@
-import { writable, get } from "svelte/store";
+import { get, writable } from "svelte/store";
 import type {
-  ProjectEntry,
-  StatusResponse,
-  LogEntry,
-  GroupedLogFile,
-  DensityBucket,
-  DiffResponse,
-  CatResponse,
-  TabState,
+	CatResponse,
+	DensityBucket,
+	DiffResponse,
+	GroupedLogFile,
+	LogEntry,
+	ProjectEntry,
+	StatusResponse,
+	TabState,
 } from "./types";
 import { createDefaultTabState, GLOBAL_TAB } from "./types";
 
@@ -97,7 +97,6 @@ export const histogramEnd = writable<string | null>(null);
 /** Whether the current histogram range was set by clicking a session diamond */
 export const histogramIsSession = writable<boolean>(false);
 
-
 // ============================================================================
 // TAB PERSISTENCE (localStorage)
 // ============================================================================
@@ -105,27 +104,27 @@ export const histogramIsSession = writable<boolean>(false);
 const STORAGE_KEY = "unfudged_tabs";
 
 function persistTabs(): void {
-  try {
-    const data = { openTabs: get(openTabs), activeTab: get(activeTab) };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch (_e) {
-    // localStorage unavailable
-  }
+	try {
+		const data = { openTabs: get(openTabs), activeTab: get(activeTab) };
+		localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+	} catch (_e) {
+		// localStorage unavailable
+	}
 }
 
 /** Load saved tabs. Call once on app mount, before project list loads. */
 export function loadPersistedTabs(): { openTabs: string[]; activeTab: string | null } {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { openTabs: [], activeTab: null };
-    const data = JSON.parse(raw);
-    return {
-      openTabs: Array.isArray(data.openTabs) ? data.openTabs : [],
-      activeTab: typeof data.activeTab === "string" ? data.activeTab : null,
-    };
-  } catch (_e) {
-    return { openTabs: [], activeTab: null };
-  }
+	try {
+		const raw = localStorage.getItem(STORAGE_KEY);
+		if (!raw) return { openTabs: [], activeTab: null };
+		const data = JSON.parse(raw);
+		return {
+			openTabs: Array.isArray(data.openTabs) ? data.openTabs : [],
+			activeTab: typeof data.activeTab === "string" ? data.activeTab : null,
+		};
+	} catch (_e) {
+		return { openTabs: [], activeTab: null };
+	}
 }
 
 // ============================================================================
@@ -137,30 +136,30 @@ export function loadPersistedTabs(): { openTabs: string[]; activeTab: string | n
  * for the currently active tab. Call this before switching tabs.
  */
 export function saveCurrentTabState(): void {
-  const activeTabPath = get(activeTab);
-  if (!activeTabPath) return;
+	const activeTabPath = get(activeTab);
+	if (!activeTabPath) return;
 
-  const tabState: TabState = {
-    projectPath: activeTabPath,
-    projectStatus: get(projectStatus),
-    timelineEntries: get(timelineEntries),
-    nextCursor: get(nextCursor),
-    timelineLoading: get(timelineLoading),
-    fileTree: get(fileTree),
-    fileFilters: get(fileFilters),
-    selectedEntry: get(selectedEntry),
-    viewMode: get(viewMode),
-    diffData: get(diffData),
-    contentData: get(contentData),
-    contentLoading: get(contentLoading),
-    timelineViewMode: get(timelineViewMode),
-    densityBuckets: get(densityBuckets),
-    histogramStart: get(histogramStart),
-    histogramEnd: get(histogramEnd),
-    histogramIsSession: get(histogramIsSession),
-  };
+	const tabState: TabState = {
+		projectPath: activeTabPath,
+		projectStatus: get(projectStatus),
+		timelineEntries: get(timelineEntries),
+		nextCursor: get(nextCursor),
+		timelineLoading: get(timelineLoading),
+		fileTree: get(fileTree),
+		fileFilters: get(fileFilters),
+		selectedEntry: get(selectedEntry),
+		viewMode: get(viewMode),
+		diffData: get(diffData),
+		contentData: get(contentData),
+		contentLoading: get(contentLoading),
+		timelineViewMode: get(timelineViewMode),
+		densityBuckets: get(densityBuckets),
+		histogramStart: get(histogramStart),
+		histogramEnd: get(histogramEnd),
+		histogramIsSession: get(histogramIsSession),
+	};
 
-  tabStateStorage.set(activeTabPath, tabState);
+	tabStateStorage.set(activeTabPath, tabState);
 }
 
 /**
@@ -168,24 +167,24 @@ export function saveCurrentTabState(): void {
  * If no state exists for this tab, initializes it with defaults.
  */
 export function restoreTabState(tabId: string): void {
-  const tabState = tabStateStorage.get(tabId) || createDefaultTabState(tabId);
+	const tabState = tabStateStorage.get(tabId) || createDefaultTabState(tabId);
 
-  projectStatus.set(tabState.projectStatus);
-  timelineEntries.set(tabState.timelineEntries);
-  nextCursor.set(tabState.nextCursor);
-  timelineLoading.set(tabState.timelineLoading);
-  fileTree.set(tabState.fileTree);
-  fileFilters.set(Array.isArray(tabState.fileFilters) ? tabState.fileFilters : []);
-  selectedEntry.set(tabState.selectedEntry);
-  viewMode.set(tabState.viewMode);
-  diffData.set(tabState.diffData);
-  contentData.set(tabState.contentData);
-  contentLoading.set(tabState.contentLoading);
-  timelineViewMode.set(tabState.timelineViewMode);
-  densityBuckets.set(tabState.densityBuckets);
-  histogramStart.set(tabState.histogramStart);
-  histogramEnd.set(tabState.histogramEnd);
-  histogramIsSession.set(tabState.histogramIsSession);
+	projectStatus.set(tabState.projectStatus);
+	timelineEntries.set(tabState.timelineEntries);
+	nextCursor.set(tabState.nextCursor);
+	timelineLoading.set(tabState.timelineLoading);
+	fileTree.set(tabState.fileTree);
+	fileFilters.set(Array.isArray(tabState.fileFilters) ? tabState.fileFilters : []);
+	selectedEntry.set(tabState.selectedEntry);
+	viewMode.set(tabState.viewMode);
+	diffData.set(tabState.diffData);
+	contentData.set(tabState.contentData);
+	contentLoading.set(tabState.contentLoading);
+	timelineViewMode.set(tabState.timelineViewMode);
+	densityBuckets.set(tabState.densityBuckets);
+	histogramStart.set(tabState.histogramStart);
+	histogramEnd.set(tabState.histogramEnd);
+	histogramIsSession.set(tabState.histogramIsSession);
 }
 
 /**
@@ -193,12 +192,12 @@ export function restoreTabState(tabId: string): void {
  * Automatically saves the current tab state and restores the target tab state.
  */
 export function openTab(tabId: string): void {
-  const currentTabs = get(openTabs);
-  if (!currentTabs.includes(tabId)) {
-    openTabs.set([...currentTabs, tabId]);
-  }
-  switchTab(tabId);
-  persistTabs();
+	const currentTabs = get(openTabs);
+	if (!currentTabs.includes(tabId)) {
+		openTabs.set([...currentTabs, tabId]);
+	}
+	switchTab(tabId);
+	persistTabs();
 }
 
 /**
@@ -206,51 +205,51 @@ export function openTab(tabId: string): void {
  * If closing the active tab, switches to an adjacent tab (or null if last tab).
  */
 export function closeTab(tabId: string): void {
-  // Global tab cannot be closed — it's the permanent default
-  if (tabId === GLOBAL_TAB) return;
+	// Global tab cannot be closed — it's the permanent default
+	if (tabId === GLOBAL_TAB) return;
 
-  const currentTabs = get(openTabs);
-  const filteredTabs = currentTabs.filter((p) => p !== tabId);
+	const currentTabs = get(openTabs);
+	const filteredTabs = currentTabs.filter((p) => p !== tabId);
 
-  tabStateStorage.delete(tabId);
-  openTabs.set(filteredTabs);
+	tabStateStorage.delete(tabId);
+	openTabs.set(filteredTabs);
 
-  const currentActive = get(activeTab);
-  if (currentActive === tabId) {
-    const nextTab = filteredTabs.length > 0 ? filteredTabs[0] : null;
-    if (nextTab) {
-      switchTab(nextTab);
-    } else {
-      activeTab.set(null);
-      selectedProject.set(null);
-    }
-  }
-  persistTabs();
+	const currentActive = get(activeTab);
+	if (currentActive === tabId) {
+		const nextTab = filteredTabs.length > 0 ? filteredTabs[0] : null;
+		if (nextTab) {
+			switchTab(nextTab);
+		} else {
+			activeTab.set(null);
+			selectedProject.set(null);
+		}
+	}
+	persistTabs();
 }
 
 /**
  * Switch to a different tab, saving the current tab state and restoring the target tab state.
  */
 export function switchTab(tabId: string): void {
-  // Save current tab state before switching
-  saveCurrentTabState();
+	// Save current tab state before switching
+	saveCurrentTabState();
 
-  // Switch to the target tab
-  activeTab.set(tabId);
-  selectedProject.set(tabId === GLOBAL_TAB ? null : tabId);
+	// Switch to the target tab
+	activeTab.set(tabId);
+	selectedProject.set(tabId === GLOBAL_TAB ? null : tabId);
 
-  // Restore the target tab's state
-  restoreTabState(tabId);
-  persistTabs();
+	// Restore the target tab's state
+	restoreTabState(tabId);
+	persistTabs();
 }
 
 /** Check if the given tab identifier represents the global view */
 export function isGlobalTab(tabId: string | null): boolean {
-  return tabId === GLOBAL_TAB;
+	return tabId === GLOBAL_TAB;
 }
 
 /** Check if a tab has cached data (non-empty timeline or file tree) */
 export function hasTabData(tabId: string): boolean {
-  const state = tabStateStorage.get(tabId);
-  return !!state && (state.timelineEntries.length > 0 || state.fileTree.length > 0);
+	const state = tabStateStorage.get(tabId);
+	return !!state && (state.timelineEntries.length > 0 || state.fileTree.length > 0);
 }

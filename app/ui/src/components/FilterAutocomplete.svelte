@@ -1,149 +1,149 @@
 <script lang="ts">
-  import { scoreMatch } from "../lib/filterUtils";
-  import type { FilterCandidate } from "../lib/filterUtils";
+import type { FilterCandidate } from "../lib/filterUtils";
+import { scoreMatch } from "../lib/filterUtils";
 
-  interface Props {
-    filters: string[];
-    onFiltersChange: (filters: string[]) => void;
-    onClearAll?: () => void;
-    candidates: FilterCandidate[];
-  }
+interface Props {
+	filters: string[];
+	onFiltersChange: (filters: string[]) => void;
+	onClearAll?: () => void;
+	candidates: FilterCandidate[];
+}
 
-  let { filters, onFiltersChange, onClearAll, candidates }: Props = $props();
+let { filters, onFiltersChange, onClearAll, candidates }: Props = $props();
 
-  let query = $state("");
-  let highlightedIndex = $state(0);
-  let dropdownOpen = $state(false);
-  let inputEl: HTMLInputElement | undefined = $state();
+let query = $state("");
+let highlightedIndex = $state(0);
+let dropdownOpen = $state(false);
+let inputEl: HTMLInputElement | undefined = $state();
 
-  // Open dropdown when query changes (user typing)
-  $effect(() => {
-    if (query.length > 0) {
-      dropdownOpen = true;
-      highlightedIndex = 0;
-    }
-  });
+// Open dropdown when query changes (user typing)
+$effect(() => {
+	if (query.length > 0) {
+		dropdownOpen = true;
+		highlightedIndex = 0;
+	}
+});
 
-  /** Score and filter candidates by query, excluding already-selected filters */
-  let matchedCandidates = $derived.by(() => {
-    if (!query) return [];
+/** Score and filter candidates by query, excluding already-selected filters */
+let matchedCandidates = $derived.by(() => {
+	if (!query) return [];
 
-    const scored = candidates
-      .filter((c) => !filters.includes(c.path)) // exclude already selected
-      .map((c) => ({
-        ...c,
-        score: scoreMatch(query, c.path),
-      }))
-      .filter((c) => c.score > 0) // only matches
-      .sort((a, b) => {
-        // Sort by: score desc, path length asc, alphabetical
-        if (a.score !== b.score) return b.score - a.score;
-        if (a.path.length !== b.path.length) return a.path.length - b.path.length;
-        return a.path.localeCompare(b.path);
-      })
-      .slice(0, 10); // top 10 only
+	const scored = candidates
+		.filter((c) => !filters.includes(c.path)) // exclude already selected
+		.map((c) => ({
+			...c,
+			score: scoreMatch(query, c.path),
+		}))
+		.filter((c) => c.score > 0) // only matches
+		.sort((a, b) => {
+			// Sort by: score desc, path length asc, alphabetical
+			if (a.score !== b.score) return b.score - a.score;
+			if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+			return a.path.localeCompare(b.path);
+		})
+		.slice(0, 10); // top 10 only
 
-    return scored;
-  });
+	return scored;
+});
 
-  /** Add a filter and reset input. If adding a folder, subsume child filters. */
-  function addFilter(path: string) {
-    if (!filters.includes(path)) {
-      let newFilters: string[];
-      if (path.endsWith("/")) {
-        // Folder subsumption: remove existing filters that are children of this folder
-        newFilters = filters.filter((f) => !f.startsWith(path));
-        newFilters.push(path);
-      } else {
-        newFilters = [...filters, path];
-      }
-      onFiltersChange(newFilters);
-    }
-    query = "";
-    highlightedIndex = 0;
-    dropdownOpen = false;
-    inputEl?.focus();
-  }
+/** Add a filter and reset input. If adding a folder, subsume child filters. */
+function addFilter(path: string) {
+	if (!filters.includes(path)) {
+		let newFilters: string[];
+		if (path.endsWith("/")) {
+			// Folder subsumption: remove existing filters that are children of this folder
+			newFilters = filters.filter((f) => !f.startsWith(path));
+			newFilters.push(path);
+		} else {
+			newFilters = [...filters, path];
+		}
+		onFiltersChange(newFilters);
+	}
+	query = "";
+	highlightedIndex = 0;
+	dropdownOpen = false;
+	inputEl?.focus();
+}
 
-  /** Remove a filter */
-  function removeFilter(path: string) {
-    onFiltersChange(filters.filter((f) => f !== path));
-  }
+/** Remove a filter */
+function removeFilter(path: string) {
+	onFiltersChange(filters.filter((f) => f !== path));
+}
 
-  /** Handle keyboard navigation and shortcuts */
-  function handleKeydown(e: KeyboardEvent) {
-    // Dropdown open: handle navigation
-    if (dropdownOpen && matchedCandidates.length > 0) {
-      switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault();
-          highlightedIndex = (highlightedIndex + 1) % matchedCandidates.length;
-          break;
-        case "ArrowUp":
-          e.preventDefault();
-          highlightedIndex =
-            (highlightedIndex - 1 + matchedCandidates.length) %
-            matchedCandidates.length;
-          break;
-        case "Enter":
-        case "Tab":
-          e.preventDefault();
-          addFilter(matchedCandidates[highlightedIndex].path);
-          break;
-        case "Escape":
-          e.preventDefault();
-          dropdownOpen = false;
-          break;
-        default:
-          break;
-      }
-      return;
-    }
+/** Handle keyboard navigation and shortcuts */
+function handleKeydown(e: KeyboardEvent) {
+	// Dropdown open: handle navigation
+	if (dropdownOpen && matchedCandidates.length > 0) {
+		switch (e.key) {
+			case "ArrowDown":
+				e.preventDefault();
+				highlightedIndex = (highlightedIndex + 1) % matchedCandidates.length;
+				break;
+			case "ArrowUp":
+				e.preventDefault();
+				highlightedIndex =
+					(highlightedIndex - 1 + matchedCandidates.length) % matchedCandidates.length;
+				break;
+			case "Enter":
+			case "Tab":
+				e.preventDefault();
+				addFilter(matchedCandidates[highlightedIndex].path);
+				break;
+			case "Escape":
+				e.preventDefault();
+				dropdownOpen = false;
+				break;
+			default:
+				break;
+		}
+		return;
+	}
 
-    // Dropdown closed: handle global shortcuts
-    switch (e.key) {
-      case "Escape":
-        if (query.length > 0) {
-          e.preventDefault();
-          query = "";
-        } else if (onClearAll) {
-          e.preventDefault();
-          onClearAll();
-        }
-        break;
-      case "Backspace":
-        if (query.length === 0 && filters.length > 0) {
-          e.preventDefault();
-          removeFilter(filters[filters.length - 1]);
-        }
-        break;
-      default:
-        break;
-    }
-  }
+	// Dropdown closed: handle global shortcuts
+	switch (e.key) {
+		case "Escape":
+			if (query.length > 0) {
+				e.preventDefault();
+				query = "";
+			} else if (onClearAll) {
+				e.preventDefault();
+				onClearAll();
+			}
+			break;
+		case "Backspace":
+			if (query.length === 0 && filters.length > 0) {
+				e.preventDefault();
+				removeFilter(filters[filters.length - 1]);
+			}
+			break;
+		default:
+			break;
+	}
+}
 
-  /** Close dropdown on blur with small delay to allow click handling */
-  function handleInputBlur() {
-    setTimeout(() => {
-      dropdownOpen = false;
-    }, 100);
-  }
+/** Close dropdown on blur with small delay to allow click handling */
+function handleInputBlur() {
+	setTimeout(() => {
+		dropdownOpen = false;
+	}, 100);
+}
 
-  /** Format a candidate for display */
-  function formatCandidate(
-    candidate: FilterCandidate
-  ): { basename: string; parentPath: string | null } {
-    if (candidate.isFolder) {
-      // For folders, show full path with trailing slash
-      return { basename: candidate.path, parentPath: null };
-    }
+/** Format a candidate for display */
+function formatCandidate(candidate: FilterCandidate): {
+	basename: string;
+	parentPath: string | null;
+} {
+	if (candidate.isFolder) {
+		// For folders, show full path with trailing slash
+		return { basename: candidate.path, parentPath: null };
+	}
 
-    // For files: extract basename and parent
-    const parts = candidate.path.split("/");
-    const basename = parts[parts.length - 1];
-    const parentPath = parts.length > 1 ? parts.slice(0, -1).join("/") : null;
-    return { basename, parentPath };
-  }
+	// For files: extract basename and parent
+	const parts = candidate.path.split("/");
+	const basename = parts[parts.length - 1];
+	const parentPath = parts.length > 1 ? parts.slice(0, -1).join("/") : null;
+	return { basename, parentPath };
+}
 </script>
 
 <div class="filter-autocomplete-container">

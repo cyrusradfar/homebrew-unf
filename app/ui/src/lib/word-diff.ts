@@ -8,8 +8,8 @@
  * Represents a contiguous segment of text that either changed or remained the same.
  */
 export interface WordSegment {
-  text: string;
-  changed: boolean;
+	text: string;
+	changed: boolean;
 }
 
 /**
@@ -21,21 +21,21 @@ export interface WordSegment {
  * @returns An object with `deleted` and `inserted` arrays of word segments
  */
 export function computeWordDiff(
-  deletedLine: string,
-  insertedLine: string
+	deletedLine: string,
+	insertedLine: string
 ): { deleted: WordSegment[]; inserted: WordSegment[] } {
-  // Split into words (preserving whitespace as separate tokens)
-  const oldWords = tokenize(deletedLine);
-  const newWords = tokenize(insertedLine);
+	// Split into words (preserving whitespace as separate tokens)
+	const oldWords = tokenize(deletedLine);
+	const newWords = tokenize(insertedLine);
 
-  // Simple LCS-based diff on word tokens
-  const lcs = computeLCS(oldWords, newWords);
+	// Simple LCS-based diff on word tokens
+	const lcs = computeLCS(oldWords, newWords);
 
-  // Build segments from LCS result
-  const deleted = buildSegments(oldWords, lcs.oldIndices);
-  const inserted = buildSegments(newWords, lcs.newIndices);
+	// Build segments from LCS result
+	const deleted = buildSegments(oldWords, lcs.oldIndices);
+	const inserted = buildSegments(newWords, lcs.newIndices);
 
-  return { deleted, inserted };
+	return { deleted, inserted };
 }
 
 /**
@@ -46,8 +46,8 @@ export function computeWordDiff(
  * @returns An array of tokens (words and whitespace)
  */
 function tokenize(text: string): string[] {
-  // Split into groups of: non-whitespace sequences or whitespace sequences
-  return text.match(/\S+|\s+/g) ?? [text];
+	// Split into groups of: non-whitespace sequences or whitespace sequences
+	return text.match(/\S+|\s+/g) ?? [text];
 }
 
 /**
@@ -59,47 +59,45 @@ function tokenize(text: string): string[] {
  * @returns Object with oldIndices and newIndices sets containing matched positions
  */
 function computeLCS(
-  a: string[],
-  b: string[]
+	a: string[],
+	b: string[]
 ): { oldIndices: Set<number>; newIndices: Set<number> } {
-  const m = a.length;
-  const n = b.length;
+	const m = a.length;
+	const n = b.length;
 
-  // DP table
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    Array(n + 1).fill(0)
-  );
+	// DP table
+	const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
 
-  // Fill DP table
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-  }
+	// Fill DP table
+	for (let i = 1; i <= m; i++) {
+		for (let j = 1; j <= n; j++) {
+			if (a[i - 1] === b[j - 1]) {
+				dp[i][j] = dp[i - 1][j - 1] + 1;
+			} else {
+				dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+			}
+		}
+	}
 
-  // Backtrack to find matched indices
-  const oldIndices = new Set<number>();
-  const newIndices = new Set<number>();
-  let i = m,
-    j = n;
-  while (i > 0 && j > 0) {
-    if (a[i - 1] === b[j - 1]) {
-      oldIndices.add(i - 1);
-      newIndices.add(j - 1);
-      i--;
-      j--;
-    } else if (dp[i - 1][j] > dp[i][j - 1]) {
-      i--;
-    } else {
-      j--;
-    }
-  }
+	// Backtrack to find matched indices
+	const oldIndices = new Set<number>();
+	const newIndices = new Set<number>();
+	let i = m,
+		j = n;
+	while (i > 0 && j > 0) {
+		if (a[i - 1] === b[j - 1]) {
+			oldIndices.add(i - 1);
+			newIndices.add(j - 1);
+			i--;
+			j--;
+		} else if (dp[i - 1][j] > dp[i][j - 1]) {
+			i--;
+		} else {
+			j--;
+		}
+	}
 
-  return { oldIndices, newIndices };
+	return { oldIndices, newIndices };
 }
 
 /**
@@ -109,29 +107,26 @@ function computeLCS(
  * @param matchedIndices - Set of indices that matched (LCS)
  * @returns Array of word segments with changed flag
  */
-function buildSegments(
-  tokens: string[],
-  matchedIndices: Set<number>
-): WordSegment[] {
-  const segments: WordSegment[] = [];
-  let currentText = "";
-  let currentChanged: boolean | null = null;
+function buildSegments(tokens: string[], matchedIndices: Set<number>): WordSegment[] {
+	const segments: WordSegment[] = [];
+	let currentText = "";
+	let currentChanged: boolean | null = null;
 
-  for (let i = 0; i < tokens.length; i++) {
-    const changed = !matchedIndices.has(i);
-    if (currentChanged !== null && changed !== currentChanged) {
-      // State change: flush current segment and start new one
-      segments.push({ text: currentText, changed: currentChanged });
-      currentText = "";
-    }
-    currentText += tokens[i];
-    currentChanged = changed;
-  }
+	for (let i = 0; i < tokens.length; i++) {
+		const changed = !matchedIndices.has(i);
+		if (currentChanged !== null && changed !== currentChanged) {
+			// State change: flush current segment and start new one
+			segments.push({ text: currentText, changed: currentChanged });
+			currentText = "";
+		}
+		currentText += tokens[i];
+		currentChanged = changed;
+	}
 
-  // Flush final segment
-  if (currentText && currentChanged !== null) {
-    segments.push({ text: currentText, changed: currentChanged });
-  }
+	// Flush final segment
+	if (currentText && currentChanged !== null) {
+		segments.push({ text: currentText, changed: currentChanged });
+	}
 
-  return segments;
+	return segments;
 }
