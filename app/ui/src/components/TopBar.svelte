@@ -1,7 +1,15 @@
 <script lang="ts">
 import { open } from "@tauri-apps/plugin-dialog";
 import { listProjects, removeProject, unwatchProject, watchProject } from "../lib/api";
-import { error, GLOBAL_TAB, projects } from "../lib/stores";
+import {
+	activeTab,
+	closeTab,
+	error,
+	GLOBAL_TAB,
+	openTabs,
+	projects,
+	switchTab,
+} from "../lib/stores";
 import type { ProjectEntry } from "../lib/types";
 
 interface Props {

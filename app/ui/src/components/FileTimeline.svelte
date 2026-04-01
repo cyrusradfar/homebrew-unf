@@ -1,12 +1,22 @@
 <script lang="ts">
 import { extractCandidates } from "../lib/filterUtils";
 import {
+	activeTab,
+	densityBuckets,
 	fileFilters,
+	fileTree,
 	GLOBAL_TAB,
 	histogramEnd,
 	histogramIsSession,
 	histogramStart,
+	nextCursor,
+	projectStatus,
+	projects,
 	selectedEntry,
+	selectedProject,
+	timelineEntries,
+	timelineLoading,
+	timelineViewMode,
 } from "../lib/stores";
 import { formatTimeRange } from "../lib/timeFormat";
 import type { LogEntry } from "../lib/types";

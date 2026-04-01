@@ -1,10 +1,22 @@
 <script lang="ts">
 import { getDiff, getFileContent } from "../lib/api";
+import {
+	buildRenderItems,
+	type CollapsedRegion,
+	findWordDiffPairs,
+	formatHunkHeader,
+} from "../lib/diff-helpers";
 import { highlightLines } from "../lib/highlight";
-import { detectLanguage, extractFunctionName, getFunctionPattern } from "../lib/language-map";
-import { contentData, contentLoading, diffData, error } from "../lib/stores";
-import type { DiffHunk, DiffHunkLine } from "../lib/types";
-import { computeWordDiff, type WordSegment } from "../lib/word-diff";
+import { detectLanguage } from "../lib/language-map";
+import {
+	contentData,
+	contentLoading,
+	diffData,
+	error,
+	selectedEntry,
+	viewMode,
+} from "../lib/stores";
+import type { WordSegment } from "../lib/word-diff";
 
 // Track which entry is currently loaded to avoid redundant fetches
 let currentEntryId = $state<number | null>(null);
@@ -117,193 +129,9 @@ $effect(() => {
 	}
 });
 
-/**
- * Find word-diff pairs in a sequence of hunk lines.
- * Groups consecutive deletes followed by consecutive inserts and computes
- * word-level diffs for paired lines.
- *
- * @param lines - All lines in a hunk
- * @returns Map from line index to word segments
- */
-function findWordDiffPairs(lines: DiffHunkLine[]): Map<number, WordSegment[]> {
-	const result = new Map<number, WordSegment[]>();
-	let i = 0;
-
-	while (i < lines.length) {
-		// Find a run of deletes
-		const deleteStart = i;
-		while (i < lines.length && lines[i].op === "delete") i++;
-		const deleteEnd = i;
-
-		// Find a run of inserts immediately after
-		const insertStart = i;
-		while (i < lines.length && lines[i].op === "insert") i++;
-		const insertEnd = i;
-
-		// Pair up deletes and inserts
-		const deleteCount = deleteEnd - deleteStart;
-		const insertCount = insertEnd - insertStart;
-		const pairCount = Math.min(deleteCount, insertCount);
-
-		for (let p = 0; p < pairCount; p++) {
-			const delIdx = deleteStart + p;
-			const insIdx = insertStart + p;
-			const { deleted, inserted } = computeWordDiff(lines[delIdx].content, lines[insIdx].content);
-			result.set(delIdx, deleted);
-			result.set(insIdx, inserted);
-		}
-
-		// Skip past equal lines or anything else
-		if (deleteCount === 0 && insertCount === 0) i++;
-	}
-
-	return result;
-}
-
-/**
- * Compute word diffs for all hunks.
- * Returns an array of Maps (one per hunk) from line index to word segments.
- */
 let wordDiffsByHunk = $derived(
 	($diffData?.changes[0]?.hunks ?? []).map((hunk) => findWordDiffPairs(hunk.lines))
 );
-
-/**
- * Represents a collapsed region between hunks.
- */
-interface CollapsedRegion {
-	startLine: number;
-	endLine: number;
-	lineCount: number;
-	regionIndex: number;
-	functionName: string | null;
-}
-
-/**
- * Find the enclosing function name by scanning backward through preceding hunk context.
- * Looks at the last 10 lines of all preceding hunks for a function definition.
- */
-function findEnclosingFunction(
-	hunks: DiffHunk[],
-	regionIndex: number,
-	lang: string | null
-): string | null {
-	if (!lang) return null;
-	const pattern = getFunctionPattern(lang);
-	if (!pattern) return null;
-
-	// Scan backward through all preceding hunks, checking the last 10 lines of each
-	for (let h = regionIndex; h >= 0; h--) {
-		if (h >= hunks.length) continue;
-		const hunk = hunks[h];
-		// Scan lines of this hunk in reverse
-		for (let i = hunk.lines.length - 1; i >= 0 && i >= hunk.lines.length - 10; i--) {
-			const line = hunk.lines[i];
-			if (pattern.test(line.content)) {
-				return extractFunctionName(line.content, lang);
-			}
-		}
-	}
-
-	return null;
-}
-
-/**
- * Calculate which collapsed regions exist between hunks.
- * Returns an array of { startLine, endLine, lineCount, regionIndex, functionName }
- */
-function calculateCollapsedRegions(hunks: DiffHunk[], lang: string | null): CollapsedRegion[] {
-	const regions: CollapsedRegion[] = [];
-	let regionIndex = 0;
-
-	if (!hunks || hunks.length === 0) return regions;
-
-	// Region before the first hunk (if first hunk doesn't start at line 1)
-	if (hunks[0].old_start > 1) {
-		const lineCount = hunks[0].old_start - 1;
-		regions.push({
-			startLine: 1,
-			endLine: hunks[0].old_start - 1,
-			lineCount,
-			regionIndex: regionIndex++,
-			functionName: findEnclosingFunction(hunks, -1, lang),
-		});
-	}
-
-	// Regions between consecutive hunks
-	for (let i = 0; i < hunks.length - 1; i++) {
-		const currentHunk = hunks[i];
-		const nextHunk = hunks[i + 1];
-		const gapStart = currentHunk.old_start + currentHunk.old_count;
-		const gapEnd = nextHunk.old_start - 1;
-
-		if (gapEnd >= gapStart) {
-			const lineCount = gapEnd - gapStart + 1;
-			regions.push({
-				startLine: gapStart,
-				endLine: gapEnd,
-				lineCount,
-				regionIndex: regionIndex++,
-				functionName: findEnclosingFunction(hunks, i, lang),
-			});
-		}
-	}
-
-	return regions;
-}
-
-/**
- * Build a flat list of { type, data } items to render, interleaving hunks and collapsed regions.
- * Includes hunk index and line index for word-diff lookups.
- */
-function buildRenderItems(hunks: DiffHunk[], lang: string | null) {
-	const items: Array<{
-		type: "region" | "hunk-header" | "line";
-		data: any;
-		hunkIndex?: number;
-		lineIndex?: number;
-	}> = [];
-
-	if (!hunks || hunks.length === 0) return items;
-
-	const collapsedRegions = calculateCollapsedRegions(hunks, lang);
-	const regionMap = new Map(collapsedRegions.map((r) => [r.regionIndex, r]));
-
-	let regionIdx = 0;
-
-	// Region before first hunk
-	if (regionMap.has(regionIdx)) {
-		const region = regionMap.get(regionIdx)!;
-		items.push({ type: "region", data: region });
-		regionIdx++;
-	}
-
-	// Each hunk and the gap after it
-	for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {
-		const hunk = hunks[hunkIndex];
-		items.push({ type: "hunk-header", data: hunk });
-
-		// All lines in this hunk
-		for (let lineIndex = 0; lineIndex < hunk.lines.length; lineIndex++) {
-			const line = hunk.lines[lineIndex];
-			items.push({
-				type: "line",
-				data: line,
-				hunkIndex,
-				lineIndex,
-			});
-		}
-
-		// Gap after this hunk
-		if (regionMap.has(regionIdx)) {
-			const region = regionMap.get(regionIdx)!;
-			items.push({ type: "region", data: region });
-			regionIdx++;
-		}
-	}
-
-	return items;
-}
 
 // Track which collapsed regions are expanded
 let expandedRegions = $state(new Set<number>());
@@ -314,13 +142,6 @@ function toggleCollapsedRegion(regionIndex: number) {
 	} else {
 		expandedRegions.add(regionIndex);
 	}
-}
-
-/**
- * Format a hunk header in unified diff format.
- */
-function formatHunkHeader(hunk: DiffHunk): string {
-	return `@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`;
 }
 </script>
 
