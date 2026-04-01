@@ -1,8 +1,8 @@
 cask "unfudged" do
-  version "0.18.1"
-  sha256 "92c63c84f3216a2a74903615deac511d9aeb1a0a4e92bba3c1ff29e9e14eeea5"
+  version "0.18.2"
+  sha256 "0e275e478d6d97326ae551388f2360ed34425f487cca355f6124a585765d6ce6"
 
-  url "https://downloads.unfudged.io/releases/v0.18.1/UNFUDGED-v0.18.1-universal.dmg"
+  url "https://downloads.unfudged.io/releases/v0.18.2/UNFUDGED-v0.18.2-universal.dmg"
   name "UNFUDGED"
   desc "High-resolution filesystem flight recorder - desktop app"
   homepage "https://unfudged.io"
