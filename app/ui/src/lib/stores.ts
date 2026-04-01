@@ -101,23 +101,65 @@ export const histogramIsSession = writable<boolean>(false);
 // TAB PERSISTENCE (localStorage)
 // ============================================================================
 
-const STORAGE_KEY = "unfudged_tabs";
+const TABS_KEY = "unfudged_tabs";
+const TAB_DATA_KEY = "unfudged_tab_data";
+const MAX_TAB_DATA_SIZE = 2 * 1024 * 1024; // 2MB cap
 
 function persistTabs(): void {
 	try {
 		const data = { openTabs: get(openTabs), activeTab: get(activeTab) };
-		localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+		localStorage.setItem(TABS_KEY, JSON.stringify(data));
 	} catch (_e) {
 		// localStorage unavailable
+	}
+}
+
+/** Persist a subset of TabState for all open tabs (stale-while-revalidate on restart). */
+function persistTabData(): void {
+	try {
+		const entries: Record<string, Partial<TabState>> = {};
+		for (const [id, state] of tabStateStorage) {
+			entries[id] = {
+				projectPath: state.projectPath,
+				timelineEntries: state.timelineEntries,
+				fileTree: state.fileTree,
+				fileFilters: state.fileFilters,
+				timelineViewMode: state.timelineViewMode,
+				densityBuckets: state.densityBuckets,
+				histogramStart: state.histogramStart,
+				histogramEnd: state.histogramEnd,
+				histogramIsSession: state.histogramIsSession,
+			};
+		}
+		const json = JSON.stringify(entries);
+		if (json.length <= MAX_TAB_DATA_SIZE) {
+			localStorage.setItem(TAB_DATA_KEY, json);
+		}
+	} catch (_e) {
+		// localStorage unavailable or quota exceeded
 	}
 }
 
 /** Load saved tabs. Call once on app mount, before project list loads. */
 export function loadPersistedTabs(): { openTabs: string[]; activeTab: string | null } {
 	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
+		const raw = localStorage.getItem(TABS_KEY);
 		if (!raw) return { openTabs: [], activeTab: null };
 		const data = JSON.parse(raw);
+
+		// Restore persisted tab data into tabStateStorage
+		try {
+			const dataRaw = localStorage.getItem(TAB_DATA_KEY);
+			if (dataRaw) {
+				const entries = JSON.parse(dataRaw) as Record<string, Partial<TabState>>;
+				for (const [id, partial] of Object.entries(entries)) {
+					tabStateStorage.set(id, { ...createDefaultTabState(id), ...partial });
+				}
+			}
+		} catch (_e) {
+			// Data parsing failed, continue with empty tab states
+		}
+
 		return {
 			openTabs: Array.isArray(data.openTabs) ? data.openTabs : [],
 			activeTab: typeof data.activeTab === "string" ? data.activeTab : null,
@@ -160,6 +202,7 @@ export function saveCurrentTabState(): void {
 	};
 
 	tabStateStorage.set(activeTabPath, tabState);
+	persistTabData();
 }
 
 /**
