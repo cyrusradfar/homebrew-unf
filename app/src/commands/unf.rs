@@ -1,21 +1,21 @@
 use std::process::Command;
+use std::sync::OnceLock;
 
 use crate::error::AppError;
 
-/// Resolve the full path to the `unf` binary.
+/// Resolve the full path to the `unf` binary (cached for process lifetime).
 /// macOS GUI apps don't inherit the shell PATH, so we check common locations.
-fn find_unf() -> String {
-    let candidates = [
-        "/opt/homebrew/bin/unf",
-        "/usr/local/bin/unf",
-    ];
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            return path.to_string();
+/// Note: if `unf` is installed after app launch, restart the app to pick it up.
+fn find_unf() -> &'static str {
+    static UNF_PATH: OnceLock<String> = OnceLock::new();
+    UNF_PATH.get_or_init(|| {
+        for path in ["/opt/homebrew/bin/unf", "/usr/local/bin/unf"] {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
         }
-    }
-    // Fall back to bare name (works if launched from terminal)
-    "unf".to_string()
+        "unf".to_string()
+    })
 }
 
 /// Run `unf` with the given args in the given project directory.

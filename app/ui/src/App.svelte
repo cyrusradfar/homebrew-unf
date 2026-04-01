@@ -14,6 +14,7 @@
     densityBuckets,
     error,
     activeTab,
+    openTabs,
     openTab,
     histogramStart,
     histogramEnd,
@@ -76,13 +77,10 @@
         const active = validTabs.includes(saved.activeTab ?? "")
           ? saved.activeTab!
           : validTabs[0];
-        // Register all tabs; $effect handles data loading for the active one
-        for (const tab of validTabs) {
-          openTab(tab);
-        }
-        if (active !== validTabs[validTabs.length - 1]) {
-          openTab(active);
-        }
+        // Set all tabs at once to avoid N sequential activations.
+        // Only openTab(active) triggers the $effect → activateProject.
+        openTabs.set(validTabs);
+        openTab(active);
       }
     } catch (e) {
       error.set(`Failed to load projects: ${e}`);

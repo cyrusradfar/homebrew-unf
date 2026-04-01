@@ -570,7 +570,7 @@
 
   .diff-line {
     display: grid;
-    grid-template-columns: 48px 48px 20px max-content;
+    grid-template-columns: 48px 48px 20px 1fr;
     min-width: 100%;
     padding: 0;
     white-space: pre;
