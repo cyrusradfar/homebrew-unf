@@ -7,18 +7,29 @@ let lastNewest: string | null = null;
 
 export type OnNewData = () => void;
 
-export function startPolling(onNewData: OnNewData): void {
+/**
+ * Start polling for data changes.
+ * For project tabs: checks project status and only refreshes when newest changes.
+ * For global tab (selectedProject is null): refreshes unconditionally each tick.
+ * If forceFirstRefresh is true, the first tick always triggers onNewData (used when
+ * showing cached tab data that may be stale).
+ */
+export function startPolling(onNewData: OnNewData, forceFirstRefresh = false): void {
   stopPolling();
-  lastNewest = get(projectStatus)?.newest ?? null;
+  lastNewest = forceFirstRefresh ? null : (get(projectStatus)?.newest ?? null);
 
   intervalId = setInterval(async () => {
     if (!document.hasFocus()) return;
-    if (!get(selectedProject)) return;
+
+    // Global mode: no project status to check, refresh unconditionally
+    if (!get(selectedProject)) {
+      try { onNewData(); } catch (_e) { /* non-critical */ }
+      return;
+    }
 
     try {
       const status = await getProjectStatus();
       projectStatus.set(status);
-
       if (status.newest && status.newest !== lastNewest) {
         lastNewest = status.newest;
         onNewData();

@@ -248,3 +248,9 @@ export function switchTab(tabId: string): void {
 export function isGlobalTab(tabId: string | null): boolean {
   return tabId === GLOBAL_TAB;
 }
+
+/** Check if a tab has cached data (non-empty timeline or file tree) */
+export function hasTabData(tabId: string): boolean {
+  const state = tabStateStorage.get(tabId);
+  return !!state && (state.timelineEntries.length > 0 || state.fileTree.length > 0);
+}

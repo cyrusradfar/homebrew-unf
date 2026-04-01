@@ -19,6 +19,7 @@
     histogramStart,
     histogramEnd,
     loadPersistedTabs,
+    hasTabData,
   } from "./lib/stores";
   import { GLOBAL_TAB as GLOBAL_TAB_CONST } from "./lib/types";
   import type { GlobalGroupedLogResponse, GroupedLogFile } from "./lib/types";
@@ -34,6 +35,11 @@
   let sidebarWidth = $state(320);
   let isDragging = $state(false);
   let layoutEl: HTMLDivElement | undefined = $state();
+
+  // Monotonic counter to discard stale async responses.
+  // Each data-loading function captures the current value; if it has
+  // changed by the time the response arrives, the result is discarded.
+  let requestGen = 0;
 
   function handleDragStart(e: MouseEvent) {
     e.preventDefault();
@@ -92,121 +98,104 @@
     // activateProject is triggered by the activeTab $effect
   }
 
-  /** Select a project on the backend, load all data, start polling. */
-  async function activateProject(path: string) {
-    stopPolling(); // Stop old polling FIRST to prevent stale data races
+  /** Select a project on the backend, load all data, start polling.
+   *  If cached is true, skip the full data reload (tab already has data from restoreTabState). */
+  async function activateProject(path: string, cached = false) {
+    const gen = ++requestGen;
+    stopPolling();
     error.set(null);
     try {
       const status = await selectProject(path);
-      // RACE: User may switch tabs during the await above. Check if we're still the active tab.
-      if (get(activeTab) !== path) return;
+      if (gen !== requestGen) return;
       projectStatus.set(status);
-      await refreshAllData();
-      // RACE: User may switch tabs during refreshAllData. Verify before polling starts.
-      if (get(activeTab) !== path) return;
-      startPolling(() => refreshAllData());
+      if (!cached) {
+        await refreshAllData(gen);
+        if (gen !== requestGen) return;
+      }
+      startPolling(() => refreshAllData(requestGen), cached);
     } catch (e) {
-      // RACE: Only set error if we're still the active tab. Stale errors from old activations
-      // should not overwrite new tab's state.
-      if (get(activeTab) === path) {
+      if (gen === requestGen) {
         error.set(`Failed to activate project: ${e}`);
       }
     }
   }
 
-  /** Activate the global (cross-project) view. */
-  async function activateGlobal() {
+  /** Activate the global (cross-project) view.
+   *  If cached is true, skip the full data reload (tab already has data from restoreTabState). */
+  async function activateGlobal(cached = false) {
+    const gen = ++requestGen;
     stopPolling();
     error.set(null);
     projectStatus.set(null);
     try {
-      await refreshGlobalData();
-      // RACE: User may switch away from global tab during refreshGlobalData.
-      // Only keep polling if we're still on the global tab. activateProject will
-      // handle polling restart if user switches to a project tab.
-      if (get(activeTab) === GLOBAL_TAB_CONST) {
-        startPolling(() => refreshGlobalData());
+      if (!cached) {
+        await refreshGlobalData(gen);
+        if (gen !== requestGen) return;
       }
+      startPolling(() => refreshGlobalData(requestGen));
     } catch (e) {
-      // RACE: Only set error if we're still on global tab.
-      if (get(activeTab) === GLOBAL_TAB_CONST) {
+      if (gen === requestGen) {
         error.set(`Failed to load global view: ${e}`);
       }
     }
   }
 
   /** Reload timeline and file tree for the global view. */
-  async function refreshGlobalData() {
+  async function refreshGlobalData(gen: number) {
     const globs = filtersToGlobs(get(fileFilters));
     const include = globs.length > 0 ? globs : undefined;
     const histStart = get(histogramStart);
     const histEnd = get(histogramEnd);
     await Promise.all([
-      loadGlobalTimeline(include, histStart, histEnd),
-      loadGlobalFileTree(include, histStart, histEnd),
-      loadGlobalDensity(include),
+      loadGlobalTimeline(gen, include, histStart, histEnd),
+      loadGlobalFileTree(gen, include, histStart, histEnd),
+      loadGlobalDensity(gen, include),
     ]);
   }
 
   /** Reload timeline, file tree, and density using current store values. */
-  async function refreshAllData() {
+  async function refreshAllData(gen: number) {
     const globs = filtersToGlobs(get(fileFilters));
     const include = globs.length > 0 ? globs : undefined;
     const histStart = get(histogramStart);
     const histEnd = get(histogramEnd);
     await Promise.all([
-      loadTimeline(undefined, include, histStart, histEnd),
-      loadFileTree(include, histStart, histEnd),
-      loadDensity(include),
+      loadTimeline(gen, undefined, include, histStart, histEnd),
+      loadFileTree(gen, include, histStart, histEnd),
+      loadDensity(gen, include),
     ]);
   }
 
-  async function loadGlobalTimeline(include?: string[], since?: string | null, until?: string | null) {
+  async function loadGlobalTimeline(gen: number, include?: string[], since?: string | null, until?: string | null) {
     timelineLoading.set(true);
     try {
-      const result = await getGlobalLog({
-        limit: 200,
-        include,
-        since: since ?? undefined,
-      });
+      const result = await getGlobalLog({ limit: 200, include, since: since ?? undefined });
+      if (gen !== requestGen) return;
       let entries = result.entries;
-      if (until) {
-        entries = entries.filter((e) => e.timestamp <= until);
-      }
+      if (until) entries = entries.filter((e) => e.timestamp <= until);
       timelineEntries.set(entries);
-      nextCursor.set(null); // Global mode doesn't support cursor pagination
+      nextCursor.set(null);
     } catch (e) {
-      error.set(`Failed to load global timeline: ${e}`);
+      if (gen === requestGen) error.set(`Failed to load global timeline: ${e}`);
     } finally {
-      timelineLoading.set(false);
+      if (gen === requestGen) timelineLoading.set(false);
     }
   }
 
-  async function loadGlobalFileTree(include?: string[], since?: string | null, until?: string | null) {
+  async function loadGlobalFileTree(gen: number, include?: string[], since?: string | null, until?: string | null) {
     try {
       const result = await getGlobalLog({
-        groupByFile: true,
-        include,
-        since: since ?? undefined,
-        limit: 100000,
+        groupByFile: true, include, since: since ?? undefined, limit: 100000,
       }) as GlobalGroupedLogResponse;
-      // Convert global grouped response to flat GroupedLogFile[] with project field
+      if (gen !== requestGen) return;
       const files: GroupedLogFile[] = [];
       for (const proj of result.projects) {
         for (const file of proj.files) {
-          // Tag each entry with its project
           const taggedEntries = file.entries.map((e) => ({ ...e, project: proj.project }));
           let entries = taggedEntries;
-          if (until) {
-            entries = entries.filter((e) => e.timestamp <= until);
-          }
+          if (until) entries = entries.filter((e) => e.timestamp <= until);
           if (entries.length > 0) {
-            files.push({
-              ...file,
-              entries,
-              change_count: entries.length,
-              project: proj.project,
-            });
+            files.push({ ...file, entries, change_count: entries.length, project: proj.project });
           }
         }
       }
@@ -216,20 +205,15 @@
     }
   }
 
-  async function loadTimeline(cursor?: string, include?: string[], since?: string | null, until?: string | null) {
+  async function loadTimeline(gen: number, cursor?: string, include?: string[], since?: string | null, until?: string | null) {
     timelineLoading.set(true);
     try {
       const result = await getLog({
-        limit: 50,
-        cursor: cursor ?? undefined,
-        include,
-        since: since ?? undefined,
+        limit: 50, cursor: cursor ?? undefined, include, since: since ?? undefined,
       });
+      if (gen !== requestGen) return;
       let entries = result.entries;
-      // Client-side upper-bound filter (backend only supports --since, not --until)
-      if (until) {
-        entries = entries.filter((e) => e.timestamp <= until);
-      }
+      if (until) entries = entries.filter((e) => e.timestamp <= until);
       if (cursor) {
         timelineEntries.update((prev) => [...prev, ...entries]);
       } else {
@@ -237,22 +221,19 @@
       }
       nextCursor.set(result.next_cursor);
     } catch (e) {
-      error.set(`Failed to load timeline: ${e}`);
+      if (gen === requestGen) error.set(`Failed to load timeline: ${e}`);
     } finally {
-      timelineLoading.set(false);
+      if (gen === requestGen) timelineLoading.set(false);
     }
   }
 
-  async function loadFileTree(include?: string[], since?: string | null, until?: string | null) {
+  async function loadFileTree(gen: number, include?: string[], since?: string | null, until?: string | null) {
     try {
       const result = await getLog({
-        groupByFile: true,
-        include,
-        since: since ?? undefined,
-        limit: 100000, // Override default 1000 cap for accurate counts
+        groupByFile: true, include, since: since ?? undefined, limit: 100000,
       });
+      if (gen !== requestGen) return;
       let files = result.files;
-      // Client-side upper-bound filter (backend only supports --since, not --until)
       if (until) {
         files = files
           .map((f) => {
@@ -267,27 +248,22 @@
     }
   }
 
-  async function loadDensity(include?: string[]) {
+  async function loadDensity(gen: number, include?: string[]) {
     try {
-      const result = await getDensity({
-        buckets: 100,
-        include,
-      });
+      const result = await getDensity({ buckets: 100, include });
+      if (gen !== requestGen) return;
       densityBuckets.set(result.buckets);
     } catch (_e) {
       // Non-critical
     }
   }
 
-  async function loadGlobalDensity(include?: string[]) {
+  async function loadGlobalDensity(gen: number, include?: string[]) {
     try {
-      const result = await getGlobalDensity({
-        buckets: 100,
-        include,
-      });
+      const result = await getGlobalDensity({ buckets: 100, include });
+      if (gen !== requestGen) return;
       densityBuckets.set(result.buckets);
     } catch (_e) {
-      // Non-critical — show empty histogram
       densityBuckets.set([]);
     }
   }
@@ -301,9 +277,10 @@
     return get(activeTab) === GLOBAL_TAB_CONST;
   }
 
-  // Re-load data when file filters change (skip initial mount)
+  // Re-load data when file filters change (debounced 150ms, skip initial mount)
   let filterInitialized = false;
   let prevFilterVal: string = "";
+  let filterDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const currentFilters = $fileFilters;
     const serialized = JSON.stringify(currentFilters);
@@ -314,26 +291,24 @@
     }
     if (serialized === prevFilterVal) return;
     prevFilterVal = serialized;
-    if (get(activeTab)) {
+    if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = setTimeout(() => {
+      if (!get(activeTab)) return;
+      const gen = ++requestGen;
       const globs = filtersToGlobs(currentFilters);
       const include = globs.length > 0 ? globs : undefined;
       const since = get(histogramStart);
       const until = get(histogramEnd);
-      // RACE: Multiple filter changes can trigger rapid-fire concurrent requests.
-      // If user types in filter box repeatedly, previous requests may complete after
-      // newer ones, overwriting fileTree/timelineEntries with stale data.
-      // Mitigation: Use timelineLoading guard in pagination, but filter changes bypass this.
-      // Consider: Add request ID or cancellation token for filter/histogram effects.
       if (isGlobal()) {
-        loadGlobalTimeline(include, since, until);
-        loadGlobalFileTree(include, since, until);
-        loadGlobalDensity(include);
+        loadGlobalTimeline(gen, include, since, until);
+        loadGlobalFileTree(gen, include, since, until);
+        loadGlobalDensity(gen, include);
       } else {
-        loadTimeline(undefined, include, since, until);
-        loadDensity(include);
-        loadFileTree(include, since, until);
+        loadTimeline(gen, undefined, include, since, until);
+        loadDensity(gen, include);
+        loadFileTree(gen, include, since, until);
       }
-    }
+    }, 150);
   });
 
   // Re-load data when histogram range changes
@@ -353,32 +328,31 @@
     prevHistStart = start;
     prevHistEnd = end;
     if (get(activeTab)) {
+      const gen = ++requestGen;
       const globs = filtersToGlobs(get(fileFilters));
       const include = globs.length > 0 ? globs : undefined;
-      // RACE: Histogram range drags can fire multiple updates quickly. Concurrent
-      // loadTimeline/loadFileTree calls could complete out of order, corrupting the
-      // timeline/fileTree state with stale data.
-      // Mitigation: Consider debouncing histogram changes or using request IDs.
       if (isGlobal()) {
-        loadGlobalTimeline(include, start, end);
-        loadGlobalFileTree(include, start, end);
+        loadGlobalTimeline(gen, include, start, end);
+        loadGlobalFileTree(gen, include, start, end);
       } else {
-        loadTimeline(undefined, include, start, end);
-        loadFileTree(include, start, end);
+        loadTimeline(gen, undefined, include, start, end);
+        loadFileTree(gen, include, start, end);
       }
     }
   });
 
-  // When active tab changes, select project on backend and load data
+  // When active tab changes, select project on backend and load data.
+  // If the tab has cached data from a previous visit, show it immediately
+  // and let the poller handle incremental updates.
   let prevActiveTab: string | null = null;
   $effect(() => {
     const current = $activeTab;
     if (current === prevActiveTab) return;
     prevActiveTab = current;
     if (current === GLOBAL_TAB_CONST) {
-      activateGlobal();
+      activateGlobal(hasTabData(GLOBAL_TAB_CONST));
     } else if (current) {
-      activateProject(current);
+      activateProject(current, hasTabData(current));
     } else {
       stopPolling();
     }
@@ -401,15 +375,12 @@
     {#if $activeTab}
       <FileTimeline onLoadMore={() => {
         if ($activeTab === GLOBAL_TAB_CONST) return; // No pagination in global mode
-        // RACE: Prevent multiple concurrent pagination requests. User clicking "Load More"
-        // while a previous pagination is in flight could cause out-of-order state updates
-        // (timelineEntries.update() concatenates, so order matters).
         if ($timelineLoading) return;
         const cursor = $nextCursor;
         if (cursor) {
           const globs = filtersToGlobs(get(fileFilters));
           const include = globs.length > 0 ? globs : undefined;
-          loadTimeline(cursor, include, get(histogramStart), get(histogramEnd));
+          loadTimeline(requestGen, cursor, include, get(histogramStart), get(histogramEnd));
         }
       }} />
     {:else}
