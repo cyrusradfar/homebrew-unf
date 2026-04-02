@@ -1,6 +1,6 @@
 [package]
 name = "unfudged-app"
-version = "0.18.3"
+version = "0.18.4"
 edition = "2021"
 description = "UNFUDGED Time-Travel Desktop App"
 license = "MIT OR Apache-2.0"
