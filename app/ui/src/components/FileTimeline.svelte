@@ -120,22 +120,18 @@ let isGrouped = $derived($timelineViewMode === "grouped");
 // Fall back to project list data when status doesn't include counts (daemon stopped)
 let selectedProjectData = $derived($projects.find((p) => p.path === $selectedProject));
 
-// In global mode, compute totals from the file tree data
+// In global mode, use project list for accurate totals (file tree is capped at 5k)
 let totalSnapshots = $derived(
 	isGlobal
-		? $fileTree.reduce((sum, g) => sum + g.entries.length, 0)
+		? $projects.reduce((sum, p) => sum + (p.snapshots ?? 0), 0)
 		: ($projectStatus?.snapshots ?? selectedProjectData?.snapshots ?? 0)
 );
 let totalFiles = $derived(
 	isGlobal
-		? $fileTree.length
+		? $projects.reduce((sum, p) => sum + (p.tracked_files ?? 0), 0)
 		: ($projectStatus?.files_tracked ?? selectedProjectData?.tracked_files ?? 0)
 );
-
-// Count unique projects in global mode
-let totalProjects = $derived(
-	isGlobal ? new Set($fileTree.map((g) => g.project).filter(Boolean)).size : 0
-);
+let totalProjects = $derived(isGlobal ? $projects.length : 0);
 
 // Filtered counts from fileTree (already filtered by backend when filter/time is active)
 let filteredSnapshotCount = $derived($fileTree.reduce((sum, g) => sum + g.entries.length, 0));
