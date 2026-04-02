@@ -20,13 +20,13 @@ brew install cyrusradfar/unf/unf
 ### Debian / Ubuntu
 
 ```bash
-curl -fsSLO https://downloads.unfudged.io/releases/v0.18.2/unf_0.18.2_amd64.deb
+curl -fsSLO https://downloads.unfudged.io/releases/v0.18.3/unf_0.18.3_amd64.deb
 sudo dpkg -i unf_0.18.0_amd64.deb
 ```
 
 For ARM64:
 ```bash
-curl -fsSLO https://downloads.unfudged.io/releases/v0.18.2/unf_0.18.2_arm64.deb
+curl -fsSLO https://downloads.unfudged.io/releases/v0.18.3/unf_0.18.3_arm64.deb
 sudo dpkg -i unf_0.18.0_arm64.deb
 ```
 
