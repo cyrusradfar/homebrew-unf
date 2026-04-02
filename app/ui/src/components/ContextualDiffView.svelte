@@ -75,6 +75,9 @@ let highlightedMap = $state(new Map<string, string>());
 $effect(() => {
 	highlightedMap = new Map();
 
+	// Skip highlighting for large diffs unless user opted in
+	if (totalDiffLines > DIFF_LINE_LIMIT && !showFullDiff) return;
+
 	if ($viewMode === "diff") {
 		const data = $diffData;
 		if (!data || data.changes.length === 0) {
@@ -129,8 +132,27 @@ $effect(() => {
 	}
 });
 
+// Large diff protection: count total lines across all hunks
+const DIFF_LINE_LIMIT = 5000;
+let totalDiffLines = $derived(
+	($diffData?.changes[0]?.hunks ?? []).reduce((sum, h) => sum + h.lines.length, 0)
+);
+let isDiffTruncated = $state(false);
+let showFullDiff = $state(false);
+
+// Reset truncation state when diff data changes
+$effect(() => {
+	if ($diffData) {
+		isDiffTruncated = totalDiffLines > DIFF_LINE_LIMIT;
+		showFullDiff = false;
+	}
+});
+
+// Only compute word diffs if under the limit (or user opted in)
 let wordDiffsByHunk = $derived(
-	($diffData?.changes[0]?.hunks ?? []).map((hunk) => findWordDiffPairs(hunk.lines))
+	totalDiffLines > DIFF_LINE_LIMIT && !showFullDiff
+		? []
+		: ($diffData?.changes[0]?.hunks ?? []).map((hunk) => findWordDiffPairs(hunk.lines))
 );
 
 // Track which collapsed regions are expanded
@@ -185,6 +207,14 @@ function toggleCollapsedRegion(regionIndex: number) {
           </div>
 
           {#if change.hunks && change.hunks.length > 0}
+            {#if isDiffTruncated && !showFullDiff}
+              <div class="diff-truncated">
+                <p>{totalDiffLines.toLocaleString()} lines changed — too large to render safely.</p>
+                <button class="show-btn" onclick={() => showFullDiff = true}>
+                  Show full diff ({totalDiffLines.toLocaleString()} lines)
+                </button>
+              </div>
+            {:else}
             {@const lang = detectLanguage(change.file)}
             {#each buildRenderItems(change.hunks, lang) as item (item)}
               {#if item.type === "region"}
@@ -247,6 +277,7 @@ function toggleCollapsedRegion(regionIndex: number) {
                 </div>
               {/if}
             {/each}
+            {/if}
           {:else if change.status === "created" || change.status === "deleted"}
             <!-- File created or deleted; no hunks to show -->
           {/if}
@@ -261,22 +292,32 @@ function toggleCollapsedRegion(regionIndex: number) {
     {/if}
   {:else if $viewMode === "content"}
     {#if $contentData && $contentData.content}
-      <div class="raw-content">
-        {#each $contentData.content.split("\n") as line, i}
-          <div class="raw-line">
-            <span class="gutter new-num">
-              {i + 1}
-            </span>
-            <span class="line-content">
-              {#if highlightedMap.has(line)}
-                {@html highlightedMap.get(line)}
-              {:else}
-                {line}
-              {/if}
-            </span>
-          </div>
-        {/each}
-      </div>
+      {@const rawLines = $contentData.content.split("\n")}
+      {#if rawLines.length > DIFF_LINE_LIMIT && !showFullDiff}
+        <div class="diff-truncated">
+          <p>{rawLines.length.toLocaleString()} lines — too large to render safely.</p>
+          <button class="show-btn" onclick={() => showFullDiff = true}>
+            Show full file ({rawLines.length.toLocaleString()} lines)
+          </button>
+        </div>
+      {:else}
+        <div class="raw-content">
+          {#each rawLines as line, i}
+            <div class="raw-line">
+              <span class="gutter new-num">
+                {i + 1}
+              </span>
+              <span class="line-content">
+                {#if highlightedMap.has(line)}
+                  {@html highlightedMap.get(line)}
+                {:else}
+                  {line}
+                {/if}
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {:else if $contentData}
       <div class="empty">No content found for this entry.</div>
     {:else}
@@ -288,6 +329,20 @@ function toggleCollapsedRegion(regionIndex: number) {
 </div>
 
 <style>
+  .diff-truncated {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 48px 24px;
+    color: var(--text-secondary);
+    text-align: center;
+  }
+  .diff-truncated p {
+    font-size: var(--text-sm);
+  }
+
   .diff-container {
     display: flex;
     flex-direction: column;
