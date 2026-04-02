@@ -11,6 +11,7 @@ import {
 	switchTab,
 } from "../lib/stores";
 import type { ProjectEntry } from "../lib/types";
+import SettingsPopover from "./SettingsPopover.svelte";
 
 interface Props {
 	onProjectOpened: (path: string) => void;

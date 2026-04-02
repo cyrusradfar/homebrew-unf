@@ -8,7 +8,7 @@ import {
 	selectSession as rsSelectSession,
 	shouldClearRange,
 } from "../lib/rangeSelection";
-import { histogramEnd, histogramIsSession, histogramStart } from "../lib/stores";
+import { densityBuckets, histogramEnd, histogramIsSession, histogramStart } from "../lib/stores";
 import type { DensityBucket } from "../lib/types";
 
 let barRowEl: HTMLDivElement | undefined = $state();

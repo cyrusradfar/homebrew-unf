@@ -1,26 +1,26 @@
 class Unf < Formula
   desc "Filesystem flight recorder — never lose a file change again"
   homepage "https://unfudged.io"
-  version "0.18.2"
+  version "0.18.1"
   license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://downloads.unfudged.io/releases/v0.18.2/unf-v0.18.2-aarch64-apple-darwin.tar.gz"
-      sha256 "360524efb35a7660f0d62c600284e70ce4de7f8fd59d6624eef96d0bb66aebb5"
+      url "https://downloads.unfudged.io/releases/v0.18.1/unf-v0.18.1-aarch64-apple-darwin.tar.gz"
+      sha256 "c0f0bd35ee1f42642cb6978d97975f0af743d492c4a4d96bef40a97217b3c022"
     else
-      url "https://downloads.unfudged.io/releases/v0.18.2/unf-v0.18.2-x86_64-apple-darwin.tar.gz"
-      sha256 "ea7b61d4255c79e246006adf6d09cdd7bbf23cff5a45041bade175d883f6ecc8"
+      url "https://downloads.unfudged.io/releases/v0.18.1/unf-v0.18.1-x86_64-apple-darwin.tar.gz"
+      sha256 "4030da0159a87789a857bbc37724ff66be8bac8251788fbccfe5054e74d47a87"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://downloads.unfudged.io/releases/v0.18.2/unf-v0.18.2-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "8045725c6391902cfafd87e359c04d35dfec3096d7859897db2827dda9419687"
+      url "https://downloads.unfudged.io/releases/v0.18.1/unf-v0.18.1-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "646ab546e0ca27c38136f74b473e43eca6c2e48756e28a0ac0956cf65a9440e1"
     else
-      url "https://downloads.unfudged.io/releases/v0.18.2/unf-v0.18.2-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "0c8185f8b6fabc2d55342669bf6993ecebd0129b33a37fe34b49b14b0cc5f32b"
+      url "https://downloads.unfudged.io/releases/v0.18.1/unf-v0.18.1-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "3ee8024cc37e312d77740df7daf746dfe62943c6118f3fcc4968be7ae67a1a52"
     end
   end
 

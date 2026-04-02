@@ -1,4 +1,6 @@
 <script lang="ts">
+import FilterAutocomplete from "./FilterAutocomplete.svelte";
+import HistogramRange from "./HistogramRange.svelte";
 import { extractCandidates } from "../lib/filterUtils";
 import {
 	activeTab,
