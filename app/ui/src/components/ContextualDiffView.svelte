@@ -137,16 +137,9 @@ const DIFF_LINE_LIMIT = 5000;
 let totalDiffLines = $derived(
 	($diffData?.changes[0]?.hunks ?? []).reduce((sum, h) => sum + h.lines.length, 0)
 );
-let isDiffTruncated = $state(false);
-let showFullDiff = $state(false);
-
-// Reset truncation state when diff data changes
-$effect(() => {
-	if ($diffData) {
-		isDiffTruncated = totalDiffLines > DIFF_LINE_LIMIT;
-		showFullDiff = false;
-	}
-});
+let isDiffTruncated = $derived(totalDiffLines > DIFF_LINE_LIMIT);
+let showFullDiffFor = $state<number | null>(null);
+let showFullDiff = $derived(showFullDiffFor === currentEntryId);
 
 // Only compute word diffs if under the limit (or user opted in)
 let wordDiffsByHunk = $derived(
@@ -210,7 +203,7 @@ function toggleCollapsedRegion(regionIndex: number) {
             {#if isDiffTruncated && !showFullDiff}
               <div class="diff-truncated">
                 <p>{totalDiffLines.toLocaleString()} lines changed — too large to render safely.</p>
-                <button class="show-btn" onclick={() => showFullDiff = true}>
+                <button class="show-btn" onclick={() => showFullDiffFor = currentEntryId}>
                   Show full diff ({totalDiffLines.toLocaleString()} lines)
                 </button>
               </div>
@@ -296,7 +289,7 @@ function toggleCollapsedRegion(regionIndex: number) {
       {#if rawLines.length > DIFF_LINE_LIMIT && !showFullDiff}
         <div class="diff-truncated">
           <p>{rawLines.length.toLocaleString()} lines — too large to render safely.</p>
-          <button class="show-btn" onclick={() => showFullDiff = true}>
+          <button class="show-btn" onclick={() => showFullDiffFor = currentEntryId}>
             Show full file ({rawLines.length.toLocaleString()} lines)
           </button>
         </div>
@@ -390,6 +383,10 @@ function toggleCollapsedRegion(regionIndex: number) {
     display: flex;
     align-items: center;
     gap: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
 
   .project-badge {
@@ -417,6 +414,9 @@ function toggleCollapsedRegion(regionIndex: number) {
     display: flex;
     flex-direction: column;
     border-bottom: 1px solid var(--border);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .created {
