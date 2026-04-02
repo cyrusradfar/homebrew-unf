@@ -113,6 +113,10 @@ struct LogArgs {
     #[arg(long)]
     since: Option<String>,
 
+    /// Only show changes until this time (e.g., "1h", ISO 8601 timestamp)
+    #[arg(long)]
+    until: Option<String>,
+
     /// Maximum number of entries to return (default: 1000, only effective in JSON mode)
     #[arg(long, default_value = "1000")]
     limit: u32,
@@ -482,6 +486,7 @@ fn main() {
                         include_project: args.include_project.clone(),
                         exclude_project: args.exclude_project.clone(),
                         since: args.since.clone(),
+                        until: args.until.clone(),
                         limit: args.limit,
                         include: args.include.clone(),
                         exclude: args.exclude.clone(),
@@ -500,6 +505,7 @@ fn main() {
                     let params = cli::log::LogParams {
                         target: args.target.clone(),
                         since: args.since.clone(),
+                        until: args.until.clone(),
                         limit: args.limit,
                         include: args.include.clone(),
                         exclude: args.exclude.clone(),

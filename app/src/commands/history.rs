@@ -12,6 +12,7 @@ pub fn get_log(
     state: State<'_, AppState>,
     target: Option<String>,
     since: Option<String>,
+    until: Option<String>,
     limit: Option<u32>,
     cursor: Option<String>,
     include: Option<Vec<String>>,
@@ -27,6 +28,10 @@ pub fn get_log(
     if let Some(ref s) = since {
         args.push("--since".to_string());
         args.push(s.clone());
+    }
+    if let Some(ref u) = until {
+        args.push("--until".to_string());
+        args.push(u.clone());
     }
     if let Some(l) = limit {
         args.push("--limit".to_string());
@@ -62,6 +67,7 @@ pub fn get_log(
 #[tauri::command]
 pub fn get_global_log(
     since: Option<String>,
+    until: Option<String>,
     limit: Option<u32>,
     include: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
@@ -74,6 +80,10 @@ pub fn get_global_log(
     if let Some(ref s) = since {
         args.push("--since".to_string());
         args.push(s.clone());
+    }
+    if let Some(ref u) = until {
+        args.push("--until".to_string());
+        args.push(u.clone());
     }
     if let Some(l) = limit {
         args.push("--limit".to_string());

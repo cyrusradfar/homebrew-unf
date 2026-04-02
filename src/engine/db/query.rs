@@ -439,6 +439,7 @@ pub fn get_history_page(
     cursor: Option<&HistoryCursor>,
     page_size: u32,
     since: Option<DateTime<chrono::Utc>>,
+    until: Option<DateTime<chrono::Utc>>,
 ) -> Result<Vec<Snapshot>, DbError> {
     let mut qb = QueryBuilder::new(
         "SELECT id, file_path, content_hash, size_bytes, timestamp, event_type, line_count, lines_added, lines_removed FROM snapshots",
@@ -471,9 +472,12 @@ pub fn get_history_page(
         );
     }
 
-    // Add since filter
+    // Add time range filters
     if let Some(since_time) = since {
         qb.add_condition("timestamp >= ?", since_time.to_rfc3339());
+    }
+    if let Some(until_time) = until {
+        qb.add_condition("timestamp <= ?", until_time.to_rfc3339());
     }
 
     qb.order_by("timestamp DESC, id DESC");

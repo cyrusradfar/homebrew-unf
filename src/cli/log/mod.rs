@@ -29,8 +29,10 @@ use crate::types::Snapshot;
 pub struct LogParams {
     /// Optional file or directory path to filter by
     pub target: Option<String>,
-    /// Optional time specification (e.g., "5m", "1h", "2d")
+    /// Optional lower bound time (e.g., "5m", "1h", "2d")
     pub since: Option<String>,
+    /// Optional upper bound time (e.g., "5m", "1h", "2d", ISO 8601)
+    pub until: Option<String>,
     /// Maximum entries to return (only used in JSON mode)
     pub limit: u32,
     /// Glob patterns to include (repeatable, OR'd)
@@ -56,6 +58,7 @@ impl Default for LogParams {
         LogParams {
             target: None,
             since: None,
+            until: None,
             limit: 1000,
             include: Vec::new(),
             exclude: Vec::new(),
@@ -78,8 +81,10 @@ pub struct GlobalLogParams {
     pub include_project: Vec<String>,
     /// Project paths to exclude (prefix-matched on canonical path)
     pub exclude_project: Vec<String>,
-    /// Optional time specification (e.g., "5m", "1h", "2d")
+    /// Optional lower bound time (e.g., "5m", "1h", "2d")
     pub since: Option<String>,
+    /// Optional upper bound time (e.g., "5m", "1h", "2d", ISO 8601)
+    pub until: Option<String>,
     /// Maximum entries to return (only used in JSON mode)
     pub limit: u32,
     /// Glob patterns to include (repeatable, OR'd)
@@ -100,6 +105,7 @@ impl Default for GlobalLogParams {
             include_project: Vec::new(),
             exclude_project: Vec::new(),
             since: None,
+            until: None,
             limit: 1000,
             include: Vec::new(),
             exclude: Vec::new(),
@@ -330,8 +336,13 @@ pub fn run(project_root: &Path, params: &LogParams) -> Result<(), UnfError> {
     // Create glob filter from include/exclude patterns
     let filter = GlobFilter::new(&params.include, &params.exclude, params.ignore_case)?;
 
-    // Parse since parameter if provided
+    // Parse time range parameters
     let since_time = if let Some(spec) = &params.since {
+        Some(super::parse_time_spec(spec)?)
+    } else {
+        None
+    };
+    let until_time = if let Some(spec) = &params.until {
         Some(super::parse_time_spec(spec)?)
     } else {
         None
@@ -368,7 +379,7 @@ pub fn run(project_root: &Path, params: &LogParams) -> Result<(), UnfError> {
 
             let page_size = std::cmp::min(PAGE_SIZE, remaining);
             let mut page =
-                engine.get_history_page(scope, cursor.as_ref(), page_size, since_time)?;
+                engine.get_history_page(scope, cursor.as_ref(), page_size, since_time, until_time)?;
 
             // Capture raw page info before filtering for cursor advancement
             let raw_page_len = page.len();
@@ -478,7 +489,7 @@ pub fn run(project_root: &Path, params: &LogParams) -> Result<(), UnfError> {
 
             let page_size = PAGE_SIZE;
             let mut page =
-                engine.get_history_page(scope, cursor.as_ref(), page_size, since_time)?;
+                engine.get_history_page(scope, cursor.as_ref(), page_size, since_time, until_time)?;
 
             // Capture raw page info before filtering for cursor advancement
             let raw_page_len = page.len();
@@ -546,7 +557,7 @@ pub fn run(project_root: &Path, params: &LogParams) -> Result<(), UnfError> {
             ScopeKind::File => HistoryScope::File(&scope_target),
             ScopeKind::Directory => HistoryScope::Directory(&scope_target),
         };
-        let mut page = engine.get_history_page(scope, cursor.as_ref(), PAGE_SIZE, since_time)?;
+        let mut page = engine.get_history_page(scope, cursor.as_ref(), PAGE_SIZE, since_time, until_time)?;
 
         // Capture raw page info before filtering for cursor advancement
         let raw_page_len = page.len();
@@ -728,6 +739,7 @@ pub(super) struct ProjectStream {
     pub cursor: Option<HistoryCursor>,
     pub exhausted: bool,
     pub since: Option<chrono::DateTime<chrono::Utc>>,
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
     pub filter: GlobFilter,
 }
 
@@ -737,6 +749,7 @@ impl ProjectStream {
         project_path: String,
         engine: Engine,
         since: Option<chrono::DateTime<chrono::Utc>>,
+        until: Option<chrono::DateTime<chrono::Utc>>,
         filter: GlobFilter,
     ) -> Self {
         ProjectStream {
@@ -747,6 +760,7 @@ impl ProjectStream {
             cursor: None,
             exhausted: false,
             since,
+            until,
             filter,
         }
     }
@@ -788,6 +802,7 @@ impl ProjectStream {
                 self.cursor.as_ref(),
                 PAGE_SIZE,
                 self.since,
+                self.until,
             )?;
 
             let raw_len = page.len();
@@ -869,6 +884,11 @@ pub fn run_global(params: &GlobalLogParams) -> Result<(), UnfError> {
     } else {
         None
     };
+    let until_time = if let Some(spec) = &params.until {
+        Some(super::parse_time_spec(spec)?)
+    } else {
+        None
+    };
 
     let projects = resolve_global_projects(&params.include_project, &params.exclude_project)?;
 
@@ -881,6 +901,7 @@ pub fn run_global(params: &GlobalLogParams) -> Result<(), UnfError> {
                     project_path.to_string_lossy().to_string(),
                     engine,
                     since_time,
+                    until_time,
                     filter.clone(),
                 ));
             }

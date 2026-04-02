@@ -31,6 +31,7 @@ export async function removeProject(path: string): Promise<void> {
 export interface GetLogParams {
 	target?: string;
 	since?: string;
+	until?: string;
 	limit?: number;
 	cursor?: string;
 	include?: string[];
@@ -48,6 +49,7 @@ export async function getLog(
 	return await invoke("get_log", {
 		target: params.target ?? null,
 		since: params.since ?? null,
+		until: params.until ?? null,
 		limit: params.limit ?? null,
 		cursor: params.cursor ?? null,
 		include: params.include ?? null,
@@ -58,6 +60,7 @@ export async function getLog(
 
 export interface GetGlobalLogParams {
 	since?: string;
+	until?: string;
 	limit?: number;
 	include?: string[];
 	exclude?: string[];
@@ -75,6 +78,7 @@ export async function getGlobalLog(
 ): Promise<PaginatedLogResponse | GlobalGroupedLogResponse> {
 	return await invoke("get_global_log", {
 		since: params.since ?? null,
+		until: params.until ?? null,
 		limit: params.limit ?? null,
 		include: params.include ?? null,
 		exclude: params.exclude ?? null,

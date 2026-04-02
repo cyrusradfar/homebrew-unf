@@ -380,7 +380,7 @@ mod all_tests {
         )
         .unwrap();
 
-        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None)
+        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None, None)
             .expect("Query should succeed");
 
         assert_eq!(snapshots.len(), 3);
@@ -452,7 +452,7 @@ mod all_tests {
         .unwrap();
 
         // Get first page (2 results)
-        let page1 = query::get_history_page(&conn, types::HistoryScope::All, None, 2, None)
+        let page1 = query::get_history_page(&conn, types::HistoryScope::All, None, 2, None, None)
             .expect("Query should succeed");
         assert_eq!(page1.len(), 2);
         assert_eq!(page1[0].timestamp, t4);
@@ -464,7 +464,7 @@ mod all_tests {
             id: page1[1].id,
         };
         let page2 =
-            query::get_history_page(&conn, types::HistoryScope::All, Some(&cursor), 2, None)
+            query::get_history_page(&conn, types::HistoryScope::All, Some(&cursor), 2, None, None)
                 .expect("Query should succeed");
         assert_eq!(page2.len(), 2);
         assert_eq!(page2[0].timestamp, t2);
@@ -509,7 +509,7 @@ mod all_tests {
             types::HistoryScope::File("/tmp/a.txt"),
             None,
             10,
-            None,
+            None, None,
         )
         .expect("Query should succeed");
 
@@ -569,7 +569,7 @@ mod all_tests {
             types::HistoryScope::Directory("/tmp/src/"),
             None,
             10,
-            None,
+            None, None,
         )
         .expect("Query should succeed");
 
@@ -625,7 +625,7 @@ mod all_tests {
         )
         .unwrap();
 
-        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None)
+        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None, None)
             .expect("Query should succeed");
 
         assert_eq!(snapshots.len(), 3);
@@ -635,7 +635,7 @@ mod all_tests {
     fn history_page_empty_history_returns_empty_vec() {
         let conn = open_test_db();
 
-        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None)
+        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None, None)
             .expect("Query should succeed");
 
         assert_eq!(snapshots.len(), 0);
@@ -690,7 +690,7 @@ mod all_tests {
 
         // Query since t2 (should include t2 and t3, not t1)
         let snapshots =
-            query::get_history_page(&conn, types::HistoryScope::All, None, 10, Some(t2))
+            query::get_history_page(&conn, types::HistoryScope::All, None, 10, Some(t2), None)
                 .expect("Query should succeed");
 
         assert_eq!(snapshots.len(), 2);
@@ -1051,7 +1051,7 @@ mod all_tests {
         let cursor = types::HistoryCursor { timestamp: t1, id };
 
         let snapshots =
-            query::get_history_page(&conn, types::HistoryScope::All, Some(&cursor), 10, None)
+            query::get_history_page(&conn, types::HistoryScope::All, Some(&cursor), 10, None, None)
                 .expect("Query should succeed");
 
         assert_eq!(snapshots.len(), 0);
@@ -1091,7 +1091,7 @@ mod all_tests {
         .unwrap();
 
         // Request 10 items but only 2 exist
-        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None)
+        let snapshots = query::get_history_page(&conn, types::HistoryScope::All, None, 10, None, None)
             .expect("Query should succeed");
 
         assert_eq!(snapshots.len(), 2);
@@ -1165,7 +1165,7 @@ mod all_tests {
             types::HistoryScope::Directory("/tmp/src/"),
             None,
             10,
-            None,
+            None, None,
         )
         .expect("Query should succeed");
 

@@ -142,18 +142,14 @@ async function loadGlobalTimeline(
 ): Promise<void> {
 	timelineLoading.set(true);
 	try {
-		// When a time range upper bound is active, use a high limit — newest-first
-		// ordering means a small limit fills with entries newer than `until` which all
-		// get filtered out. The `since` lower bound constrains the query.
 		const result = await getGlobalLog({
-			limit: until ? 100000 : 200,
+			limit: 200,
 			include,
 			since: since ?? undefined,
+			until: until ?? undefined,
 		});
 		if (gen !== requestGen) return;
-		let entries = result.entries;
-		if (until) entries = entries.filter((e) => e.timestamp <= until);
-		timelineEntries.set(entries);
+		timelineEntries.set(result.entries);
 		nextCursor.set(null);
 	} catch (e) {
 		if (gen === requestGen) error.set(`Failed to load global timeline: ${e}`);
@@ -173,17 +169,21 @@ async function loadGlobalFileTree(
 			groupByFile: true,
 			include,
 			since: since ?? undefined,
-			limit: until ? 100000 : 5000,
+			until: until ?? undefined,
+			limit: 5000,
 		})) as GlobalGroupedLogResponse;
 		if (gen !== requestGen) return;
 		const files: GroupedLogFile[] = [];
 		for (const proj of result.projects) {
 			for (const file of proj.files) {
 				const taggedEntries = file.entries.map((e) => ({ ...e, project: proj.project }));
-				let entries = taggedEntries;
-				if (until) entries = entries.filter((e) => e.timestamp <= until);
-				if (entries.length > 0) {
-					files.push({ ...file, entries, change_count: entries.length, project: proj.project });
+				if (taggedEntries.length > 0) {
+					files.push({
+						...file,
+						entries: taggedEntries,
+						change_count: taggedEntries.length,
+						project: proj.project,
+					});
 				}
 			}
 		}
@@ -203,18 +203,17 @@ async function loadTimeline(
 	timelineLoading.set(true);
 	try {
 		const result = await getLog({
-			limit: until && !cursor ? 100000 : 50,
+			limit: 50,
 			cursor: cursor ?? undefined,
 			include,
 			since: since ?? undefined,
+			until: until ?? undefined,
 		});
 		if (gen !== requestGen) return;
-		let entries = result.entries;
-		if (until) entries = entries.filter((e) => e.timestamp <= until);
 		if (cursor) {
-			timelineEntries.update((prev) => [...prev, ...entries]);
+			timelineEntries.update((prev) => [...prev, ...result.entries]);
 		} else {
-			timelineEntries.set(entries);
+			timelineEntries.set(result.entries);
 		}
 		nextCursor.set(result.next_cursor);
 	} catch (e) {
@@ -235,19 +234,11 @@ async function loadFileTree(
 			groupByFile: true,
 			include,
 			since: since ?? undefined,
-			limit: until ? 100000 : 5000,
+			until: until ?? undefined,
+			limit: 5000,
 		});
 		if (gen !== requestGen) return;
-		let files = result.files;
-		if (until) {
-			files = files
-				.map((f) => {
-					const filtered = f.entries.filter((e) => e.timestamp <= until);
-					return { ...f, entries: filtered, change_count: filtered.length };
-				})
-				.filter((f) => f.entries.length > 0);
-		}
-		fileTree.set(files);
+		fileTree.set(result.files);
 	} catch (_e) {
 		// Non-critical
 	}
