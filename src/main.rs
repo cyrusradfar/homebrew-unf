@@ -117,9 +117,10 @@ struct LogArgs {
     #[arg(long)]
     until: Option<String>,
 
-    /// Maximum number of entries to return (default: 1000, only effective in JSON mode)
-    #[arg(long, default_value = "1000")]
-    limit: u32,
+    /// Maximum number of entries to return (only effective in JSON mode).
+    /// Defaults to 1000, or unlimited when --until is set.
+    #[arg(long)]
+    limit: Option<u32>,
 
     /// Resume from a cursor position (format: RFC3339:SnapshotId, JSON mode only)
     #[arg(long)]
@@ -482,12 +483,15 @@ fn main() {
                     );
                     cli::log::run_global_density(&params)
                 } else {
+                    let limit =
+                        args.limit
+                            .unwrap_or(if args.until.is_some() { u32::MAX } else { 1000 });
                     let params = cli::log::GlobalLogParams {
                         include_project: args.include_project.clone(),
                         exclude_project: args.exclude_project.clone(),
                         since: args.since.clone(),
                         until: args.until.clone(),
-                        limit: args.limit,
+                        limit,
                         include: args.include.clone(),
                         exclude: args.exclude.clone(),
                         ignore_case: args.ignore_case,
@@ -502,11 +506,14 @@ fn main() {
                 ))
             } else {
                 resolve_project_root(cli.project.as_deref()).and_then(|root| {
+                    let limit =
+                        args.limit
+                            .unwrap_or(if args.until.is_some() { u32::MAX } else { 1000 });
                     let params = cli::log::LogParams {
                         target: args.target.clone(),
                         since: args.since.clone(),
                         until: args.until.clone(),
-                        limit: args.limit,
+                        limit,
                         include: args.include.clone(),
                         exclude: args.exclude.clone(),
                         ignore_case: args.ignore_case,

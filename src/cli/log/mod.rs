@@ -378,8 +378,13 @@ pub fn run(project_root: &Path, params: &LogParams) -> Result<(), UnfError> {
             };
 
             let page_size = std::cmp::min(PAGE_SIZE, remaining);
-            let mut page =
-                engine.get_history_page(scope, cursor.as_ref(), page_size, since_time, until_time)?;
+            let mut page = engine.get_history_page(
+                scope,
+                cursor.as_ref(),
+                page_size,
+                since_time,
+                until_time,
+            )?;
 
             // Capture raw page info before filtering for cursor advancement
             let raw_page_len = page.len();
@@ -488,8 +493,13 @@ pub fn run(project_root: &Path, params: &LogParams) -> Result<(), UnfError> {
             };
 
             let page_size = PAGE_SIZE;
-            let mut page =
-                engine.get_history_page(scope, cursor.as_ref(), page_size, since_time, until_time)?;
+            let mut page = engine.get_history_page(
+                scope,
+                cursor.as_ref(),
+                page_size,
+                since_time,
+                until_time,
+            )?;
 
             // Capture raw page info before filtering for cursor advancement
             let raw_page_len = page.len();
@@ -557,7 +567,8 @@ pub fn run(project_root: &Path, params: &LogParams) -> Result<(), UnfError> {
             ScopeKind::File => HistoryScope::File(&scope_target),
             ScopeKind::Directory => HistoryScope::Directory(&scope_target),
         };
-        let mut page = engine.get_history_page(scope, cursor.as_ref(), PAGE_SIZE, since_time, until_time)?;
+        let mut page =
+            engine.get_history_page(scope, cursor.as_ref(), PAGE_SIZE, since_time, until_time)?;
 
         // Capture raw page info before filtering for cursor advancement
         let raw_page_len = page.len();

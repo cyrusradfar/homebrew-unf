@@ -557,8 +557,7 @@ impl Engine {
         since: Option<DateTime<Utc>>,
         until: Option<DateTime<Utc>>,
     ) -> Result<Vec<Snapshot>, UnfError> {
-        let snapshots =
-            db::get_history_page(&self.conn, scope, cursor, page_size, since, until)?;
+        let snapshots = db::get_history_page(&self.conn, scope, cursor, page_size, since, until)?;
         Ok(snapshots)
     }
 
@@ -1097,7 +1096,13 @@ mod tests {
 
         // Second page of 3 (should get 2 remaining)
         let page2 = engine
-            .get_history_page(db::HistoryScope::File(file_path), Some(&cursor), 3, None, None)
+            .get_history_page(
+                db::HistoryScope::File(file_path),
+                Some(&cursor),
+                3,
+                None,
+                None,
+            )
             .expect("Page 2 failed");
         assert_eq!(page2.len(), 2);
     }

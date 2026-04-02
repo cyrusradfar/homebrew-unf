@@ -494,7 +494,7 @@ mod tests_log {
         let params = super::super::LogParams {
             target: Some("test.txt".to_string()),
             since: Some("5m".to_string()),
-                until: None,
+            until: None,
             limit: 100,
             include: vec!["*.rs".to_string()],
             exclude: vec!["*.bak".to_string()],
@@ -544,7 +544,7 @@ mod tests_log {
             include_project: vec!["/path/to/proj1".to_string()],
             exclude_project: vec!["/path/to/excluded".to_string()],
             since: Some("1h".to_string()),
-                until: None,
+            until: None,
             limit: 500,
             include: vec!["*.py".to_string()],
             exclude: vec!["*.pyc".to_string()],
@@ -656,7 +656,7 @@ mod tests_log {
         let params = super::super::LogParams {
             target: Some("file.txt".to_string()),
             since: Some("1h".to_string()),
-                until: None,
+            until: None,
             limit: 123,
             include: vec!["*.rs".to_string()],
             exclude: vec!["*.bak".to_string()],
