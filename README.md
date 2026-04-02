@@ -64,6 +64,7 @@ unf restore --at 10m         # Roll back to 10 minutes ago
 | `unf unwatch` | Stop watching the current directory |
 | `unf status` | Watcher status and recent snapshot stats |
 | `unf log <file>` | Timeline of all recorded versions of a file |
+| `unf log --since <time> --until <time>` | Filter log to a time range |
 | `unf diff --at <time>` | Show changes since a point in time |
 | `unf log --include <glob>` | Filter log to matching files |
 | `unf restore --at <time>` | Restore files to a point in time |
