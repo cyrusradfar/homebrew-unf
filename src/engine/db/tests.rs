@@ -698,6 +698,51 @@ mod all_tests {
         assert_eq!(snapshots[1].timestamp, t2);
     }
 
+    #[test]
+    fn get_history_page_filters_by_until() {
+        let conn = open_test_db();
+        let t1 = chrono::Utc.with_ymd_and_hms(2025, 1, 15, 10, 0, 0).unwrap();
+        let t2 = chrono::Utc.with_ymd_and_hms(2025, 1, 15, 11, 0, 0).unwrap();
+        let t3 = chrono::Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+
+        for (t, name) in [(t1, "a.txt"), (t2, "b.txt"), (t3, "c.txt")] {
+            write::insert_snapshot(
+                &conn,
+                &format!("/tmp/{name}"),
+                &ContentHash(format!("v{name}")),
+                100,
+                t,
+                &EventType::Create,
+                0,
+                0,
+                0,
+            )
+            .unwrap();
+        }
+
+        // Query until t2 (should include t1 and t2, not t3)
+        let snapshots =
+            query::get_history_page(&conn, types::HistoryScope::All, None, 10, None, Some(t2))
+                .expect("Query should succeed");
+
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].timestamp, t2); // newest first
+        assert_eq!(snapshots[1].timestamp, t1);
+
+        // Query with since=t1 AND until=t2 (should get exactly t1 and t2)
+        let snapshots = query::get_history_page(
+            &conn,
+            types::HistoryScope::All,
+            None,
+            10,
+            Some(t1),
+            Some(t2),
+        )
+        .expect("Query should succeed");
+
+        assert_eq!(snapshots.len(), 2);
+    }
+
     // --- get_previous_snapshot Tests ---
 
     #[test]

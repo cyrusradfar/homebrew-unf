@@ -419,14 +419,15 @@ pub fn get_previous_snapshot(
 /// Pass cursor from last snapshot of previous page to get next page.
 /// Returns empty vec when history is exhausted.
 ///
-/// Optional `since` parameter filters to snapshots at or after the given time.
+/// Optional `since`/`until` parameters bound the time range (inclusive on both ends).
 ///
 /// # Arguments
 /// * `conn` - SQLite connection
 /// * `scope` - Scope for history queries (File, Directory, or All)
 /// * `cursor` - Optional cursor from last snapshot of previous page
 /// * `page_size` - Maximum number of snapshots to return
-/// * `since` - Optional lower bound for timestamp filtering
+/// * `since` - Optional lower bound for timestamp filtering (inclusive)
+/// * `until` - Optional upper bound for timestamp filtering (inclusive)
 ///
 /// # Returns
 /// A vector of up to `page_size` snapshots, newest first.
