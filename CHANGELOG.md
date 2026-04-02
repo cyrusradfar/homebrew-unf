@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-04-01
+### Fixed
+- Desktop app: white screen on launch (Biome --unsafe removed Svelte template imports)
+- Desktop app: "All" tab showed capped 5,000 instead of true snapshot total
+- Desktop app: large diffs (>5K lines) no longer crash the WebView — shows truncated message with opt-in
+- Desktop app: long file paths in diff toolbar now truncate with ellipsis instead of wrapping
+
 ## [0.18.2] - 2026-04-01
 ### Performance
 - Startup: eliminated tab waterfall (N×4 → 4 CLI process spawns)
