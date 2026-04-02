@@ -136,6 +136,9 @@ let totalProjects = $derived(isGlobal ? $projects.length : 0);
 // Filtered counts from fileTree (already filtered by backend when filter/time is active)
 let filteredSnapshotCount = $derived($fileTree.reduce((sum, g) => sum + g.entries.length, 0));
 let filteredFileCount = $derived($fileTree.length);
+let filteredProjectCount = $derived(
+	new Set($fileTree.map((g) => g.project).filter(Boolean)).size
+);
 let isFiltered = $derived($fileFilters.length > 0 || $histogramStart !== null);
 
 // In global mode, group files by project first, then by directory within each project
@@ -237,18 +240,33 @@ function fileKey(group: { path: string; project?: string }): string {
     <div class="metrics">
       {#if isGlobal}
         <span class="metric">
-          <span class="metric-value">{totalSnapshots.toLocaleString()}</span>
+          {#if isFiltered}
+            <span class="metric-value">{filteredSnapshotCount.toLocaleString()}</span>
+            <span class="metric-of">/ {totalSnapshots.toLocaleString()}</span>
+          {:else}
+            <span class="metric-value">{totalSnapshots.toLocaleString()}</span>
+          {/if}
           <span class="metric-label">snapshots</span>
         </span>
         <span class="metric-sep">&middot;</span>
         <span class="metric">
-          <span class="metric-value">{totalFiles.toLocaleString()}</span>
+          {#if isFiltered}
+            <span class="metric-value">{filteredFileCount.toLocaleString()}</span>
+            <span class="metric-of">/ {totalFiles.toLocaleString()}</span>
+          {:else}
+            <span class="metric-value">{totalFiles.toLocaleString()}</span>
+          {/if}
           <span class="metric-label">files</span>
         </span>
         {#if totalProjects > 0}
           <span class="metric-sep">&middot;</span>
           <span class="metric">
-            <span class="metric-value">{totalProjects}</span>
+            {#if isFiltered}
+              <span class="metric-value">{filteredProjectCount}</span>
+              <span class="metric-of">/ {totalProjects}</span>
+            {:else}
+              <span class="metric-value">{totalProjects}</span>
+            {/if}
             <span class="metric-label">projects</span>
           </span>
         {/if}
