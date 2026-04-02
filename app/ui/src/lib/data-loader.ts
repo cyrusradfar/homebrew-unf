@@ -142,10 +142,14 @@ async function loadGlobalTimeline(
 ): Promise<void> {
 	timelineLoading.set(true);
 	try {
-		// When a time range is active, use a higher limit since newest-first ordering
-		// means the limit fills with entries newer than `until` which get filtered out.
-		const limit = until ? 5000 : 200;
-		const result = await getGlobalLog({ limit, include, since: since ?? undefined });
+		// When a time range upper bound is active, use a high limit — newest-first
+		// ordering means a small limit fills with entries newer than `until` which all
+		// get filtered out. The `since` lower bound constrains the query.
+		const result = await getGlobalLog({
+			limit: until ? 100000 : 200,
+			include,
+			since: since ?? undefined,
+		});
 		if (gen !== requestGen) return;
 		let entries = result.entries;
 		if (until) entries = entries.filter((e) => e.timestamp <= until);
@@ -169,7 +173,7 @@ async function loadGlobalFileTree(
 			groupByFile: true,
 			include,
 			since: since ?? undefined,
-			limit: 5000,
+			limit: until ? 100000 : 5000,
 		})) as GlobalGroupedLogResponse;
 		if (gen !== requestGen) return;
 		const files: GroupedLogFile[] = [];
@@ -199,7 +203,7 @@ async function loadTimeline(
 	timelineLoading.set(true);
 	try {
 		const result = await getLog({
-			limit: until ? 5000 : 50,
+			limit: until && !cursor ? 100000 : 50,
 			cursor: cursor ?? undefined,
 			include,
 			since: since ?? undefined,
@@ -231,7 +235,7 @@ async function loadFileTree(
 			groupByFile: true,
 			include,
 			since: since ?? undefined,
-			limit: 5000,
+			limit: until ? 100000 : 5000,
 		});
 		if (gen !== requestGen) return;
 		let files = result.files;
