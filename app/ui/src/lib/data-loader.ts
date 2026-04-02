@@ -143,7 +143,7 @@ async function loadGlobalTimeline(
 	timelineLoading.set(true);
 	try {
 		const result = await getGlobalLog({
-			limit: 200,
+			limit: until ? undefined : 200,
 			include,
 			since: since ?? undefined,
 			until: until ?? undefined,
@@ -170,7 +170,7 @@ async function loadGlobalFileTree(
 			include,
 			since: since ?? undefined,
 			until: until ?? undefined,
-			limit: 5000,
+			limit: until ? undefined : 5000,
 		})) as GlobalGroupedLogResponse;
 		if (gen !== requestGen) return;
 		const files: GroupedLogFile[] = [];
@@ -203,7 +203,7 @@ async function loadTimeline(
 	timelineLoading.set(true);
 	try {
 		const result = await getLog({
-			limit: 50,
+			limit: until && !cursor ? undefined : 50,
 			cursor: cursor ?? undefined,
 			include,
 			since: since ?? undefined,
@@ -235,7 +235,7 @@ async function loadFileTree(
 			include,
 			since: since ?? undefined,
 			until: until ?? undefined,
-			limit: 5000,
+			limit: until ? undefined : 5000,
 		});
 		if (gen !== requestGen) return;
 		fileTree.set(result.files);
