@@ -142,7 +142,10 @@ async function loadGlobalTimeline(
 ): Promise<void> {
 	timelineLoading.set(true);
 	try {
-		const result = await getGlobalLog({ limit: 200, include, since: since ?? undefined });
+		// When a time range is active, use a higher limit since newest-first ordering
+		// means the limit fills with entries newer than `until` which get filtered out.
+		const limit = until ? 5000 : 200;
+		const result = await getGlobalLog({ limit, include, since: since ?? undefined });
 		if (gen !== requestGen) return;
 		let entries = result.entries;
 		if (until) entries = entries.filter((e) => e.timestamp <= until);
@@ -196,7 +199,7 @@ async function loadTimeline(
 	timelineLoading.set(true);
 	try {
 		const result = await getLog({
-			limit: 50,
+			limit: until ? 5000 : 50,
 			cursor: cursor ?? undefined,
 			include,
 			since: since ?? undefined,
