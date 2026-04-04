@@ -1,6 +1,4 @@
 <script lang="ts">
-import FilterAutocomplete from "./FilterAutocomplete.svelte";
-import HistogramRange from "./HistogramRange.svelte";
 import { extractCandidates } from "../lib/filterUtils";
 import {
 	activeTab,
@@ -22,6 +20,8 @@ import {
 } from "../lib/stores";
 import { formatTimeRange } from "../lib/timeFormat";
 import type { LogEntry } from "../lib/types";
+import FilterAutocomplete from "./FilterAutocomplete.svelte";
+import HistogramRange from "./HistogramRange.svelte";
 
 interface Props {
 	onLoadMore: () => void;
@@ -136,9 +136,7 @@ let totalProjects = $derived(isGlobal ? $projects.length : 0);
 // Filtered counts from fileTree (already filtered by backend when filter/time is active)
 let filteredSnapshotCount = $derived($fileTree.reduce((sum, g) => sum + g.entries.length, 0));
 let filteredFileCount = $derived($fileTree.length);
-let filteredProjectCount = $derived(
-	new Set($fileTree.map((g) => g.project).filter(Boolean)).size
-);
+let filteredProjectCount = $derived(new Set($fileTree.map((g) => g.project).filter(Boolean)).size);
 let isFiltered = $derived($fileFilters.length > 0 || $histogramStart !== null);
 
 // In global mode, group files by project first, then by directory within each project
