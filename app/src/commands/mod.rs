@@ -165,4 +165,19 @@ mod async_guard {
         assert_eq!(errs[0].attr_line, 1);
         assert!(errs[0].offending.contains("pub fn f()"));
     }
+
+    /// Pins scanner behavior on block comments between attribute and fn.
+    /// The scanner skips `///` and `//!` but not `/* ... */`, so it treats the
+    /// comment line as the fn candidate and reports a scan error. This is a
+    /// false positive (the real fn below would be valid async), but failing
+    /// loud on an unusual style is the safer outcome — the fix is trivial
+    /// (rewrite as `///`). If this ever trips a real contributor, widen the
+    /// skip set to include block comments.
+    #[test]
+    fn fixture_block_comment_fails_loud() {
+        let src = "#[tauri::command]\n/* doc */\npub async fn f() {}\n";
+        let errs = scan(src, "fixture");
+        assert_eq!(errs.len(), 1, "expected one scan error, got {errs:?}");
+        assert!(errs[0].offending.contains("/* doc */"));
+    }
 }

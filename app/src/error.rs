@@ -15,6 +15,9 @@ pub enum AppError {
     #[error("No project selected")]
     NoProject,
 
+    /// `tokio::task::JoinError` from `spawn_blocking`. String preserves the
+    /// panic payload (if any) for diagnostics — we don't distinguish
+    /// cancellation from panic here because neither is expected in normal use.
     #[error("Task failed: {0}")]
     JoinFailed(String),
 }
