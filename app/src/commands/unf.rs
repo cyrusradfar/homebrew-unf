@@ -28,6 +28,13 @@ pub async fn run_unf(
     args: Vec<String>,
 ) -> Result<serde_json::Value, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(any(test, debug_assertions))]
+        if let Ok(ms) = std::env::var("UNF_SLOW_MS") {
+            if let Ok(n) = ms.parse::<u64>() {
+                std::thread::sleep(std::time::Duration::from_millis(n));
+            }
+        }
+
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
         let mut cmd = Command::new(find_unf());
@@ -58,6 +65,13 @@ pub async fn run_unf(
 /// caller's async task (and on macOS the main/UI thread) stays responsive.
 pub async fn run_unf_global(args: Vec<String>) -> Result<serde_json::Value, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(any(test, debug_assertions))]
+        if let Ok(ms) = std::env::var("UNF_SLOW_MS") {
+            if let Ok(n) = ms.parse::<u64>() {
+                std::thread::sleep(std::time::Duration::from_millis(n));
+            }
+        }
+
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
         let mut cmd = Command::new(find_unf());
@@ -91,4 +105,34 @@ pub async fn run_unf_global(args: Vec<String>) -> Result<serde_json::Value, AppE
     })
     .await
     .map_err(|e| AppError::JoinFailed(e.to_string()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn concurrent_run_unf_global_parallelizes() {
+        // SAFETY: manipulates process-wide env; run with --test-threads=1 if
+        // other tests ever read UNF_SLOW_MS. Currently no other test does.
+        std::env::set_var("UNF_SLOW_MS", "1500");
+
+        let start = Instant::now();
+        tauri::async_runtime::block_on(async {
+            let a = run_unf_global(vec!["list".to_string()]);
+            let b = run_unf_global(vec!["status".to_string()]);
+            let _ = tokio::join!(a, b);
+        });
+        let elapsed = start.elapsed();
+
+        std::env::remove_var("UNF_SLOW_MS");
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(2500),
+            "Concurrent run_unf_global calls took {elapsed:?}; expected <2500ms. \
+             If this regressed to ~3000ms, spawn_blocking is not offloading the \
+             blocking work — commands are serializing on the caller thread."
+        );
+    }
 }

@@ -60,6 +60,8 @@ cargo install tauri-cli --locked
 cargo tauri dev
 ```
 
+**Tauri commands must be async.** Every `#[tauri::command]` in `app/` is declared `async fn`. Sync commands dispatch inline on the WKWebView URL-scheme-handler thread — the main/UI thread on macOS — so any blocking call (subprocess, fs, SQLite) freezes the window. Route blocking work through `run_unf` / `run_unf_global` (which wrap `tauri::async_runtime::spawn_blocking`) or call `spawn_blocking` directly. `State<'_, _>` values must be read into owned locals BEFORE any `await` — `State` is not `Send`. A `#[test] fn all_tauri_commands_are_async()` in `app/src/commands/mod.rs` enforces this; `cargo test` from `app/` fails if the rule is violated.
+
 ### Daemon Safety
 Never use broad `pkill -f 'target/debug/unf'` — this kills the production daemon. Test daemons use `UNF_HOME` for isolation. Use `just kill-test-daemons` to clean up test processes. If the production daemon is killed, run `unf restart`.
 

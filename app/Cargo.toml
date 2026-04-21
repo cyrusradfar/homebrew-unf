@@ -14,3 +14,7 @@ tauri-plugin-dialog = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+regex = "1"
+tokio = { version = "1", features = ["macros"] }
