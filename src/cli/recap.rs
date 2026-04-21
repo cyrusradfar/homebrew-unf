@@ -3,6 +3,7 @@
 //! Aggregates session data, git state, and latest activity into a single response
 //! for AI agents rebuilding context after a crash or context overflow.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -152,7 +153,7 @@ fn compute_file_edits(
         .collect();
 
     // Sort by edit count descending
-    file_activities.sort_by(|a, b| b.edits.cmp(&a.edits));
+    file_activities.sort_by_key(|a| Reverse(a.edits));
 
     file_activities
 }
