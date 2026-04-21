@@ -68,9 +68,11 @@ export async function refreshGlobalData(gen: number): Promise<void> {
 	const [since, until] = getTimeRange();
 	await Promise.all([
 		loadGlobalTimeline(gen, include, since, until),
-		loadGlobalFileTree(gen, include, since, until),
 		loadGlobalDensity(gen, include),
 	]);
+	// Fire the file tree after the critical-path data lands. The requestGen
+	// counter inside loadGlobalFileTree handles stale responses correctly.
+	void loadGlobalFileTree(gen, include, since, until);
 }
 
 export async function refreshAllData(gen: number): Promise<void> {
@@ -78,9 +80,11 @@ export async function refreshAllData(gen: number): Promise<void> {
 	const [since, until] = getTimeRange();
 	await Promise.all([
 		loadTimeline(gen, undefined, include, since, until),
-		loadFileTree(gen, include, since, until),
 		loadDensity(gen, include),
 	]);
+	// Fire the file tree after the critical-path data lands. The requestGen
+	// counter inside loadFileTree handles stale responses correctly.
+	void loadFileTree(gen, include, since, until);
 }
 
 export function triggerFilteredReload(): void {
