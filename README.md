@@ -21,13 +21,13 @@ brew install cyrusradfar/unf/unf
 
 ```bash
 curl -fsSLO https://downloads.unfudged.io/releases/v0.18.4/unf_0.18.4_amd64.deb
-sudo dpkg -i unf_0.18.0_amd64.deb
+sudo dpkg -i unf_0.18.4_amd64.deb
 ```
 
 For ARM64:
 ```bash
 curl -fsSLO https://downloads.unfudged.io/releases/v0.18.4/unf_0.18.4_arm64.deb
-sudo dpkg -i unf_0.18.0_arm64.deb
+sudo dpkg -i unf_0.18.4_arm64.deb
 ```
 
 ### Desktop app (macOS)
