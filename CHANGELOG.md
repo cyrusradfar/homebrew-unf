@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-04-21
+### Fixed
+- Desktop app: macOS main-thread hang under slow subprocess spawns (reported via 0.18.4 stackshot 2026-04-20). All 17 `#[tauri::command]` functions are now `async fn`; subprocess work runs through `tauri::async_runtime::spawn_blocking` instead of blocking the WKWebView URL-scheme-handler thread (= main thread on macOS). UI stays interactive during data loads, including on machines with EndpointSecurity in the `open()` path.
+- Desktop app: tab hover fill covered only the text button, leaving the close `[x]` unlit on inactive tabs. Hover fill moved up to the tab container so the whole tab reacts as one surface.
+- Docs: `README.md` Debian install example had drifted — `curl` downloaded the current release but `sudo dpkg -i` referenced an older filename. `scripts/release.sh` (wrapper) now rewrites both patterns together.
+
+### Changed
+- Desktop app: cold-start critical path no longer awaits the file-tree load. Timeline and density render first; the file tree fills in after (one fewer subprocess gating first-paint).
+- Desktop app: on-mount empty-state text now shows "Loading your projects…" while the initial `listProjects` call is in flight, replacing the misleading "Select a project" text that briefly flashed in 0.18.4 after the hang fix exposed it.
+
+### Internal
+- New test-time guard (`app/src/commands/mod.rs`) scans every `.rs` under `commands/` and fails `cargo test` if any `#[tauri::command]` is declared without `async fn`. Seven fixture tests cover doc comments, stacked attributes, rename-form, visibility variants, and the block-comment edge case.
+- New concurrency proof (`UNF_SLOW_MS` debug-build shim + `#[test] fn concurrent_run_unf_global_parallelizes`) asserts `spawn_blocking` actually offloads: two concurrent 1.5s calls complete in <2.5s, not 3s. Any regression that serializes the blocking work on one thread fails the test with a timing message.
+- `AppError::JoinFailed` variant added for `tokio::task::JoinError` (distinct from `SpawnFailed` = `Command::new` failure). Preserves panic payload for diagnostics.
+
 ## [0.18.3] - 2026-04-01
 ### Fixed
 - Desktop app: white screen on launch (Biome --unsafe removed Svelte template imports)
