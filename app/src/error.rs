@@ -14,6 +14,9 @@ pub enum AppError {
 
     #[error("No project selected")]
     NoProject,
+
+    #[error("Task failed: {0}")]
+    JoinFailed(String),
 }
 
 impl serde::Serialize for AppError {

@@ -20,55 +20,75 @@ fn find_unf() -> &'static str {
 
 /// Run `unf` with the given args in the given project directory.
 /// Appends `--json` automatically. Returns parsed JSON.
-pub fn run_unf(project_dir: &str, args: &[&str]) -> Result<serde_json::Value, AppError> {
-    let mut cmd = Command::new(find_unf());
-    cmd.current_dir(project_dir);
-    cmd.args(args);
-    cmd.arg("--json");
+///
+/// Runs the blocking subprocess on Tauri's blocking thread pool so the
+/// caller's async task (and on macOS the main/UI thread) stays responsive.
+pub async fn run_unf(
+    project_dir: String,
+    args: Vec<String>,
+) -> Result<serde_json::Value, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-    let output = cmd
-        .output()
-        .map_err(|e| AppError::SpawnFailed(e.to_string()))?;
+        let mut cmd = Command::new(find_unf());
+        cmd.current_dir(&project_dir);
+        cmd.args(&arg_refs);
+        cmd.arg("--json");
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(AppError::UnfError(stderr));
-    }
+        let output = cmd
+            .output()
+            .map_err(|e| AppError::SpawnFailed(e.to_string()))?;
 
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&json_str).map_err(|e| AppError::ParseError(e.to_string()))
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(AppError::UnfError(stderr));
+        }
+
+        let json_str = String::from_utf8_lossy(&output.stdout);
+        serde_json::from_str(&json_str).map_err(|e| AppError::ParseError(e.to_string()))
+    })
+    .await
+    .map_err(|e| AppError::JoinFailed(e.to_string()))?
 }
 
 /// Run `unf` without project context (e.g., `unf list`).
 /// Appends `--json` automatically. Returns parsed JSON.
-pub fn run_unf_global(args: &[&str]) -> Result<serde_json::Value, AppError> {
-    let mut cmd = Command::new(find_unf());
-    cmd.args(args);
-    cmd.arg("--json");
+///
+/// Runs the blocking subprocess on Tauri's blocking thread pool so the
+/// caller's async task (and on macOS the main/UI thread) stays responsive.
+pub async fn run_unf_global(args: Vec<String>) -> Result<serde_json::Value, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-    let output = cmd
-        .output()
-        .map_err(|e| AppError::SpawnFailed(e.to_string()))?;
+        let mut cmd = Command::new(find_unf());
+        cmd.args(&arg_refs);
+        cmd.arg("--json");
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(AppError::UnfError(stderr));
-    }
+        let output = cmd
+            .output()
+            .map_err(|e| AppError::SpawnFailed(e.to_string()))?;
 
-    let json_str = String::from_utf8_lossy(&output.stdout);
-
-    // Some commands (e.g. --move-storage) emit newline-delimited JSON events.
-    // Parse the last non-empty line as the final result.
-    match serde_json::from_str(&json_str) {
-        Ok(v) => Ok(v),
-        Err(_) => {
-            let last_line = json_str
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("");
-            serde_json::from_str(last_line)
-                .map_err(|e| AppError::ParseError(e.to_string()))
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(AppError::UnfError(stderr));
         }
-    }
+
+        let json_str = String::from_utf8_lossy(&output.stdout);
+
+        // Some commands (e.g. --move-storage) emit newline-delimited JSON events.
+        // Parse the last non-empty line as the final result.
+        match serde_json::from_str(&json_str) {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                let last_line = json_str
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("");
+                serde_json::from_str(last_line).map_err(|e| AppError::ParseError(e.to_string()))
+            }
+        }
+    })
+    .await
+    .map_err(|e| AppError::JoinFailed(e.to_string()))?
 }

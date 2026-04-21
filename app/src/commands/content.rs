@@ -8,7 +8,7 @@ use crate::state::AppState;
 /// Invokes: `unf cat FILE --json [flags]`
 /// If `project` is provided, uses that instead of the selected project (for global mode).
 #[tauri::command]
-pub fn get_file_content(
+pub async fn get_file_content(
     state: State<'_, AppState>,
     project: Option<String>,
     file: String,
@@ -21,15 +21,14 @@ pub fn get_file_content(
     };
     let mut args: Vec<String> = vec!["cat".to_string(), file];
 
-    if let Some(ref a) = at {
+    if let Some(a) = at {
         args.push("--at".to_string());
-        args.push(a.clone());
+        args.push(a);
     }
     if let Some(s) = snapshot {
         args.push("--snapshot".to_string());
         args.push(s.to_string());
     }
 
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run_unf(&proj, &arg_refs)
+    run_unf(proj, args).await
 }

@@ -9,7 +9,7 @@ use crate::state::AppState;
 /// If `project` is provided, uses that instead of the selected project (for global mode).
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn get_diff(
+pub async fn get_diff(
     state: State<'_, AppState>,
     project: Option<String>,
     at: Option<String>,
@@ -29,20 +29,20 @@ pub fn get_diff(
         args.push("--snapshot".to_string());
         args.push(id.to_string());
     } else {
-        if let Some(ref a) = at {
+        if let Some(a) = at {
             args.push("--at".to_string());
-            args.push(a.clone());
+            args.push(a);
         }
-        if let Some(ref f) = from {
+        if let Some(f) = from {
             args.push("--from".to_string());
-            args.push(f.clone());
+            args.push(f);
         }
-        if let Some(ref t) = to {
+        if let Some(t) = to {
             args.push("--to".to_string());
-            args.push(t.clone());
+            args.push(t);
         }
-        if let Some(ref fi) = file {
-            args.push(fi.clone());
+        if let Some(fi) = file {
+            args.push(fi);
         }
     }
 
@@ -51,6 +51,5 @@ pub fn get_diff(
         args.push(ctx.to_string());
     }
 
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run_unf(&proj, &arg_refs)
+    run_unf(proj, args).await
 }
