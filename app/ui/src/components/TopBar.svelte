@@ -493,6 +493,10 @@ function tabLabel(tabId: string): string {
     transition: background 0.15s;
   }
 
+  .tab:hover {
+    background: var(--accent-bg);
+  }
+
   .tab.active {
     background: var(--accent-bg);
     border-bottom: 2px solid var(--accent);
@@ -514,10 +518,6 @@ function tabLabel(tabId: string): string {
     white-space: nowrap;
     display: flex;
     align-items: center;
-  }
-
-  .tab-button:hover {
-    background: var(--accent-bg);
   }
 
   .tab-close {

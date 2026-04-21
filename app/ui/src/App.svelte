@@ -38,6 +38,7 @@ import "./lib/layout.css";
 let sidebarWidth = $state(320);
 let isDragging = $state(false);
 let layoutEl: HTMLDivElement | undefined = $state();
+let isInitializing = $state(true);
 
 function handleDragStart(e: MouseEvent) {
 	e.preventDefault();
@@ -73,6 +74,8 @@ onMount(async () => {
 		}
 	} catch (e) {
 		error.set(`Failed to load projects: ${e}`);
+	} finally {
+		isInitializing = false;
 	}
 });
 
@@ -145,6 +148,10 @@ $effect(() => {
         const cursor = $nextCursor;
         if (cursor) triggerLoadMore(cursor);
       }} />
+    {:else if isInitializing}
+      <div class="empty-state">
+        <p>Loading your projects…</p>
+      </div>
     {:else}
       <div class="empty-state">
         <p>Select a project to view its timeline.</p>
@@ -158,6 +165,10 @@ $effect(() => {
   <div class="content">
     {#if $selectedEntry}
       <ContextualDiffView />
+    {:else if isInitializing}
+      <div class="empty-state">
+        <p>Loading…</p>
+      </div>
     {:else}
       <div class="empty-state">
         <p>Select a change from the timeline to view its diff.</p>
