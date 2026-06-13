@@ -10,7 +10,7 @@ cask "unfudged-staging" do
   conflicts_with cask: "unfudged"
 
   depends_on formula: "cyrusradfar/unf/unf-staging"
-  depends_on macos: ">= :catalina"
+  depends_on macos: :catalina
 
   app "UNFUDGED.app"
 end
