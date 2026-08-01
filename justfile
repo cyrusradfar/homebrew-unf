@@ -43,7 +43,3 @@ test-e2e-staging:
 # Test that release/staging workflow push logic handles diverged main
 test-workflow-push:
     ./scripts/test-workflow-push.sh
-
-# Download stats from CloudFront logs (optional: filter by version)
-download-stats *VERSION:
-    ./scripts/download-stats.sh {{VERSION}}
