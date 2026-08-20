@@ -8,6 +8,13 @@
 //! The filtering logic follows the SUPER principle: side effects (reading
 //! .gitignore from disk) happen only at construction time. The `should_track`
 //! method is a pure query against cached rules.
+//!
+//! A project can opt out of .gitignore and hidden-file filtering via the
+//! `force_watch_gitignore` flag passed to [`Filter::new`]. This is a per-project
+//! override for cases where the interesting files are exactly the ignored ones
+//! (e.g. `.env.local`, gitignored scratch directories). Hardcoded directory and
+//! extension rules, and downstream magic-number binary detection, stay active
+//! regardless of the flag.
 
 use std::path::{Path, PathBuf};
 
@@ -120,54 +127,76 @@ pub fn is_likely_binary(header: &[u8]) -> bool {
 /// filesystem event. It combines multiple filtering strategies:
 /// - Hardcoded directory exclusions (e.g., node_modules, .git)
 /// - Hardcoded file extension exclusions (e.g., .png, .exe)
-/// - .gitignore pattern matching (if .gitignore is present)
-/// - Hidden file filtering (with exceptions for .env files)
+/// - .gitignore pattern matching (if .gitignore is present and not overridden)
+/// - Hidden file filtering (with exceptions for .env files, unless overridden)
 pub struct Filter {
-    /// Parsed .gitignore rules, if a .gitignore file was found.
+    /// Parsed .gitignore rules, if a .gitignore file was found and loaded.
+    /// Always `None` when `force_watch_gitignore` is true.
     gitignore: Option<ignore::gitignore::Gitignore>,
     /// The root directory this filter was created for.
     project_root: PathBuf,
+    /// When true, .gitignore is not loaded and hidden files are not skipped.
+    /// Hardcoded directory/extension rules and binary detection are unaffected.
+    force_watch_gitignore: bool,
 }
 
 impl Filter {
     /// Create a new filter rooted at the given project directory.
     ///
-    /// Automatically loads .gitignore if present. If the .gitignore file
-    /// cannot be read or parsed, returns an error. If no .gitignore exists,
-    /// the filter will still work using hardcoded rules only.
+    /// When `force_watch_gitignore` is false (the default), automatically loads
+    /// .gitignore if present. If the .gitignore file cannot be read or parsed,
+    /// returns an error. If no .gitignore exists, the filter will still work
+    /// using hardcoded rules only.
+    ///
+    /// When `force_watch_gitignore` is true, .gitignore is not loaded at all —
+    /// `should_track` never consults it, and a malformed .gitignore cannot fail
+    /// construction. Hidden files are also no longer skipped. Hardcoded
+    /// directory/extension rules and magic-number binary detection are
+    /// unaffected by this flag.
     ///
     /// # Errors
     ///
     /// Returns [`WatcherError`] if:
     /// - The project root is not a valid directory
-    /// - A .gitignore file exists but cannot be parsed
-    pub fn new(project_root: &Path) -> Result<Self, WatcherError> {
-        let gitignore_path = project_root.join(".gitignore");
-        let gitignore = if gitignore_path.exists() {
-            let mut builder = GitignoreBuilder::new(project_root);
-            if let Some(err) = builder.add(&gitignore_path) {
-                return Err(WatcherError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to parse .gitignore: {}", err),
-                )));
-            }
-            match builder.build() {
-                Ok(gi) => Some(gi),
-                Err(err) => {
+    /// - A .gitignore file exists but cannot be parsed (only possible when
+    ///   `force_watch_gitignore` is false)
+    pub fn new(project_root: &Path, force_watch_gitignore: bool) -> Result<Self, WatcherError> {
+        let gitignore = if force_watch_gitignore {
+            None
+        } else {
+            let gitignore_path = project_root.join(".gitignore");
+            if gitignore_path.exists() {
+                let mut builder = GitignoreBuilder::new(project_root);
+                if let Some(err) = builder.add(&gitignore_path) {
                     return Err(WatcherError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Failed to build gitignore matcher: {}", err),
-                    )))
+                        format!("Failed to parse .gitignore: {}", err),
+                    )));
                 }
+                match builder.build() {
+                    Ok(gi) => Some(gi),
+                    Err(err) => {
+                        return Err(WatcherError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Failed to build gitignore matcher: {}", err),
+                        )))
+                    }
+                }
+            } else {
+                None
             }
-        } else {
-            None
         };
 
         Ok(Self {
             gitignore,
             project_root: project_root.to_path_buf(),
+            force_watch_gitignore,
         })
+    }
+
+    /// Returns the `force_watch_gitignore` flag this filter was constructed with.
+    pub fn force_watch_gitignore(&self) -> bool {
+        self.force_watch_gitignore
     }
 
     /// Returns true if this path should be tracked by the flight recorder.
@@ -179,7 +208,9 @@ impl Filter {
     /// 1. No path component matches IGNORED_DIRS
     /// 2. File extension is not in IGNORED_EXTENSIONS
     /// 3. If .gitignore is loaded, the path must not be ignored by it
-    /// 4. Hidden files (starting with .) are skipped, except .env and .gitignore files
+    ///    (never loaded when `force_watch_gitignore` is true)
+    /// 4. Hidden files (starting with .) are skipped, except .env and .gitignore
+    ///    files (skipped entirely when `force_watch_gitignore` is true)
     pub fn should_track(&self, path: &Path) -> bool {
         // 1. Check if any path component matches IGNORED_DIRS
         for component in path.components() {
@@ -224,15 +255,19 @@ impl Filter {
             }
         }
 
-        // 4. Skip hidden files (starting with .) EXCEPT .gitignore and .env files
-        if let Some(filename) = path.file_name() {
-            if let Some(name_str) = filename.to_str() {
-                if name_str.starts_with('.') {
-                    // Allow .gitignore and .env files
-                    if name_str == ".gitignore" || name_str == ".env" {
-                        return true;
+        // 4. Skip hidden files (starting with .) EXCEPT .gitignore and .env files.
+        // Skipped entirely when force_watch_gitignore is true, so dotfiles like
+        // .env.local are tracked.
+        if !self.force_watch_gitignore {
+            if let Some(filename) = path.file_name() {
+                if let Some(name_str) = filename.to_str() {
+                    if name_str.starts_with('.') {
+                        // Allow .gitignore and .env files
+                        if name_str == ".gitignore" || name_str == ".env" {
+                            return true;
+                        }
+                        return false;
                     }
-                    return false;
                 }
             }
         }
@@ -251,22 +286,25 @@ mod tests {
     /// Helper to create a test filter without .gitignore
     fn filter_without_gitignore() -> Filter {
         let temp = TempDir::new().expect("create temp dir");
-        Filter::new(temp.path()).expect("create filter")
+        Filter::new(temp.path(), false).expect("create filter")
     }
 
     /// Helper to create a test filter with a .gitignore file
-    fn filter_with_gitignore(gitignore_content: &str) -> (Filter, TempDir) {
+    fn filter_with_gitignore(
+        gitignore_content: &str,
+        force_watch_gitignore: bool,
+    ) -> (Filter, TempDir) {
         let temp = TempDir::new().expect("create temp dir");
         let gitignore_path = temp.path().join(".gitignore");
         fs::write(&gitignore_path, gitignore_content).expect("write .gitignore");
-        let filter = Filter::new(temp.path()).expect("create filter");
+        let filter = Filter::new(temp.path(), force_watch_gitignore).expect("create filter");
         (filter, temp)
     }
 
     #[test]
     fn filter_creation_without_gitignore() {
         let temp = TempDir::new().expect("create temp dir");
-        let filter = Filter::new(temp.path());
+        let filter = Filter::new(temp.path(), false);
         assert!(filter.is_ok());
         assert!(filter.unwrap().gitignore.is_none());
     }
@@ -276,7 +314,7 @@ mod tests {
         let temp = TempDir::new().expect("create temp dir");
         let gitignore_path = temp.path().join(".gitignore");
         fs::write(&gitignore_path, "*.log\n").expect("write .gitignore");
-        let filter = Filter::new(temp.path());
+        let filter = Filter::new(temp.path(), false);
         assert!(filter.is_ok());
         assert!(filter.unwrap().gitignore.is_some());
     }
@@ -376,7 +414,7 @@ mod tests {
 
     #[test]
     fn gitignore_patterns_respected() {
-        let (filter, temp) = filter_with_gitignore("*.log\ntmp/\nsecret.txt\n");
+        let (filter, temp) = filter_with_gitignore("*.log\ntmp/\nsecret.txt\n", false);
 
         let log_file = temp.path().join("debug.log");
         let secret = temp.path().join("secret.txt");
@@ -393,7 +431,7 @@ mod tests {
 
     #[test]
     fn gitignore_with_negation_patterns() {
-        let (filter, temp) = filter_with_gitignore("*.log\n!important.log\n");
+        let (filter, temp) = filter_with_gitignore("*.log\n!important.log\n", false);
 
         let normal_log = temp.path().join("debug.log");
         let important_log = temp.path().join("important.log");
@@ -407,7 +445,7 @@ mod tests {
 
     #[test]
     fn gitignore_directory_patterns() {
-        let (filter, temp) = filter_with_gitignore("tmp/\n");
+        let (filter, temp) = filter_with_gitignore("tmp/\n", false);
 
         let tmp_dir = temp.path().join("tmp");
         fs::create_dir(&tmp_dir).expect("create tmp dir");
@@ -419,8 +457,90 @@ mod tests {
     }
 
     #[test]
+    fn forced_filter_tracks_gitignored_files() {
+        let (filter, temp) = filter_with_gitignore("*.log\ntmp/\n", true);
+
+        let log_file = temp.path().join("debug.log");
+        fs::write(&log_file, b"logs").expect("write log");
+
+        let tmp_dir = temp.path().join("tmp");
+        fs::create_dir(&tmp_dir).expect("create tmp dir");
+        let tmp_file = tmp_dir.join("file.txt");
+        fs::write(&tmp_file, b"data").expect("write file");
+
+        assert!(filter.should_track(&log_file));
+        assert!(filter.should_track(&tmp_file));
+    }
+
+    #[test]
+    fn forced_filter_tracks_hidden_files() {
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), true).expect("create filter");
+
+        let hidden = temp.path().join(".hidden");
+        let envrc = temp.path().join(".envrc");
+        fs::write(&hidden, b"secret").expect("write hidden");
+        fs::write(&envrc, b"export FOO=bar").expect("write envrc");
+
+        assert!(filter.should_track(&hidden));
+        assert!(filter.should_track(&envrc));
+    }
+
+    #[test]
+    fn forced_filter_still_skips_ignored_dirs() {
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), true).expect("create filter");
+
+        assert!(!filter.should_track(Path::new("/project/node_modules/pkg.json")));
+        assert!(!filter.should_track(Path::new("/project/target/debug/x")));
+        assert!(!filter.should_track(Path::new("/project/.git/config")));
+    }
+
+    #[test]
+    fn forced_filter_still_skips_ignored_extensions() {
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), true).expect("create filter");
+        let png = temp.path().join("logo.png");
+        fs::write(&png, b"fake png").expect("write png");
+
+        assert!(!filter.should_track(&png));
+    }
+
+    #[test]
+    fn forced_filter_does_not_load_gitignore() {
+        let temp = TempDir::new().expect("create temp dir");
+        let gitignore_path = temp.path().join(".gitignore");
+        fs::write(&gitignore_path, "*.log\n").expect("write .gitignore");
+
+        let filter = Filter::new(temp.path(), true).expect("create filter");
+        assert!(filter.gitignore.is_none());
+    }
+
+    #[test]
+    fn forced_filter_tolerates_malformed_gitignore() {
+        // A directory path used as a .gitignore "file" fails to parse in
+        // non-forced mode, but forced mode never reads it at all.
+        let temp = TempDir::new().expect("create temp dir");
+        let gitignore_path = temp.path().join(".gitignore");
+        fs::create_dir(&gitignore_path).expect("create dir named .gitignore");
+
+        assert!(Filter::new(temp.path(), false).is_err());
+        assert!(Filter::new(temp.path(), true).is_ok());
+    }
+
+    #[test]
+    fn force_watch_gitignore_accessor_reflects_constructed_value() {
+        let temp = TempDir::new().expect("create temp dir");
+        let off = Filter::new(temp.path(), false).expect("create filter");
+        let on = Filter::new(temp.path(), true).expect("create filter");
+
+        assert!(!off.force_watch_gitignore());
+        assert!(on.force_watch_gitignore());
+    }
+
+    #[test]
     fn multiple_filtering_rules_combined() {
-        let (filter, temp) = filter_with_gitignore("generated/\n");
+        let (filter, temp) = filter_with_gitignore("generated/\n", false);
 
         // File in node_modules (hardcoded ignore)
         let nm_file = temp.path().join("node_modules").join("pkg.json");

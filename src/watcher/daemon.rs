@@ -127,7 +127,8 @@ impl DaemonState {
         let engine = Engine::open(path, &storage_dir)?;
 
         // Create Filter
-        let filter = Filter::new(path)?;
+        // TODO(GI-03): read flag from registry entry
+        let filter = Filter::new(path, false)?;
 
         // Create Debouncer
         let debouncer = Debouncer::new();
@@ -353,7 +354,7 @@ mod tests {
         let context = ProjectContext {
             root: path.clone(),
             engine,
-            filter: Filter::new(&path).expect("create filter"),
+            filter: Filter::new(&path, false).expect("create filter"),
             debouncer: Debouncer::new(),
         };
 
