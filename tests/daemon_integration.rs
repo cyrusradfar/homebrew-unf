@@ -124,6 +124,39 @@ fn assert_not_recorded(unf_home: &Path, project_root: &Path, rel_path: &str) {
     );
 }
 
+/// Poll for a SIGUSR1-triggered registry reload to have actually rebuilt the
+/// daemon's Filter back to the gitignore-respecting default, by writing
+/// successive gitignored probe files until one is confirmed NOT recorded.
+///
+/// `unf watch` (without `--force-watch-gitignore`) returns as soon as it has
+/// signaled the daemon; it does not wait for the daemon to finish
+/// `sync_with_registry`'s `to_reload` path. A fixed sleep between "signal
+/// sent" and "write the real test file" is a race: on a slow/loaded runner
+/// the daemon can still be running the OLD (permissive) Filter when the real
+/// file is written, so it gets recorded and an absence assertion fails
+/// intermittently. This proves the new filter is live with a real,
+/// self-verifying signal instead of guessing a delay — a bigger fixed sleep
+/// is the same race with a wider window, not a fix.
+///
+/// Each probe costs one `wait_past_debounce` (the only way to safely observe
+/// "not recorded"), so this is bounded and normally resolves on the first
+/// probe: the reload is typically well under one debounce window.
+fn wait_until_gitignore_reapplied(unf_home: &Path, project_root: &Path) {
+    const MAX_PROBES: u32 = 10;
+    for i in 0..MAX_PROBES {
+        let rel_path = format!("probe_{}.log", i);
+        fs::write(project_root.join(&rel_path), "probe\n").expect("write probe file");
+        wait_past_debounce();
+        if !is_recorded(unf_home, project_root, &rel_path) {
+            return;
+        }
+    }
+    panic!(
+        "gitignore filter was not reapplied by the daemon within {} probes",
+        MAX_PROBES
+    );
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -606,6 +639,11 @@ fn force_watch_gitignore_end_to_end() {
         pid_after_step2, pid_after_step5,
         "turning the flag back off must also reuse the running daemon"
     );
+
+    // Confirm the daemon has actually applied the reload (not just been
+    // signaled) before writing the real probe file. See
+    // `wait_until_gitignore_reapplied` for why a fixed sleep here is racy.
+    wait_until_gitignore_reapplied(unf_home.path(), temp.path());
 
     fs::write(temp.path().join("c.log"), "line one\n").expect("write c.log");
     wait_past_debounce();
