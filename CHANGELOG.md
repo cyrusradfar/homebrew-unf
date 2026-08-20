@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-08-20
+### Internal
+- Fixed a race in the `--force-watch-gitignore` integration test that failed on the Linux CI runner. The test waited a fixed 300ms after `unf watch` before asserting a file was not recorded, but `unf watch` returns as soon as it signals the daemon — it does not wait for the reload to rebuild the watcher's filter. The test now polls for direct evidence that the new filter is live.
+
+**0.19.0 was tagged but never released.** 0.19.1 is the first published build containing the gitignore override; its feature list is below.
+
 ## [0.19.0] - 2026-08-20
 ### Added
 - `unf watch --force-watch-gitignore` records the files `.gitignore` excludes, plus hidden dotfiles that are normally skipped. Off by default; the setting persists per project and plain `unf watch` turns it back off. `.git`, `node_modules`, `target`, `.next`, `__pycache__`, `.venv`, `venv`, `.tox`, `dist`, `build`, and binary files are never recorded, with or without the flag. Using the flag prints a stderr warning, because secrets in ignored files (`.env.local`, credential files) go into the recording.
