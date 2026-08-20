@@ -24,6 +24,20 @@ struct WatchOutput {
     snapshots_preserved: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     auto_restart: Option<bool>,
+    /// Always serialized. Machine consumers must read the flag directly
+    /// instead of treating an absent field as `false`.
+    force_watch_gitignore: bool,
+}
+
+/// Prints the gitignore-override safety warning to stderr.
+///
+/// Line 1 uses the shared `warning:` prefix. Lines 2 to 4 use the same
+/// two-space hint indent that `print_error` applies to its hint.
+fn print_gitignore_override_warning() {
+    super::output::print_warning(".gitignore protection is off for this project");
+    eprintln!("  UNF records the files that .gitignore excludes, and hidden dotfiles.");
+    eprintln!("  Secrets in those files go into the recording. Example: .env.local.");
+    eprintln!("  Run `unf watch` with no flag to turn this off.");
 }
 
 /// Runs the `unf watch` command.
@@ -47,6 +61,9 @@ struct WatchOutput {
 ///
 /// * `project_root` - The root directory to watch (typically current directory)
 /// * `format` - Output format (human or JSON)
+/// * `force_watch_gitignore` - When true, record gitignored files and hidden
+///   dotfiles for this project. The value is always written, so a plain
+///   `unf watch` turns a previously set override back off.
 ///
 /// # Returns
 ///
@@ -59,7 +76,11 @@ struct WatchOutput {
 /// - `UnfError::Watcher` if daemon spawn or signal operations fail
 #[allow(clippy::cognitive_complexity)]
 // TODO(v0.18): reduce complexity
-pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
+pub fn run(
+    project_root: &Path,
+    format: OutputFormat,
+    force_watch_gitignore: bool,
+) -> Result<(), UnfError> {
     let storage_dir = storage::resolve_storage_dir(project_root)?;
 
     // Remove stopped markers (re-activation).
@@ -79,14 +100,12 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     };
 
     // Record user intent (source of truth for what should be watched)
-    // TODO(GI-05): pass Some(force_watch_gitignore)
-    if let Err(e) = crate::intent::add_project(project_root, None) {
+    if let Err(e) = crate::intent::add_project(project_root, Some(force_watch_gitignore)) {
         super::output::print_warning(&format!("Failed to record intent: {}", e));
     }
 
     // Register project in global registry
-    // TODO(GI-05): pass Some(force_watch_gitignore)
-    if let Err(e) = crate::registry::register_project(project_root, None) {
+    if let Err(e) = crate::registry::register_project(project_root, Some(force_watch_gitignore)) {
         super::output::print_warning(&format!("Failed to register project: {}", e));
     }
 
@@ -140,12 +159,14 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
             status: "resumed".to_string(),
             snapshots_preserved: Some(snapshot_count),
             auto_restart: Some(auto_restart),
+            force_watch_gitignore,
         }
     } else {
         WatchOutput {
             status: "started".to_string(),
             snapshots_preserved: None,
             auto_restart: Some(auto_restart),
+            force_watch_gitignore,
         }
     };
 
@@ -160,6 +181,11 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         super::output::print_status("Watching", &subject);
     } else {
         super::output::print_status("Watching", &project_root.display().to_string());
+    }
+
+    // Human-format only: JSON consumers read `force_watch_gitignore` instead.
+    if force_watch_gitignore && format != OutputFormat::Json {
+        print_gitignore_override_warning();
     }
 
     Ok(())
@@ -235,5 +261,38 @@ mod tests {
         let pid_path = temp.path().join("daemon.pid");
         fs::write(&pid_path, "invalid").expect("write invalid pid");
         assert!(!is_global_daemon_running(&pid_path));
+    }
+
+    /// Serializes a `WatchOutput` to a JSON value for field assertions.
+    fn to_json(output: &WatchOutput) -> serde_json::Value {
+        serde_json::to_value(output).expect("serialize WatchOutput")
+    }
+
+    #[test]
+    fn watch_output_always_serializes_gitignore_flag_when_false() {
+        let json = to_json(&WatchOutput {
+            status: "started".to_string(),
+            snapshots_preserved: None,
+            auto_restart: Some(true),
+            force_watch_gitignore: false,
+        });
+
+        assert_eq!(json["force_watch_gitignore"], serde_json::json!(false));
+        // Absent optional fields still collapse; the flag must not.
+        assert!(json.get("snapshots_preserved").is_none());
+    }
+
+    #[test]
+    fn watch_output_serializes_gitignore_flag_when_true() {
+        let json = to_json(&WatchOutput {
+            status: "resumed".to_string(),
+            snapshots_preserved: Some(7),
+            auto_restart: Some(false),
+            force_watch_gitignore: true,
+        });
+
+        assert_eq!(json["force_watch_gitignore"], serde_json::json!(true));
+        assert_eq!(json["status"], serde_json::json!("resumed"));
+        assert_eq!(json["snapshots_preserved"], serde_json::json!(7));
     }
 }

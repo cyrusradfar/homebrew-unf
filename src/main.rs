@@ -42,7 +42,8 @@ enum Commands {
     Init,
 
     /// Start watching the current directory
-    Watch,
+    #[command(after_help = include_str!("help/watch.txt"))]
+    Watch(WatchArgs),
 
     /// Stop watching the current directory
     Unwatch,
@@ -260,6 +261,13 @@ struct ListArgs {
 }
 
 #[derive(Args, Debug)]
+struct WatchArgs {
+    /// Also record gitignored files and hidden dotfiles
+    #[arg(long)]
+    force_watch_gitignore: bool,
+}
+
+#[derive(Args, Debug)]
 struct PruneArgs {
     /// Time cutoff: keep snapshots newer than this (default: "7d")
     #[arg(long, default_value = "7d")]
@@ -406,8 +414,8 @@ fn main() {
         Commands::Init => resolve_project_root(cli.project.as_deref())
             .and_then(|root| cli::init::run(&root, format)),
 
-        Commands::Watch => resolve_project_root(cli.project.as_deref())
-            .and_then(|root| cli::watch::run(&root, format)),
+        Commands::Watch(args) => resolve_project_root(cli.project.as_deref())
+            .and_then(|root| cli::watch::run(&root, format, args.force_watch_gitignore)),
 
         Commands::Unwatch => resolve_project_root(cli.project.as_deref())
             .and_then(|root| cli::unwatch::run(&root, format)),
