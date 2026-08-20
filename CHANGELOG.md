@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- `unf watch --force-watch-gitignore` records the files `.gitignore` excludes, plus hidden dotfiles that are normally skipped. Off by default; the setting persists per project and plain `unf watch` turns it back off. `.git`, `node_modules`, `target`, `.next`, `__pycache__`, `.venv`, `venv`, `.tox`, `dist`, `build`, and binary files are never recorded, with or without the flag. Using the flag prints a stderr warning, because secrets in ignored files (`.env.local`, credential files) go into the recording.
+- `unf status` prints a `Gitignore:` line when a project has the override on. `unf list` marks the row with `*` and prints a footnote; `unf list -v` adds a `GITIGNORE` column. `unf watch --json`, `unf status --json`, and `unf list --json` all carry a `force_watch_gitignore` boolean, always serialized so consumers never read absence as false.
+
+### Fixed
+- Watcher: `.gitignore` is no longer parsed at all when the override is on, so a malformed `.gitignore` can no longer fail watcher construction for those projects.
+- `unf status` loaded the project registry twice per invocation; now once.
 
 ## [0.18.5] - 2026-04-21
 ### Fixed

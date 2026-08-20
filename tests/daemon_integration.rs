@@ -72,6 +72,58 @@ fn read_pid(path: &Path) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse::<u32>().ok()
 }
 
+/// Returns true if `unf log <rel_path>` finds at least one snapshot.
+///
+/// `unf log` exits 0 when the target has history and exits 4 ("No history for
+/// ...") when it does not (see `error.rs::ExitCode::NoResults`, exercised by
+/// `log_nonexistent_file_shows_no_history` in integration.rs). Reading the
+/// exit code is cheaper and more reliable than scraping stdout text.
+fn is_recorded(unf_home: &Path, project_root: &Path, rel_path: &str) -> bool {
+    isolated_cmd(unf_home)
+        .current_dir(project_root)
+        .arg("log")
+        .arg(rel_path)
+        .output()
+        .expect("run log command")
+        .status
+        .success()
+}
+
+/// Poll for `rel_path` to show up in the log, rather than sleeping a fixed
+/// interval that may or may not clear the 3-second debounce window plus
+/// daemon processing time. Matches the polling style `restart_gives_new_pid`
+/// already uses in this file (bounded retries, short sleep between).
+fn wait_until_recorded(unf_home: &Path, project_root: &Path, rel_path: &str) {
+    for _ in 0..40 {
+        if is_recorded(unf_home, project_root, rel_path) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    panic!("{} was not recorded within the poll timeout", rel_path);
+}
+
+/// Sleep past the debounce window, with margin for daemon processing time.
+///
+/// Proving a file was NOT recorded needs a real wait, not an immediate
+/// check — an immediate check would pass even for a file that WILL be
+/// recorded a moment later, simply because the snapshot has not landed yet.
+/// Waiting here turns that false pass into a real assertion.
+fn wait_past_debounce() {
+    thread::sleep(Duration::from_millis(4500));
+}
+
+/// Assert `rel_path` has no snapshot. Callers must call `wait_past_debounce`
+/// (or otherwise guarantee steady state) before this, or a true result here
+/// says nothing about whether the file was correctly filtered.
+fn assert_not_recorded(unf_home: &Path, project_root: &Path, rel_path: &str) {
+    assert!(
+        !is_recorded(unf_home, project_root, rel_path),
+        "{} should not have been recorded",
+        rel_path
+    );
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -465,4 +517,97 @@ fn restart_after_stop_resumes_projects() {
         projects.contains(&canonical),
         "Project should still be registered after stop+restart"
     );
+}
+
+/// Test 9: `--force-watch-gitignore` end-to-end (GI-08).
+///
+/// Walks all 5 scenarios from `docs/tickets/watch-gitignore-override.md` in
+/// one function, because state carries between steps: step 2's no-restart
+/// assertion depends on step 1's daemon still being the one running, and
+/// steps 3-5 depend on the flag flips from steps 2 and 5.
+#[test]
+fn force_watch_gitignore_end_to_end() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    fs::write(temp.path().join(".gitignore"), "*.log\n").expect("write .gitignore");
+
+    // --- Step 1: plain `unf watch` respects .gitignore ---
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let pid_after_step1 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after first watch");
+    assert!(
+        is_alive(pid_after_step1),
+        "Daemon should be alive after first watch"
+    );
+
+    fs::write(temp.path().join("a.log"), "line one\n").expect("write a.log");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp.path(), "a.log");
+
+    // --- Step 2: re-watch with --force-watch-gitignore, SAME daemon ---
+    // This is the ticket's most important assertion: it proves the daemon's
+    // `to_reload` path (GI-03) rebuilds the Filter on a flag change without
+    // a restart. If the daemon restarted here, this test would prove nothing.
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .arg("--force-watch-gitignore")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(300));
+
+    let pid_after_step2 = read_pid(&pid_path(unf_home.path()))
+        .expect("Should read PID after re-watch with --force-watch-gitignore");
+    assert_eq!(
+        pid_after_step1, pid_after_step2,
+        "re-watching with --force-watch-gitignore must reuse the running \
+         daemon (same PID), not restart it"
+    );
+    assert!(
+        is_alive(pid_after_step2),
+        "Daemon should still be alive after re-watch"
+    );
+
+    fs::write(temp.path().join("b.log"), "line one\n").expect("write b.log");
+    wait_until_recorded(unf_home.path(), temp.path(), "b.log");
+
+    // --- Step 3: hidden dotfiles are tracked once the flag is on ---
+    fs::write(temp.path().join(".env.local"), "SECRET=1\n").expect("write .env.local");
+    wait_until_recorded(unf_home.path(), temp.path(), ".env.local");
+
+    // --- Step 4: hardcoded dir exclusions still apply even with the flag on ---
+    fs::create_dir_all(temp.path().join("node_modules")).expect("mkdir node_modules");
+    fs::write(temp.path().join("node_modules/x.js"), "x\n").expect("write node_modules/x.js");
+    fs::create_dir_all(temp.path().join("target")).expect("mkdir target");
+    fs::write(temp.path().join("target/x"), "x\n").expect("write target/x");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp.path(), "node_modules/x.js");
+    assert_not_recorded(unf_home.path(), temp.path(), "target/x");
+
+    // --- Step 5: re-watch with plain `unf watch` turns the flag back off ---
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(300));
+
+    let pid_after_step5 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after final re-watch");
+    assert_eq!(
+        pid_after_step2, pid_after_step5,
+        "turning the flag back off must also reuse the running daemon"
+    );
+
+    fs::write(temp.path().join("c.log"), "line one\n").expect("write c.log");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp.path(), "c.log");
 }
