@@ -16,7 +16,7 @@ class UnfStaging < Formula
   on_linux do
     if Hardware::CPU.arm?
       url "https://downloads.unfudged.io/staging/v0.17.12/unf-v0.17.12-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "d854ce5ab402b764a974928f5b67e89007d5cbbcc291e436cadc7c6af584bdb8_ARM"
+      sha256 "44798097410c8e503ca7eb24f47b282b0f366f41ae5281645ee15b2173ea1667"
     else
       url "https://downloads.unfudged.io/staging/v0.17.12/unf-v0.17.12-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "d854ce5ab402b764a974928f5b67e89007d5cbbcc291e436cadc7c6af584bdb8"
