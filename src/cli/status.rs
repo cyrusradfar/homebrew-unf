@@ -34,6 +34,9 @@ struct StatusOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     status_mode: Option<u8>,
     auto_restart: bool,
+    /// True when this project runs with `--force-watch-gitignore`.
+    /// Always serialized so scripts can read it without a presence check.
+    force_watch_gitignore: bool,
 }
 
 /// Status modes for unwatched directories.
@@ -80,7 +83,11 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
 
-    let mode = determine_status_mode(project_root, &canonical_project_root, &storage_dir);
+    // One registry load serves both the mode decision and the gitignore flag.
+    let facts = lookup_registry_facts(&canonical_project_root);
+    let force_watch_gitignore = facts.force_watch_gitignore;
+
+    let mode = determine_status_mode(facts);
 
     // Step 2: Handle each mode
     match mode {
@@ -96,6 +103,7 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
                 reason: Some("never_watched".to_string()),
                 status_mode: Some(0),
                 auto_restart,
+                force_watch_gitignore,
             };
 
             if format == OutputFormat::Json {
@@ -119,6 +127,7 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
                 reason: Some("previously_watched_inactive".to_string()),
                 status_mode: Some(1),
                 auto_restart,
+                force_watch_gitignore,
             };
 
             if format == OutputFormat::Json {
@@ -158,6 +167,7 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         reason: None,
         status_mode: Some(2),
         auto_restart,
+        force_watch_gitignore,
     };
 
     if format == OutputFormat::Json {
@@ -167,6 +177,11 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         println!("  Snapshots:  {}", format_number(snapshot_count));
         println!("  Files tracked:  {}", format_number(file_count));
         println!("  Store size:  {}", super::format_size(store_size));
+        // Only the non-default state earns a line. Respecting .gitignore is
+        // what users expect, so silence means "respected".
+        if force_watch_gitignore {
+            println!("  Gitignore:  not applied (--force-watch-gitignore)");
+        }
         println!(
             "  Auto-restart: {}",
             if auto_restart { "enabled" } else { "disabled" }
@@ -176,71 +191,83 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     Ok(())
 }
 
-/// Determines the status mode for a directory.
+/// What the global registry says about one project.
 ///
-/// Mode 0 (NeverWatched): Directory is not in the registry and storage doesn't exist.
-/// Mode 1 (PreviouslyWatched): Directory is in the registry but daemon isn't watching.
-/// Mode 2 (ActivelyWatching): Daemon is alive and actively watching this directory.
-fn determine_status_mode(
-    project_root: &Path,
-    canonical_project_root: &Path,
-    storage_dir: &Path,
-) -> StatusMode {
-    // Check if daemon is currently watching
-    if is_daemon_watching_project(project_root, storage_dir) {
-        return StatusMode::ActivelyWatching;
-    }
-
-    // Daemon is not active. Now check if directory was ever registered.
-    if let Ok(registry) = crate::registry::load() {
-        if registry
-            .projects
-            .iter()
-            .any(|p| p.path == canonical_project_root)
-        {
-            // Found in registry but daemon not watching → Mode 1
-            return StatusMode::PreviouslyWatched;
-        }
-    }
-
-    // Not in registry → Mode 0
-    StatusMode::NeverWatched
+/// Both facts come from a single `registry::load()` so the status path never
+/// reads `projects.json` more than once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RegistryFacts {
+    /// The project has an entry in the registry.
+    registered: bool,
+    /// The entry carries `--force-watch-gitignore`.
+    force_watch_gitignore: bool,
 }
 
-/// Checks if the daemon is actively watching this project.
+/// Looks up a canonicalized project path in the global registry.
 ///
-/// First checks the global daemon (new model), then falls back to
-/// the per-project PID file (backward compatibility with old daemons).
+/// Returns the default (`registered: false`) when the registry cannot be read
+/// or the project has no entry.
+fn lookup_registry_facts(canonical_project_root: &Path) -> RegistryFacts {
+    let Ok(registry) = crate::registry::load() else {
+        return RegistryFacts::default();
+    };
+
+    match registry
+        .projects
+        .iter()
+        .find(|p| p.path == canonical_project_root)
+    {
+        Some(entry) => RegistryFacts {
+            registered: true,
+            force_watch_gitignore: entry.force_watch_gitignore,
+        },
+        None => RegistryFacts::default(),
+    }
+}
+
+/// Determines the status mode for a directory.
+///
+/// Mode 0 (NeverWatched): Directory has no registry entry.
+/// Mode 1 (PreviouslyWatched): Directory is in the registry but the daemon isn't running.
+/// Mode 2 (ActivelyWatching): Daemon is alive and this directory is registered.
+fn determine_status_mode(facts: RegistryFacts) -> StatusMode {
+    if !facts.registered {
+        return StatusMode::NeverWatched;
+    }
+
+    if is_daemon_watching_project(facts) {
+        StatusMode::ActivelyWatching
+    } else {
+        StatusMode::PreviouslyWatched
+    }
+}
+
+/// Checks if the global daemon is actively watching this project.
+///
+/// A project is being watched when it has a registry entry and the global
+/// daemon process is alive.
 ///
 /// # Arguments
 ///
-/// * `project_root` - The root directory of the project
-/// * `storage_dir` - The centralized storage directory for this project
+/// * `facts` - Registry facts for the project, from [`lookup_registry_facts`]
 ///
 /// # Returns
 ///
-/// `true` if the daemon is alive and actively watching this project.
-fn is_daemon_watching_project(project_root: &Path, _storage_dir: &Path) -> bool {
-    let global_pid_path = match storage::global_pid_path() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let pid_file = PidFile::new(global_pid_path);
-    let pid = match pid_file.read() {
-        Ok(Some(p)) => p,
-        _ => return false,
-    };
-    if !crate::process::is_alive(pid) {
+/// `true` if the daemon is alive and this project is registered.
+fn is_daemon_watching_project(facts: RegistryFacts) -> bool {
+    if !facts.registered {
         return false;
     }
-    // Global daemon alive — check if this project is registered
-    if let Ok(registry) = crate::registry::load() {
-        let canonical = project_root
-            .canonicalize()
-            .unwrap_or_else(|_| project_root.to_path_buf());
-        return registry.projects.iter().any(|p| p.path == canonical);
-    }
-    false
+
+    let Ok(global_pid_path) = storage::global_pid_path() else {
+        return false;
+    };
+    let pid_file = PidFile::new(global_pid_path);
+    let Ok(Some(pid)) = pid_file.read() else {
+        return false;
+    };
+
+    crate::process::is_alive(pid)
 }
 
 use super::output::format_number;
@@ -372,10 +399,32 @@ mod tests {
     }
 
     #[test]
+    fn is_daemon_watching_project_unregistered() {
+        // An unregistered project is never "watching", whatever the daemon does.
+        assert!(!is_daemon_watching_project(RegistryFacts::default()));
+    }
+
+    #[test]
     fn is_daemon_watching_project_no_global_daemon() {
-        // When there's no global PID file and no per-project PID, should return false
+        // Registered, but no global PID file in an isolated home -> not watching.
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+
         let temp = tempfile::TempDir::new().expect("create temp");
-        assert!(!is_daemon_watching_project(temp.path(), temp.path()));
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let watching = is_daemon_watching_project(RegistryFacts {
+            registered: true,
+            force_watch_gitignore: false,
+        });
+
+        if let Some(h) = original_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        assert!(!watching);
     }
 
     #[test]
@@ -384,23 +433,25 @@ mod tests {
         let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
 
         let temp = tempfile::TempDir::new().expect("create temp");
+        let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", temp.path());
 
         let project_dir = temp.path().join("project");
         std::fs::create_dir_all(&project_dir).expect("create project dir");
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
-        let storage_dir = temp.path().join(".unfudged").join("data").join("project");
 
-        let mode = determine_status_mode(&project_dir, &canonical, &storage_dir);
-
-        assert_eq!(mode, StatusMode::NeverWatched);
+        let facts = lookup_registry_facts(&canonical);
 
         // Cleanup
-        let original_home = std::env::var("HOME").ok();
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
         }
+
+        assert!(!facts.registered);
+        assert_eq!(determine_status_mode(facts), StatusMode::NeverWatched);
     }
 
     #[test]
@@ -421,11 +472,10 @@ mod tests {
         crate::registry::register_project(&project_dir, None).expect("register project");
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
-        let storage_dir = temp.path().join(".unfudged").join("data").join("project");
 
-        let mode = determine_status_mode(&project_dir, &canonical, &storage_dir);
-
-        assert_eq!(mode, StatusMode::PreviouslyWatched);
+        let facts = lookup_registry_facts(&canonical);
+        assert!(facts.registered);
+        assert_eq!(determine_status_mode(facts), StatusMode::PreviouslyWatched);
 
         // Cleanup
         if let Some(h) = original_home {
@@ -433,5 +483,55 @@ mod tests {
         } else {
             std::env::remove_var("HOME");
         }
+    }
+
+    #[test]
+    fn lookup_registry_facts_reads_force_watch_gitignore() {
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+
+        let temp = tempfile::TempDir::new().expect("create temp");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let project_dir = temp.path().join("project");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        crate::registry::register_project(&project_dir, Some(true)).expect("register project");
+
+        let canonical = project_dir.canonicalize().expect("canonicalize");
+        let facts = lookup_registry_facts(&canonical);
+
+        if let Some(h) = original_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        assert!(facts.registered);
+        assert!(facts.force_watch_gitignore);
+    }
+
+    /// Builds a minimal Mode 0 payload for serialization tests.
+    fn never_watched_output(force_watch_gitignore: bool) -> StatusOutput {
+        StatusOutput {
+            recording: false,
+            since: None,
+            snapshots: None,
+            files_tracked: None,
+            store_bytes: None,
+            newest: None,
+            reason: Some("never_watched".to_string()),
+            status_mode: Some(0),
+            auto_restart: false,
+            force_watch_gitignore,
+        }
+    }
+
+    #[test]
+    fn json_always_carries_force_watch_gitignore() {
+        let off = serde_json::to_value(never_watched_output(false)).expect("serialize");
+        assert_eq!(off["force_watch_gitignore"], serde_json::Value::Bool(false));
+
+        let on = serde_json::to_value(never_watched_output(true)).expect("serialize");
+        assert_eq!(on["force_watch_gitignore"], serde_json::Value::Bool(true));
     }
 }

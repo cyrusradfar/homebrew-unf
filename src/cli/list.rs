@@ -26,6 +26,9 @@ struct ProjectInfo {
     recording_since: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_activity: Option<String>,
+    /// True when this project runs with `--force-watch-gitignore`.
+    /// Always serialized; the `status` string never carries the marker.
+    force_watch_gitignore: bool,
     // Private fields for human output formatting (not serialized)
     #[serde(skip)]
     oldest_snapshot_time: Option<chrono::DateTime<chrono::Utc>>,
@@ -77,7 +80,7 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
     let mut infos = Vec::new();
 
     for entry in &reg.projects {
-        let info = gather_project_info(&entry.path, verbose);
+        let info = gather_project_info(&entry.path, verbose, entry.force_watch_gitignore);
         infos.push(info);
     }
 
@@ -91,10 +94,15 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
         #[derive(Debug)]
         struct DisplayRow {
             path: String,
+            /// Bare status word. Never carries the marker — the color match
+            /// below keys off this exact string.
             status: String,
+            /// `"*"` when the project forces gitignore, `""` otherwise.
+            marker: &'static str,
             snapshots: String,
             size: String,
-            files: String, // only used in verbose
+            files: String,     // only used in verbose
+            gitignore: String, // only used in verbose
             range: String,
         }
 
@@ -136,9 +144,11 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
             rows.push(DisplayRow {
                 path: path_display,
                 status: info.status.clone(),
+                marker: status_marker(info.force_watch_gitignore),
                 snapshots: snapshots_str,
                 size: size_str,
                 files: files_str,
+                gitignore: gitignore_label(info.force_watch_gitignore).to_string(),
                 range: range_str,
             });
         }
@@ -149,14 +159,17 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
         let mut col_snapshots_width = 9; // "SNAPSHOTS"
         let mut col_size_width = 4; // "SIZE"
         let mut col_files_width = 5; // "FILES"
+        let mut col_gitignore_width = GITIGNORE_HEADER.len();
         let mut col_range_width = 5; // "RANGE"
 
         for row in &rows {
             col_path_width = col_path_width.max(row.path.len());
-            col_status_width = col_status_width.max(row.status.len());
+            // The marker prints inside the status cell, so it counts toward the width.
+            col_status_width = col_status_width.max(row.status.len() + row.marker.len());
             col_snapshots_width = col_snapshots_width.max(row.snapshots.len());
             col_size_width = col_size_width.max(row.size.len());
             col_files_width = col_files_width.max(row.files.len());
+            col_gitignore_width = col_gitignore_width.max(row.gitignore.len());
             col_range_width = col_range_width.max(row.range.len());
         }
 
@@ -180,6 +193,11 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
 
         if verbose {
             print!("  {:>width_files$}", "FILES", width_files = col_files_width);
+            print!(
+                "  {:<width_gitignore$}",
+                GITIGNORE_HEADER,
+                width_gitignore = col_gitignore_width
+            );
         }
 
         println!("  RANGE");
@@ -188,23 +206,12 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
             print!("{}", colors::RESET);
         }
 
+        let any_marked = rows.iter().any(|row| !row.marker.is_empty());
+
         // Print rows
-        for row in rows {
-            // Pad status to column width FIRST, then wrap with color
-            // (ANSI codes are invisible but count in format width)
-            let status_padded = format!("{:<width$}", row.status, width = col_status_width);
-            let status_display = if use_color_output {
-                match row.status.as_str() {
-                    "watching" => format!("{}{}{}", colors::GREEN, status_padded, colors::RESET),
-                    "stopped" => format!("{}{}{}", colors::YELLOW, status_padded, colors::RESET),
-                    "crashed" | "orphaned" | "error" => {
-                        format!("{}{}{}", colors::RED, status_padded, colors::RESET)
-                    }
-                    _ => status_padded,
-                }
-            } else {
-                status_padded
-            };
+        for row in &rows {
+            let status_display =
+                render_status_cell(&row.status, row.marker, col_status_width, use_color_output);
 
             print!(
                 "{:<width_path$}  {}  {:>width_snapshots$}  {:>width_size$}",
@@ -223,17 +230,105 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
                     row.files,
                     width_files = col_files_width
                 );
+                print!(
+                    "  {:<width_gitignore$}",
+                    row.gitignore,
+                    width_gitignore = col_gitignore_width
+                );
             }
 
             println!("  {}", row.range);
+        }
+
+        // Footnote only when the table actually shows a marker.
+        if any_marked {
+            println!();
+            println!("{}", MARKER_FOOTNOTE);
         }
     }
 
     Ok(())
 }
 
+/// Header for the verbose-only gitignore column.
+const GITIGNORE_HEADER: &str = "GITIGNORE";
+
+/// Suffix shown on the status cell of a project that forces gitignore.
+const FORCE_GITIGNORE_MARKER: &str = "*";
+
+/// Footnote printed under the table when any row carries the marker.
+const MARKER_FOOTNOTE: &str =
+    "* --force-watch-gitignore is on. This project records gitignored files.";
+
+/// Returns the status-cell suffix for a project.
+///
+/// Empty for the default (gitignore respected), so unmarked tables look
+/// exactly as they do today.
+fn status_marker(force_watch_gitignore: bool) -> &'static str {
+    if force_watch_gitignore {
+        FORCE_GITIGNORE_MARKER
+    } else {
+        ""
+    }
+}
+
+/// Returns the verbose `GITIGNORE` column value for a project.
+fn gitignore_label(force_watch_gitignore: bool) -> &'static str {
+    if force_watch_gitignore {
+        "forced"
+    } else {
+        "respected"
+    }
+}
+
+/// Renders one padded, colored status cell.
+///
+/// The color keys off `status` alone. `marker` is appended after the color is
+/// chosen, so a marked row keeps the color of its bare status word — appending
+/// the marker to `status` first would make every marked row fall through to the
+/// uncolored arm.
+///
+/// Padding is applied before the ANSI codes are wrapped around the cell:
+/// escape codes are invisible but would otherwise count toward the width.
+///
+/// # Arguments
+///
+/// * `status` - Bare status word (`"watching"`, `"stopped"`, ...)
+/// * `marker` - `"*"` or `""`
+/// * `width` - Target column width, marker included
+/// * `use_color` - Whether to emit ANSI color codes
+fn render_status_cell(status: &str, marker: &str, width: usize, use_color: bool) -> String {
+    use super::output::colors;
+
+    let padded = format!("{:<width$}", format!("{}{}", status, marker), width = width);
+
+    if !use_color {
+        return padded;
+    }
+
+    let color = match status {
+        "watching" => colors::GREEN,
+        "stopped" => colors::YELLOW,
+        "crashed" | "orphaned" | "error" => colors::RED,
+        _ => return padded,
+    };
+
+    format!("{}{}{}", color, padded, colors::RESET)
+}
+
 /// Gathers status information for a single project.
-fn gather_project_info(project_path: &Path, _verbose: bool) -> ProjectInfo {
+///
+/// # Arguments
+///
+/// * `project_path` - Absolute path to the project root
+/// * `force_watch_gitignore` - The registry flag for this project. Passed in by
+///   the caller, which already holds the registry entry, so this function never
+///   reloads `projects.json`.
+fn gather_project_info(
+    project_path: &Path,
+    _verbose: bool,
+    force_watch_gitignore: bool,
+) -> ProjectInfo {
     let path_str = project_path.display().to_string();
 
     // Resolve the centralized storage directory
@@ -248,6 +343,7 @@ fn gather_project_info(project_path: &Path, _verbose: bool) -> ProjectInfo {
                 tracked_files: None,
                 recording_since: None,
                 last_activity: None,
+                force_watch_gitignore,
                 oldest_snapshot_time: None,
                 newest_snapshot_time: None,
             };
@@ -263,6 +359,7 @@ fn gather_project_info(project_path: &Path, _verbose: bool) -> ProjectInfo {
             tracked_files: None,
             recording_since: None,
             last_activity: None,
+            force_watch_gitignore,
             oldest_snapshot_time: None,
             newest_snapshot_time: None,
         };
@@ -313,6 +410,7 @@ fn gather_project_info(project_path: &Path, _verbose: bool) -> ProjectInfo {
                 tracked_files: tracked,
                 recording_since: recording_str,
                 last_activity: activity_str,
+                force_watch_gitignore,
                 oldest_snapshot_time: oldest,
                 newest_snapshot_time: newest,
             }
@@ -325,6 +423,7 @@ fn gather_project_info(project_path: &Path, _verbose: bool) -> ProjectInfo {
             tracked_files: None,
             recording_since: None,
             last_activity: None,
+            force_watch_gitignore,
             oldest_snapshot_time: None,
             newest_snapshot_time: None,
         },
@@ -361,11 +460,111 @@ use super::output::{format_number, format_size};
 mod tests {
     use super::*;
 
+    use super::super::output::colors;
+
     #[test]
     fn gather_info_missing_directory() {
-        let info = gather_project_info(Path::new("/nonexistent/path"), false);
+        let info = gather_project_info(Path::new("/nonexistent/path"), false, false);
         assert_eq!(info.status, "error");
         assert!(info.snapshots.is_none());
         assert!(info.store_bytes.is_none());
+        assert!(!info.force_watch_gitignore);
+    }
+
+    #[test]
+    fn gather_info_early_return_keeps_the_flag() {
+        // The error path must carry the flag too, or a broken project would
+        // silently report "respected".
+        let info = gather_project_info(Path::new("/nonexistent/path"), false, true);
+        assert_eq!(info.status, "error");
+        assert!(info.force_watch_gitignore);
+    }
+
+    #[test]
+    fn marker_does_not_change_status_color() {
+        // The trap: appending "*" to the status string before the color match
+        // drops a marked row into the uncolored arm.
+        let plain = render_status_cell("watching", "", 10, true);
+        let marked = render_status_cell("watching", FORCE_GITIGNORE_MARKER, 10, true);
+
+        assert!(plain.starts_with(colors::GREEN), "plain: {:?}", plain);
+        assert!(marked.starts_with(colors::GREEN), "marked: {:?}", marked);
+        assert!(marked.ends_with(colors::RESET));
+        assert!(marked.contains("watching*"));
+    }
+
+    #[test]
+    fn marked_and_unmarked_cells_share_a_width() {
+        // Column alignment survives the marker: padding happens before the
+        // (zero-width) ANSI codes are wrapped on.
+        let plain = render_status_cell("watching", "", 10, false);
+        let marked = render_status_cell("watching", FORCE_GITIGNORE_MARKER, 10, false);
+
+        assert_eq!(plain.len(), 10);
+        assert_eq!(marked.len(), 10);
+        assert_eq!(marked.trim_end(), "watching*");
+    }
+
+    #[test]
+    fn every_colored_status_survives_the_marker() {
+        for (status, color) in [
+            ("watching", colors::GREEN),
+            ("stopped", colors::YELLOW),
+            ("crashed", colors::RED),
+            ("orphaned", colors::RED),
+            ("error", colors::RED),
+        ] {
+            let marked = render_status_cell(status, FORCE_GITIGNORE_MARKER, 12, true);
+            assert!(marked.starts_with(color), "{} lost its color", status);
+        }
+    }
+
+    #[test]
+    fn unknown_status_stays_uncolored() {
+        let cell = render_status_cell("weird", FORCE_GITIGNORE_MARKER, 8, true);
+        assert_eq!(cell, "weird*  ");
+    }
+
+    #[test]
+    fn no_color_mode_emits_no_escape_codes() {
+        let cell = render_status_cell("watching", FORCE_GITIGNORE_MARKER, 12, false);
+        assert!(!cell.contains('\x1b'));
+    }
+
+    #[test]
+    fn marker_and_label_track_the_flag() {
+        assert_eq!(status_marker(true), "*");
+        assert_eq!(status_marker(false), "");
+        assert_eq!(gitignore_label(true), "forced");
+        assert_eq!(gitignore_label(false), "respected");
+    }
+
+    #[test]
+    fn json_always_carries_the_flag_and_never_the_marker() {
+        let info = gather_project_info(Path::new("/nonexistent/path"), false, true);
+        let value = serde_json::to_value(&info).expect("serialize");
+
+        assert_eq!(
+            value["force_watch_gitignore"],
+            serde_json::Value::Bool(true)
+        );
+
+        let status = value["status"].as_str().expect("status is a string");
+        assert!(
+            !status.contains('*'),
+            "status leaked the marker: {}",
+            status
+        );
+    }
+
+    #[test]
+    fn json_carries_a_false_flag_explicitly() {
+        let info = gather_project_info(Path::new("/nonexistent/path"), false, false);
+        let value = serde_json::to_value(&info).expect("serialize");
+
+        assert_eq!(
+            value["force_watch_gitignore"],
+            serde_json::Value::Bool(false)
+        );
     }
 }

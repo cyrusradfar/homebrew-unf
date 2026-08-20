@@ -9,3 +9,6 @@ Status meanings:
   stopped     Daemon was cleanly stopped (unf stop)
   crashed     Daemon exited unexpectedly
   orphaned    Project directory no longer exists
+
+Markers:
+  *           Project uses --force-watch-gitignore (records gitignored files)
