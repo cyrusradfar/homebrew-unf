@@ -60,6 +60,13 @@ pub struct DriftEntry {
     pub path: PathBuf,
     /// The kind of drift.
     pub kind: DriftKind,
+    /// The intent's `force_watch_gitignore` value for this project.
+    ///
+    /// Meaningful only for `MissingFromRegistry`, where `reconcile` uses it
+    /// to restore the project with the flag the user actually set instead of
+    /// defaulting to `false`. Always `false` for `ExtraInRegistry`, whose
+    /// entry is being deleted.
+    pub force_watch_gitignore: bool,
 }
 
 /// Decision the sentinel should take for the daemon on each health-check tick.
@@ -118,6 +125,7 @@ pub fn compute_drift(intent: &Intent, registry: &Registry) -> Vec<DriftEntry> {
             drift.push(DriftEntry {
                 path: entry.path.clone(),
                 kind: DriftKind::MissingFromRegistry,
+                force_watch_gitignore: entry.force_watch_gitignore,
             });
         }
     }
@@ -128,6 +136,8 @@ pub fn compute_drift(intent: &Intent, registry: &Registry) -> Vec<DriftEntry> {
             drift.push(DriftEntry {
                 path: entry.path.clone(),
                 kind: DriftKind::ExtraInRegistry,
+                // Irrelevant — this entry is about to be deleted.
+                force_watch_gitignore: false,
             });
         }
     }
@@ -517,11 +527,54 @@ fn reconcile_intent() -> Result<(), UnfError> {
         audit::log_event("SENTINEL_RECONCILE", &format_drift(&drift));
     }
 
+    // Self-heal a force_watch_gitignore mismatch even when there is no drift:
+    // the path is present in both files, so compute_drift produced no entry
+    // for it, but the registry's flag disagrees with intent (e.g. the
+    // registry was edited or restored out of band). Reload the registry in
+    // case `reconcile` above just wrote it.
+    let mut reg = registry::load()?;
+    let corrected = sync_gitignore_flags(&intent, &mut reg);
+    if !corrected.is_empty() {
+        registry::save(&reg)?;
+        signal_daemon_reload()?;
+        audit::log_event(
+            "SENTINEL_GITIGNORE_FLAG_SYNC",
+            &corrected
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+
     // Always clear stale stopped files for intended projects, even without drift.
     // A stopped file may be left behind by `unf stop` but the user re-watched.
     clear_stale_stopped_files(&intent);
 
     Ok(())
+}
+
+/// Corrects a registry entry's `force_watch_gitignore` flag to match intent
+/// when the two disagree, for paths present in both files.
+///
+/// This covers the case `compute_drift` cannot see: the path exists in both
+/// `intent.json` and `projects.json`, so no `DriftEntry` is produced, but the
+/// registry's flag is stale — for example after an out-of-band edit or a
+/// restore of `projects.json` from an older backup.
+///
+/// Pure function — no I/O. Mutates `reg` in place and returns the paths that
+/// were corrected, so the caller can decide whether to persist and reload.
+fn sync_gitignore_flags(intent: &Intent, reg: &mut Registry) -> Vec<PathBuf> {
+    let mut corrected = Vec::new();
+    for entry in &mut reg.projects {
+        if let Some(intent_entry) = intent.projects.iter().find(|i| i.path == entry.path) {
+            if entry.force_watch_gitignore != intent_entry.force_watch_gitignore {
+                entry.force_watch_gitignore = intent_entry.force_watch_gitignore;
+                corrected.push(entry.path.clone());
+            }
+        }
+    }
+    corrected
 }
 
 /// Removes per-project stopped files for projects the user intends to watch.
@@ -550,9 +603,7 @@ fn reconcile(drift: &[DriftEntry]) -> Result<(), UnfError> {
                     reg.projects.push(registry::ProjectEntry {
                         path: entry.path.clone(),
                         registered: chrono::Utc::now(),
-                        // TODO(GI-04): carry force_watch_gitignore from
-                        // DriftEntry / intent instead of defaulting to false.
-                        force_watch_gitignore: false,
+                        force_watch_gitignore: entry.force_watch_gitignore,
                     });
                     changed = true;
                 }
@@ -876,6 +927,25 @@ mod tests {
         assert_eq!(drift[0].kind, DriftKind::MissingFromRegistry);
     }
 
+    /// `compute_drift` carries the intent's `force_watch_gitignore` value
+    /// onto a `MissingFromRegistry` entry, so `reconcile` can restore the
+    /// project with the flag the user actually set instead of `false`.
+    /// Pure — no I/O.
+    #[test]
+    fn compute_drift_missing_from_registry_carries_flag() {
+        let intent = Intent {
+            projects: vec![IntentEntry {
+                path: PathBuf::from("/foo/bar"),
+                watched_at: chrono::Utc::now(),
+                force_watch_gitignore: true,
+            }],
+        };
+        let registry = Registry::default();
+        let drift = compute_drift(&intent, &registry);
+        assert_eq!(drift.len(), 1);
+        assert!(drift[0].force_watch_gitignore);
+    }
+
     #[test]
     fn compute_drift_extra_in_registry() {
         let intent = Intent::default();
@@ -966,10 +1036,12 @@ mod tests {
             DriftEntry {
                 path: PathBuf::from("/project/a"),
                 kind: DriftKind::MissingFromRegistry,
+                force_watch_gitignore: false,
             },
             DriftEntry {
                 path: PathBuf::from("/project/b"),
                 kind: DriftKind::ExtraInRegistry,
+                force_watch_gitignore: false,
             },
         ];
         let formatted = format_drift(&drift);
@@ -1191,5 +1263,101 @@ mod tests {
             result.is_some(),
             "expected Some mtime for existing directory"
         );
+    }
+
+    /// Isolates `UNF_HOME` to a temp dir for the duration of `f`, mirroring
+    /// the pattern in `intent.rs`'s test module. All tests that touch
+    /// `registry::load`/`save` or `intent::load`/`save` must hold `ENV_LOCK`.
+    fn with_test_home<F: FnOnce(&Path)>(f: F) {
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp = tempfile::TempDir::new().expect("create temp dir");
+        let original = env::var("UNF_HOME").ok();
+        env::set_var("UNF_HOME", temp.path());
+
+        f(temp.path());
+
+        if let Some(val) = original {
+            env::set_var("UNF_HOME", val);
+        } else {
+            env::remove_var("UNF_HOME");
+        }
+    }
+
+    /// A `MissingFromRegistry` drift entry restores the project into the
+    /// registry with its intent `force_watch_gitignore` flag, not `false`.
+    /// Covers the bug this ticket fixes: the flag used to be hardcoded to
+    /// `false` at the `reconcile` call site.
+    #[test]
+    fn reconcile_restores_missing_project_with_intent_flag() {
+        with_test_home(|_home| {
+            let path = PathBuf::from("/forced/project");
+            let intent = Intent {
+                projects: vec![IntentEntry {
+                    path: path.clone(),
+                    watched_at: chrono::Utc::now(),
+                    force_watch_gitignore: true,
+                }],
+            };
+            registry::save(&Registry::default()).expect("save empty registry");
+
+            let drift = compute_drift(&intent, &Registry::default());
+            reconcile(&drift).expect("reconcile");
+
+            let reg = registry::load().expect("load registry");
+            assert_eq!(reg.projects.len(), 1);
+            assert!(
+                reg.projects[0].force_watch_gitignore,
+                "restored project must keep the intent flag, not default to false"
+            );
+        });
+    }
+
+    /// The core scenario this ticket targets: the path is present in BOTH
+    /// intent and registry (so `compute_drift` reports no drift at all), but
+    /// their `force_watch_gitignore` flags disagree. `reconcile_intent` must
+    /// self-heal the registry entry from intent even though there is no
+    /// drift to trigger the normal reconcile path.
+    #[test]
+    fn reconcile_intent_corrects_flag_mismatch_with_no_drift() {
+        with_test_home(|_home| {
+            let path = PathBuf::from("/already/tracked/project");
+
+            let intent = Intent {
+                projects: vec![IntentEntry {
+                    path: path.clone(),
+                    watched_at: chrono::Utc::now(),
+                    force_watch_gitignore: true,
+                }],
+            };
+            intent::save(&intent).expect("save intent");
+
+            let registry = Registry {
+                projects: vec![ProjectEntry {
+                    path: path.clone(),
+                    registered: chrono::Utc::now(),
+                    force_watch_gitignore: false,
+                }],
+            };
+            registry::save(&registry).expect("save registry");
+
+            // Sanity check: no drift is reported for this path, so the
+            // normal reconcile() path is never exercised here.
+            let drift = compute_drift(&intent, &registry);
+            assert!(
+                drift.is_empty(),
+                "path is present in both files; compute_drift must report no drift"
+            );
+
+            reconcile_intent().expect("reconcile_intent");
+
+            let reg = registry::load().expect("load registry");
+            assert_eq!(reg.projects.len(), 1);
+            assert!(
+                reg.projects[0].force_watch_gitignore,
+                "registry flag must be corrected to match intent with no drift present"
+            );
+        });
     }
 }
