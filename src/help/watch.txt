@@ -1,1 +1,19 @@
-Placeholder: GI-07 owns this copy.
+Starts the flight recorder for the current directory. UNF respects .gitignore
+by default and does not record the files it excludes.
+
+Examples:
+  unf watch                          Start watching the current directory
+  unf watch --force-watch-gitignore  Also record gitignored files and dotfiles
+
+--force-watch-gitignore:
+  UNF records the files that .gitignore excludes. It also records hidden
+  dotfiles. The setting stays on for this project until you turn it off.
+  Run `unf watch` with no flag to turn it off.
+
+  UNF never records these, with or without the flag:
+    .git  node_modules  target  .next  __pycache__  .venv  venv  .tox
+    dist  build  binary files
+
+  Warning: secrets in ignored files go into the recording. Files like
+  .env.local and credential files are recorded. Use this flag with care
+  on projects that hold secrets.

@@ -61,6 +61,7 @@ unf restore --at 10m         # Roll back to 10 minutes ago
 | Command | Description |
 |---------|-------------|
 | `unf watch` | Start watching the current directory (registers + starts daemon) |
+| `unf watch --force-watch-gitignore` | Also record gitignored files and hidden dotfiles |
 | `unf unwatch` | Stop watching the current directory |
 | `unf status` | Watcher status and recent snapshot stats |
 | `unf log <file>` | Timeline of all recorded versions of a file |
@@ -87,6 +88,7 @@ Time formats: `5m`, `2h`, `1d`, or ISO 8601 (`2026-02-09T20:17:00Z`).
 - **SQLite metadata** — Timestamps, paths, and hashes in SQLite with WAL mode for concurrent access.
 - **Smart batching** — 3-second debounce window prevents rapid saves from bloating storage.
 - **Text-only** — Binary files are detected and skipped. Only text snapshots are kept.
+- **Respects `.gitignore`** — Files your `.gitignore` excludes are not recorded, and hidden dotfiles are skipped. Run `unf watch --force-watch-gitignore` to record them anyway. The setting stays on for that project until you run plain `unf watch` again. Warning: secrets in ignored files, such as `.env.local`, go into the recording. `.git`, `node_modules`, `target`, `dist`, `build`, and binary files are never recorded, with or without the flag.
 - **Manual pruning** — `unf prune --older-than 30d` to reclaim space. Automatic retention decay is planned.
 
 Resource targets: <1% CPU, <100MB RAM. Local-first, zero data leaves the machine.
