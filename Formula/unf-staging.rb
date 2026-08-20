@@ -1,7 +1,6 @@
 class UnfStaging < Formula
   desc "Filesystem flight recorder — staging build for pre-release testing"
   homepage "https://unfudged.io"
-  version "0.17.12"
   license "MIT OR Apache-2.0"
 
   on_macos do

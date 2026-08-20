@@ -1,7 +1,6 @@
 class Unf < Formula
   desc "Filesystem flight recorder — never lose a file change again"
   homepage "https://unfudged.io"
-  version "0.18.5"
   license "MIT OR Apache-2.0"
 
   on_macos do
@@ -23,6 +22,8 @@ class Unf < Formula
       sha256 "e2cfc599d247bd354247591e85432c8a930b2245cea9fe41fabba21a26aa0be1"
     end
   end
+
+  conflicts_with "unf-staging", because: "both install an `unf` binary"
 
   def install
     bin.install "unf"
