@@ -5,7 +5,7 @@
 //! provides the pure `route_event` function for dispatching filesystem
 //! events to their owning project.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
@@ -61,26 +61,44 @@ impl DaemonState {
         // Load current registry
         let registry = crate::registry::load()?;
 
-        // Collect registered paths into a set
-        let registered_set: HashSet<PathBuf> = registry
+        // Map each registered path to its force_watch_gitignore flag. This
+        // doubles as the "registered set" for the remove/add diff below, so
+        // the registry is loaded exactly once per sync.
+        let registered: HashMap<PathBuf, bool> = registry
             .projects
             .iter()
-            .map(|entry| entry.path.clone())
+            .map(|entry| (entry.path.clone(), entry.force_watch_gitignore))
             .collect();
 
         // Find projects to remove: keys in self.projects not in registry
         let to_remove: Vec<PathBuf> = self
             .projects
             .keys()
-            .filter(|path| !registered_set.contains(*path))
+            .filter(|path| !registered.contains_key(*path))
             .cloned()
             .collect();
 
         // Find projects to add: paths in registry not in self.projects
-        let to_add: Vec<PathBuf> = registered_set
+        let to_add: Vec<(PathBuf, bool)> = registered
             .iter()
-            .filter(|path| !self.projects.contains_key(*path))
-            .cloned()
+            .filter(|(path, _)| !self.projects.contains_key(*path))
+            .map(|(path, &flag)| (path.clone(), flag))
+            .collect();
+
+        // Find projects to reload: present in both sets, but the registry's
+        // flag no longer matches the Filter the running context holds. Only
+        // the Filter is rebuilt (below) — the Engine, Debouncer, and OS
+        // watch registration are left untouched so unrelated projects keep
+        // their pending debounced events and this project's watch is not
+        // churned for a path that did not change.
+        let to_reload: Vec<(PathBuf, bool)> = self
+            .projects
+            .iter()
+            .filter_map(|(path, ctx)| {
+                registered.get(path).and_then(|&want| {
+                    (want != ctx.filter.force_watch_gitignore()).then(|| (path.clone(), want))
+                })
+            })
             .collect();
 
         // Remove projects
@@ -89,14 +107,28 @@ impl DaemonState {
         }
 
         // Add projects (log errors but continue)
-        for path in to_add {
-            match self.add_project(&path) {
+        for (path, force_watch_gitignore) in to_add {
+            match self.add_project(&path, force_watch_gitignore) {
                 Ok(()) => {
                     // Project added successfully
                 }
                 Err(err) => {
                     // Log and continue
                     eprintln!("Failed to add project {}: {}", path.display(), err);
+                }
+            }
+        }
+
+        // Reload filters for projects whose flag changed (log and continue)
+        for (path, force_watch_gitignore) in to_reload {
+            match Filter::new(&path, force_watch_gitignore) {
+                Ok(filter) => {
+                    if let Some(ctx) = self.projects.get_mut(&path) {
+                        ctx.filter = filter;
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Failed to reload filter for {}: {}", path.display(), err);
                 }
             }
         }
@@ -112,11 +144,18 @@ impl DaemonState {
     /// # Arguments
     ///
     /// * `path` - Canonical path to the project root
+    /// * `force_watch_gitignore` - The registry entry's flag for this path.
+    ///   `sync_with_registry` reads this from the registry it already
+    ///   loaded, so it is passed in rather than read again here.
     ///
     /// # Returns
     ///
     /// Returns `Ok(())` on success, or an error if setup fails.
-    pub fn add_project(&mut self, path: &Path) -> Result<(), UnfError> {
+    pub fn add_project(
+        &mut self,
+        path: &Path,
+        force_watch_gitignore: bool,
+    ) -> Result<(), UnfError> {
         // Check for stopped sentinel
         let storage_dir = storage::resolve_storage_dir_canonical(path)?;
         if storage::stopped_path(&storage_dir).exists() {
@@ -127,8 +166,7 @@ impl DaemonState {
         let engine = Engine::open(path, &storage_dir)?;
 
         // Create Filter
-        // TODO(GI-03): read flag from registry entry
-        let filter = Filter::new(path, false)?;
+        let filter = Filter::new(path, force_watch_gitignore)?;
 
         // Create Debouncer
         let debouncer = Debouncer::new();
@@ -366,5 +404,159 @@ mod tests {
 
         // Should be removed from the map
         assert!(state.projects.is_empty());
+    }
+
+    /// Locks `UNF_HOME` for the duration of `f` and points it at a fresh
+    /// temp dir, so `crate::registry::load`/`register_project` operate on
+    /// an isolated registry rather than the real `~/.unfudged/projects.json`.
+    /// Mirrors the `with_test_home` helper in `intent.rs`.
+    fn with_test_registry<F: FnOnce()>(f: F) {
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().expect("create temp UNF_HOME");
+        let original = std::env::var("UNF_HOME").ok();
+        std::env::set_var("UNF_HOME", temp.path());
+
+        f();
+
+        if let Some(val) = original {
+            std::env::set_var("UNF_HOME", val);
+        } else {
+            std::env::remove_var("UNF_HOME");
+        }
+    }
+
+    /// Builds a `DaemonState` with a real `notify` watcher and no projects.
+    fn new_test_state() -> DaemonState {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watcher = notify::recommended_watcher(move |_| {
+            let _ = tx.send(Ok(Default::default()));
+        })
+        .expect("create watcher");
+
+        DaemonState {
+            watcher,
+            projects: HashMap::new(),
+            rx,
+        }
+    }
+
+    #[test]
+    fn sync_reloads_filter_on_flag_change() {
+        use std::time::Instant;
+        use tempfile::TempDir;
+
+        with_test_registry(|| {
+            let mut state = new_test_state();
+
+            let project_temp = TempDir::new().expect("create project dir");
+            let storage_temp = TempDir::new().expect("create storage dir");
+            let path = project_temp
+                .path()
+                .canonicalize()
+                .expect("canonicalize project path");
+
+            let engine =
+                Engine::init(&path, storage_temp.path()).expect("initialize engine for testing");
+
+            let mut context = ProjectContext {
+                root: path.clone(),
+                engine,
+                filter: Filter::new(&path, false).expect("create filter"),
+                debouncer: Debouncer::new(),
+            };
+            // Queue a pending debounced event. If sync rebuilds the whole
+            // ProjectContext (the rejected alternative) instead of just the
+            // Filter, this event is lost.
+            context.debouncer.push(
+                PathBuf::from("test.txt"),
+                crate::types::EventType::Modify,
+                Instant::now(),
+            );
+            assert!(context.debouncer.has_pending());
+
+            state.projects.insert(path.clone(), context);
+
+            // Register the project with the flag off, matching the Filter above.
+            crate::registry::register_project(&path, Some(false))
+                .expect("register project with flag off");
+
+            // No-op sync: flag matches, so the Filter and debouncer must be
+            // left exactly as they are.
+            state
+                .sync_with_registry()
+                .expect("sync with unchanged flag");
+            assert!(
+                !state.projects[&path].filter.force_watch_gitignore(),
+                "flag unchanged must leave the filter as-is"
+            );
+            assert!(
+                state.projects[&path].debouncer.has_pending(),
+                "no-op sync must not touch the debouncer"
+            );
+
+            // Flip the flag in the registry and sync again.
+            crate::registry::register_project(&path, Some(true)).expect("flip flag to true");
+            state
+                .sync_with_registry()
+                .expect("sync with flag change false -> true");
+
+            assert!(
+                state.projects[&path].filter.force_watch_gitignore(),
+                "flag flip false -> true must rebuild the Filter"
+            );
+            assert!(
+                state.projects[&path].debouncer.has_pending(),
+                "reloading the Filter must not drop the pending debounced event"
+            );
+
+            // Flip back and confirm the reverse direction also rebuilds.
+            crate::registry::register_project(&path, Some(false)).expect("flip flag back to false");
+            state
+                .sync_with_registry()
+                .expect("sync with flag change true -> false");
+            assert!(
+                !state.projects[&path].filter.force_watch_gitignore(),
+                "flag flip true -> false must rebuild the Filter back"
+            );
+
+            let _ = state.watcher.unwatch(&path);
+        });
+    }
+
+    #[test]
+    fn sync_add_project_uses_registry_flag() {
+        use tempfile::TempDir;
+
+        with_test_registry(|| {
+            let mut state = new_test_state();
+
+            let project_temp = TempDir::new().expect("create project dir");
+            let path = project_temp
+                .path()
+                .canonicalize()
+                .expect("canonicalize project path");
+
+            // Pre-initialize storage, mirroring `unf watch` having run before
+            // the daemon picks the project up on the next registry sync.
+            let storage_dir =
+                storage::resolve_storage_dir_canonical(&path).expect("resolve storage dir");
+            Engine::init(&path, &storage_dir).expect("initialize engine for testing");
+
+            // Register with the flag ON before the daemon has ever seen this
+            // project, so `add_project` must read it rather than default to
+            // `false`.
+            crate::registry::register_project(&path, Some(true))
+                .expect("register project with flag on");
+
+            state.sync_with_registry().expect("sync to add project");
+
+            let ctx = state.projects.get(&path).expect("project was added");
+            assert!(
+                ctx.filter.force_watch_gitignore(),
+                "add_project must build the Filter from the registry's flag, not hardcode false"
+            );
+
+            let _ = state.watcher.unwatch(&path);
+        });
     }
 }
