@@ -117,7 +117,7 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
     // Register project in global registry and install auto-start
     // Errors are warnings, not fatal — init still succeeds
-    if let Err(e) = crate::registry::register_project(project_root) {
+    if let Err(e) = crate::registry::register_project(project_root, None) {
         super::output::print_warning(&format!("Failed to register project: {}", e));
     }
     let auto_restart = match crate::autostart::install() {

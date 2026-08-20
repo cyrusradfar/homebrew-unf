@@ -23,6 +23,12 @@ pub struct IntentEntry {
     pub path: PathBuf,
     /// When the user ran `unf watch` for this project.
     pub watched_at: chrono::DateTime<chrono::Utc>,
+    /// When true, the daemon records files `.gitignore` excludes and hidden
+    /// dotfiles for this project. `#[serde(default)]` keeps old
+    /// `intent.json` files (written before this field existed) loading
+    /// with the flag off, matching today's behavior.
+    #[serde(default)]
+    pub force_watch_gitignore: bool,
 }
 
 /// The intent registry stored at `~/.unfudged/intent.json`.
@@ -105,21 +111,37 @@ pub fn save(intent: &Intent) -> Result<(), UnfError> {
     Ok(())
 }
 
-/// Records that the user wants to watch a project. Idempotent.
-pub fn add_project(project_root: &Path) -> Result<(), UnfError> {
+/// Records that the user wants to watch a project, or updates an
+/// already-recorded intent.
+///
+/// * `force_watch_gitignore` - `Some(v)` sets the flag to `v`, inserting a
+///   new entry or updating an existing one (the `watched_at` timestamp is
+///   preserved on update). `None` records intent if absent and leaves the
+///   flag on an existing entry untouched.
+pub fn add_project(
+    project_root: &Path,
+    force_watch_gitignore: Option<bool>,
+) -> Result<(), UnfError> {
     let canonical = project_root
         .canonicalize()
         .map_err(|e| UnfError::InvalidArgument(format!("Failed to canonicalize path: {}", e)))?;
 
     let mut intent = load()?;
 
-    if intent.projects.iter().any(|p| p.path == canonical) {
+    if let Some(entry) = intent.projects.iter_mut().find(|p| p.path == canonical) {
+        if let Some(want) = force_watch_gitignore {
+            if entry.force_watch_gitignore != want {
+                entry.force_watch_gitignore = want;
+                return save(&intent);
+            }
+        }
         return Ok(());
     }
 
     intent.projects.push(IntentEntry {
         path: canonical,
         watched_at: Utc::now(),
+        force_watch_gitignore: force_watch_gitignore.unwrap_or(false),
     });
 
     save(&intent)
@@ -177,7 +199,7 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            add_project(&project).expect("add project");
+            add_project(&project, None).expect("add project");
 
             let intent = load().expect("load");
             assert_eq!(intent.projects.len(), 1);
@@ -191,11 +213,109 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            add_project(&project).expect("add 1");
-            add_project(&project).expect("add 2");
+            add_project(&project, None).expect("add 1");
+            add_project(&project, None).expect("add 2");
 
             let intent = load().expect("load");
             assert_eq!(intent.projects.len(), 1);
+        });
+    }
+
+    #[test]
+    fn add_project_defaults_flag_false() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            add_project(&project, None).expect("add");
+
+            let intent = load().expect("load");
+            assert!(!intent.projects[0].force_watch_gitignore);
+        });
+    }
+
+    #[test]
+    fn add_project_some_true_sets_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            // Already recorded; Some(true) must update rather than early-return.
+            add_project(&project, None).expect("add");
+            add_project(&project, Some(true)).expect("add with flag");
+
+            let intent = load().expect("load");
+            assert_eq!(intent.projects.len(), 1);
+            assert!(intent.projects[0].force_watch_gitignore);
+        });
+    }
+
+    #[test]
+    fn add_project_some_false_clears_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            add_project(&project, Some(true)).expect("add with flag on");
+            add_project(&project, Some(false)).expect("add with flag off");
+
+            let intent = load().expect("load");
+            assert!(!intent.projects[0].force_watch_gitignore);
+        });
+    }
+
+    #[test]
+    fn add_project_none_preserves_existing_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            add_project(&project, Some(true)).expect("add with flag on");
+            add_project(&project, None).expect("legacy call site");
+
+            let intent = load().expect("load");
+            assert!(
+                intent.projects[0].force_watch_gitignore,
+                "None must not clobber an existing flag"
+            );
+        });
+    }
+
+    #[test]
+    fn add_project_update_preserves_watched_at_timestamp() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            add_project(&project, None).expect("add");
+            let intent = load().expect("load 1");
+            let watched_at = intent.projects[0].watched_at;
+
+            add_project(&project, Some(true)).expect("update flag");
+            let intent = load().expect("load 2");
+            assert_eq!(intent.projects[0].watched_at, watched_at);
+        });
+    }
+
+    #[test]
+    fn load_accepts_legacy_json_without_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+            let canonical = project.canonicalize().unwrap();
+
+            // Literal old-format JSON: no `force_watch_gitignore` field at all.
+            // This is what a v0.18-or-earlier intent.json looks like on disk.
+            let path = intent_path().expect("intent path");
+            let legacy_json = format!(
+                r#"{{"projects":[{{"path":"{}","watched_at":"2026-01-01T00:00:00Z"}}]}}"#,
+                canonical.display()
+            );
+            fs::write(&path, legacy_json).expect("write legacy intent");
+
+            let intent = load().expect("load legacy intent");
+            assert_eq!(intent.projects.len(), 1);
+            assert!(!intent.projects[0].force_watch_gitignore);
         });
     }
 
@@ -205,7 +325,7 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            add_project(&project).expect("add");
+            add_project(&project, None).expect("add");
             remove_project(&project).expect("remove");
 
             let intent = load().expect("load");
@@ -219,7 +339,7 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            add_project(&project).expect("add");
+            add_project(&project, None).expect("add");
 
             let other = home.join("other-project");
             fs::create_dir_all(&other).expect("create other dir");
@@ -238,8 +358,8 @@ mod tests {
             fs::create_dir_all(&p1).expect("create p1");
             fs::create_dir_all(&p2).expect("create p2");
 
-            add_project(&p1).expect("add p1");
-            add_project(&p2).expect("add p2");
+            add_project(&p1, None).expect("add p1");
+            add_project(&p2, None).expect("add p2");
 
             let intent = load().expect("load");
             assert_eq!(intent.projects.len(), 2);
@@ -257,7 +377,7 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            add_project(&project).expect("add");
+            add_project(&project, None).expect("add");
             let intent1 = load().expect("load 1");
             let ts = intent1.projects[0].watched_at;
 

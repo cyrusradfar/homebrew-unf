@@ -418,7 +418,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".unfudged")).expect("create .unfudged");
 
         // Register the project
-        crate::registry::register_project(&project_dir).expect("register project");
+        crate::registry::register_project(&project_dir, None).expect("register project");
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
         let storage_dir = temp.path().join(".unfudged").join("data").join("project");

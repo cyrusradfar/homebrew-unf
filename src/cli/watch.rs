@@ -79,12 +79,14 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     };
 
     // Record user intent (source of truth for what should be watched)
-    if let Err(e) = crate::intent::add_project(project_root) {
+    // TODO(GI-05): pass Some(force_watch_gitignore)
+    if let Err(e) = crate::intent::add_project(project_root, None) {
         super::output::print_warning(&format!("Failed to record intent: {}", e));
     }
 
     // Register project in global registry
-    if let Err(e) = crate::registry::register_project(project_root) {
+    // TODO(GI-05): pass Some(force_watch_gitignore)
+    if let Err(e) = crate::registry::register_project(project_root, None) {
         super::output::print_warning(&format!("Failed to register project: {}", e));
     }
 

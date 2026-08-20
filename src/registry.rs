@@ -18,6 +18,12 @@ pub struct ProjectEntry {
     pub path: PathBuf,
     /// When the project was registered.
     pub registered: chrono::DateTime<chrono::Utc>,
+    /// When true, the daemon records files `.gitignore` excludes and hidden
+    /// dotfiles for this project. `#[serde(default)]` keeps old
+    /// `projects.json` files (written before this field existed) loading
+    /// with the flag off, matching today's behavior.
+    #[serde(default)]
+    pub force_watch_gitignore: bool,
 }
 
 /// The project registry stored at `~/.unfudged/projects.json`.
@@ -151,12 +157,21 @@ pub fn save(registry: &Registry) -> Result<(), UnfError> {
     Ok(())
 }
 
-/// Adds a project to the registry. Idempotent — no-op if already present.
+/// Adds a project to the registry, or updates an already-registered one.
 ///
 /// # Arguments
 ///
 /// * `project_root` - Absolute path to the project root directory
-pub fn register_project(project_root: &Path) -> Result<(), UnfError> {
+/// * `force_watch_gitignore` - `Some(v)` sets the flag to `v`, inserting a
+///   new entry or updating an existing one (the `registered` timestamp is
+///   preserved on update). `None` registers the project if absent and
+///   leaves the flag on an existing entry untouched — this is what the
+///   legacy call sites pass so they never clobber a user's flag with
+///   `false`.
+pub fn register_project(
+    project_root: &Path,
+    force_watch_gitignore: Option<bool>,
+) -> Result<(), UnfError> {
     let mut registry = load()?;
 
     // Canonicalize for consistent comparison
@@ -165,13 +180,20 @@ pub fn register_project(project_root: &Path) -> Result<(), UnfError> {
         .map_err(|e| UnfError::InvalidArgument(format!("Failed to canonicalize path: {}", e)))?;
 
     // Check if already registered
-    if registry.projects.iter().any(|p| p.path == canonical) {
+    if let Some(entry) = registry.projects.iter_mut().find(|p| p.path == canonical) {
+        if let Some(want) = force_watch_gitignore {
+            if entry.force_watch_gitignore != want {
+                entry.force_watch_gitignore = want;
+                return save(&registry);
+            }
+        }
         return Ok(());
     }
 
     registry.projects.push(ProjectEntry {
         path: canonical,
         registered: Utc::now(),
+        force_watch_gitignore: force_watch_gitignore.unwrap_or(false),
     });
 
     save(&registry)
@@ -281,7 +303,7 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            register_project(&project).expect("register");
+            register_project(&project, None).expect("register");
 
             let registry = load().expect("load");
             assert_eq!(registry.projects.len(), 1);
@@ -295,11 +317,114 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            register_project(&project).expect("register 1");
-            register_project(&project).expect("register 2");
+            register_project(&project, None).expect("register 1");
+            register_project(&project, None).expect("register 2");
 
             let registry = load().expect("load");
             assert_eq!(registry.projects.len(), 1);
+        });
+    }
+
+    #[test]
+    fn register_project_defaults_flag_false() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            register_project(&project, None).expect("register");
+
+            let registry = load().expect("load");
+            assert!(!registry.projects[0].force_watch_gitignore);
+        });
+    }
+
+    #[test]
+    fn register_project_some_true_sets_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            // Already registered; Some(true) must update rather than early-return.
+            register_project(&project, None).expect("register");
+            register_project(&project, Some(true)).expect("register with flag");
+
+            let registry = load().expect("load");
+            assert_eq!(registry.projects.len(), 1);
+            assert!(registry.projects[0].force_watch_gitignore);
+        });
+    }
+
+    #[test]
+    fn register_project_some_false_clears_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            register_project(&project, Some(true)).expect("register with flag on");
+            register_project(&project, Some(false)).expect("register with flag off");
+
+            let registry = load().expect("load");
+            assert!(!registry.projects[0].force_watch_gitignore);
+        });
+    }
+
+    #[test]
+    fn register_project_none_preserves_existing_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            register_project(&project, Some(true)).expect("register with flag on");
+            register_project(&project, None).expect("legacy call site");
+
+            let registry = load().expect("load");
+            assert!(
+                registry.projects[0].force_watch_gitignore,
+                "None must not clobber an existing flag"
+            );
+        });
+    }
+
+    #[test]
+    fn register_project_update_preserves_registered_timestamp() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            register_project(&project, None).expect("register");
+            let registry = load().expect("load 1");
+            let registered_at = registry.projects[0].registered;
+
+            register_project(&project, Some(true)).expect("update flag");
+            let registry = load().expect("load 2");
+            assert_eq!(registry.projects[0].registered, registered_at);
+        });
+    }
+
+    #[test]
+    fn load_accepts_legacy_json_without_flag() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+            let canonical = project.canonicalize().unwrap();
+
+            // Literal old-format JSON: no `force_watch_gitignore` field at all.
+            // This is what a v0.18-or-earlier projects.json looks like on disk.
+            let path = registry_path().expect("registry path");
+            let legacy_json = format!(
+                r#"{{"projects":[{{"path":"{}","registered":"2026-01-01T00:00:00Z"}}]}}"#,
+                canonical.display()
+            );
+            fs::write(&path, legacy_json).expect("write legacy registry");
+
+            let registry = load().expect("load legacy registry");
+            assert_eq!(registry.projects.len(), 1);
+            assert!(!registry.projects[0].force_watch_gitignore);
+
+            // The corrupt-file backup path must NOT be taken for a valid
+            // legacy file that merely lacks the new field.
+            let backup = path.with_extension("json.corrupt");
+            assert!(!backup.exists());
         });
     }
 
@@ -309,7 +434,7 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            register_project(&project).expect("register");
+            register_project(&project, None).expect("register");
             unregister_project(&project).expect("unregister");
 
             let registry = load().expect("load");
@@ -324,7 +449,7 @@ mod tests {
             let existing = home.join("existing");
             fs::create_dir_all(&existing).expect("create dir");
 
-            register_project(&existing).expect("register");
+            register_project(&existing, None).expect("register");
 
             // unregister_project with non-matching path should be no-op
             // We can't canonicalize a nonexistent path, so test with the existing one
@@ -347,7 +472,7 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            register_project(&project).expect("register");
+            register_project(&project, None).expect("register");
             assert!(has_projects().expect("has_projects"));
         });
     }
@@ -366,8 +491,8 @@ mod tests {
             fs::create_dir_all(&storage1).expect("create storage 1");
             fs::create_dir_all(&storage2).expect("create storage 2");
 
-            register_project(&project1).expect("register 1");
-            register_project(&project2).expect("register 2");
+            register_project(&project1, None).expect("register 1");
+            register_project(&project2, None).expect("register 2");
 
             // Remove storage for project2
             fs::remove_dir_all(&storage2).expect("remove storage 2");
@@ -391,7 +516,7 @@ mod tests {
             let storage_dir = crate::storage::resolve_storage_dir(&project).expect("resolve");
             fs::create_dir_all(&storage_dir).expect("create storage dir");
 
-            register_project(&project).expect("register");
+            register_project(&project, None).expect("register");
 
             let pruned = prune_stale_entries().expect("prune");
             assert_eq!(pruned, 0);

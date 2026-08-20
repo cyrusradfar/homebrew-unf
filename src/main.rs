@@ -646,7 +646,7 @@ fn main() {
             // Hidden daemon subcommand - runs the global multi-project watcher loop
             // If --root is provided (legacy init flow), register the project first
             if let Some(ref root) = args.root {
-                if let Err(e) = unfudged::registry::register_project(root) {
+                if let Err(e) = unfudged::registry::register_project(root, None) {
                     eprintln!("Warning: Failed to register project: {}", e);
                 }
             }

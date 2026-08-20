@@ -550,6 +550,9 @@ fn reconcile(drift: &[DriftEntry]) -> Result<(), UnfError> {
                     reg.projects.push(registry::ProjectEntry {
                         path: entry.path.clone(),
                         registered: chrono::Utc::now(),
+                        // TODO(GI-04): carry force_watch_gitignore from
+                        // DriftEntry / intent instead of defaulting to false.
+                        force_watch_gitignore: false,
                     });
                     changed = true;
                 }
@@ -863,6 +866,7 @@ mod tests {
             projects: vec![IntentEntry {
                 path: PathBuf::from("/foo/bar"),
                 watched_at: chrono::Utc::now(),
+                force_watch_gitignore: false,
             }],
         };
         let registry = Registry::default();
@@ -879,6 +883,7 @@ mod tests {
             projects: vec![ProjectEntry {
                 path: PathBuf::from("/foo/bar"),
                 registered: chrono::Utc::now(),
+                force_watch_gitignore: false,
             }],
         };
         let drift = compute_drift(&intent, &registry);
@@ -894,12 +899,14 @@ mod tests {
             projects: vec![IntentEntry {
                 path: path.clone(),
                 watched_at: chrono::Utc::now(),
+                force_watch_gitignore: false,
             }],
         };
         let registry = Registry {
             projects: vec![ProjectEntry {
                 path: path.clone(),
                 registered: chrono::Utc::now(),
+                force_watch_gitignore: false,
             }],
         };
         let drift = compute_drift(&intent, &registry);
@@ -913,10 +920,12 @@ mod tests {
                 IntentEntry {
                     path: PathBuf::from("/project/a"),
                     watched_at: chrono::Utc::now(),
+                    force_watch_gitignore: false,
                 },
                 IntentEntry {
                     path: PathBuf::from("/project/b"),
                     watched_at: chrono::Utc::now(),
+                    force_watch_gitignore: false,
                 },
             ],
         };
@@ -925,10 +934,12 @@ mod tests {
                 ProjectEntry {
                     path: PathBuf::from("/project/a"),
                     registered: chrono::Utc::now(),
+                    force_watch_gitignore: false,
                 },
                 ProjectEntry {
                     path: PathBuf::from("/project/c"),
                     registered: chrono::Utc::now(),
+                    force_watch_gitignore: false,
                 },
             ],
         };
