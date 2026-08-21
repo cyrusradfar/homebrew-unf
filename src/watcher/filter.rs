@@ -57,7 +57,12 @@ const IGNORED_EXTENSIONS: &[&str] = &[
     "rpm", "snap", "appimage", // Executables & libraries
     "exe", "dll", "so", "dylib", "o", "a", "lib", "obj", "wasm", "elf", "bin", "com", "msi", "app",
     // Compiled/bytecode
-    "pyc", "pyo", "class", "beam", "elc", // Documents (binary)
+    "pyc", "pyo", "class", "beam", "elc",
+    // Rust build artifacts — .rlib starts with the ASCII `!<arch>\n` archive
+    // header, which has no NUL in its first 16 bytes and isn't in
+    // MAGIC_NUMBERS, so is_likely_binary alone would miss it (see the
+    // rlib_header_not_caught_by_is_likely_binary test below)
+    "rlib", "rmeta", "d", // Documents (binary)
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "pages",
     "numbers", "key", // Databases
     "sqlite", "sqlite3", "db", "mdb", "accdb", // Fonts
@@ -601,6 +606,24 @@ mod tests {
     }
 
     #[test]
+    fn rust_build_artifact_extensions_ignored() {
+        let filter = filter_without_gitignore();
+        let temp = TempDir::new().expect("create temp dir");
+
+        let rlib = temp.path().join("libfoo.rlib");
+        let rmeta = temp.path().join("libfoo.rmeta");
+        let dep_info = temp.path().join("libfoo.d");
+
+        fs::write(&rlib, b"!<arch>\n").expect("write rlib");
+        fs::write(&rmeta, b"fake rmeta").expect("write rmeta");
+        fs::write(&dep_info, b"libfoo: src/lib.rs\n").expect("write d");
+
+        assert!(!filter.should_track(&rlib));
+        assert!(!filter.should_track(&rmeta));
+        assert!(!filter.should_track(&dep_info));
+    }
+
+    #[test]
     fn svg_is_tracked() {
         let filter = filter_without_gitignore();
         let temp = TempDir::new().expect("create temp dir");
@@ -677,5 +700,14 @@ mod tests {
     #[test]
     fn is_likely_binary_flac() {
         assert!(is_likely_binary(b"fLaCsome flac data"));
+    }
+
+    #[test]
+    fn rlib_header_not_caught_by_is_likely_binary() {
+        // Documents WHY the extension rule exists: a real .rlib starts with
+        // this ASCII `!<arch>\n` archive header, has no NUL in its first 16
+        // bytes, and `!<arch>` is not in MAGIC_NUMBERS. Magic-number
+        // detection alone would treat rlibs as text.
+        assert!(!is_likely_binary(b"!<arch>\n1234567890`\n"));
     }
 }
