@@ -15,6 +15,7 @@ use chrono::Utc;
 use fs2::FileExt;
 
 use crate::error::UnfError;
+use crate::types::WatchSettings;
 
 /// A project the user intends to watch.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -23,12 +24,11 @@ pub struct IntentEntry {
     pub path: PathBuf,
     /// When the user ran `unf watch` for this project.
     pub watched_at: chrono::DateTime<chrono::Utc>,
-    /// When true, the daemon records files `.gitignore` excludes and hidden
-    /// dotfiles for this project. `#[serde(default)]` keeps old
-    /// `intent.json` files (written before this field existed) loading
-    /// with the flag off, matching today's behavior.
-    #[serde(default)]
-    pub force_watch_gitignore: bool,
+    /// Per-project watch behavior (gitignore override, un-ignored dirs).
+    /// Flattened so `force_watch_gitignore` and `unignored_dirs` stay
+    /// top-level JSON keys, byte-identical to the v0.19.1 file shape.
+    #[serde(flatten)]
+    pub settings: WatchSettings,
 }
 
 /// The intent registry stored at `~/.unfudged/intent.json`.
@@ -114,14 +114,11 @@ pub fn save(intent: &Intent) -> Result<(), UnfError> {
 /// Records that the user wants to watch a project, or updates an
 /// already-recorded intent.
 ///
-/// * `force_watch_gitignore` - `Some(v)` sets the flag to `v`, inserting a
-///   new entry or updating an existing one (the `watched_at` timestamp is
-///   preserved on update). `None` records intent if absent and leaves the
-///   flag on an existing entry untouched.
-pub fn add_project(
-    project_root: &Path,
-    force_watch_gitignore: Option<bool>,
-) -> Result<(), UnfError> {
+/// * `settings` - `Some(v)` sets the project's watch settings to `v`
+///   wholesale, inserting a new entry or updating an existing one (the
+///   `watched_at` timestamp is preserved on update). `None` records intent
+///   if absent and leaves the settings on an existing entry untouched.
+pub fn add_project(project_root: &Path, settings: Option<WatchSettings>) -> Result<(), UnfError> {
     let canonical = project_root
         .canonicalize()
         .map_err(|e| UnfError::InvalidArgument(format!("Failed to canonicalize path: {}", e)))?;
@@ -129,9 +126,9 @@ pub fn add_project(
     let mut intent = load()?;
 
     if let Some(entry) = intent.projects.iter_mut().find(|p| p.path == canonical) {
-        if let Some(want) = force_watch_gitignore {
-            if entry.force_watch_gitignore != want {
-                entry.force_watch_gitignore = want;
+        if let Some(want) = settings {
+            if entry.settings != want {
+                entry.settings = want;
                 return save(&intent);
             }
         }
@@ -141,7 +138,7 @@ pub fn add_project(
     intent.projects.push(IntentEntry {
         path: canonical,
         watched_at: Utc::now(),
-        force_watch_gitignore: force_watch_gitignore.unwrap_or(false),
+        settings: settings.unwrap_or_default(),
     });
 
     save(&intent)
@@ -167,6 +164,7 @@ pub fn remove_project(project_root: &Path) -> Result<(), UnfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::env;
     use tempfile::TempDir;
 
@@ -222,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn add_project_defaults_flag_false() {
+    fn add_project_defaults_settings() {
         with_test_home(|home| {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
@@ -230,23 +228,54 @@ mod tests {
             add_project(&project, None).expect("add");
 
             let intent = load().expect("load");
-            assert!(!intent.projects[0].force_watch_gitignore);
+            assert_eq!(intent.projects[0].settings, WatchSettings::default());
         });
     }
 
     #[test]
-    fn add_project_some_true_sets_flag() {
+    fn add_project_some_sets_flag() {
         with_test_home(|home| {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            // Already recorded; Some(true) must update rather than early-return.
+            // Already recorded; Some(..) must update rather than early-return.
             add_project(&project, None).expect("add");
-            add_project(&project, Some(true)).expect("add with flag");
+            add_project(
+                &project,
+                Some(WatchSettings {
+                    force_watch_gitignore: true,
+                    ..Default::default()
+                }),
+            )
+            .expect("add with flag");
 
             let intent = load().expect("load");
             assert_eq!(intent.projects.len(), 1);
-            assert!(intent.projects[0].force_watch_gitignore);
+            assert!(intent.projects[0].settings.force_watch_gitignore);
+        });
+    }
+
+    #[test]
+    fn add_project_some_sets_unignored_dirs() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            add_project(&project, None).expect("add");
+            add_project(
+                &project,
+                Some(WatchSettings {
+                    force_watch_gitignore: false,
+                    unignored_dirs: BTreeSet::from(["target".to_string(), "dist".to_string()]),
+                }),
+            )
+            .expect("add with unignored dirs");
+
+            let intent = load().expect("load");
+            assert_eq!(
+                intent.projects[0].settings.unignored_dirs,
+                BTreeSet::from(["dist".to_string(), "target".to_string()])
+            );
         });
     }
 
@@ -256,27 +285,38 @@ mod tests {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            add_project(&project, Some(true)).expect("add with flag on");
-            add_project(&project, Some(false)).expect("add with flag off");
+            add_project(
+                &project,
+                Some(WatchSettings {
+                    force_watch_gitignore: true,
+                    ..Default::default()
+                }),
+            )
+            .expect("add with flag on");
+            add_project(&project, Some(WatchSettings::default())).expect("add with flag off");
 
             let intent = load().expect("load");
-            assert!(!intent.projects[0].force_watch_gitignore);
+            assert_eq!(intent.projects[0].settings, WatchSettings::default());
         });
     }
 
     #[test]
-    fn add_project_none_preserves_existing_flag() {
+    fn add_project_none_preserves_existing_settings() {
         with_test_home(|home| {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
 
-            add_project(&project, Some(true)).expect("add with flag on");
+            let wanted = WatchSettings {
+                force_watch_gitignore: true,
+                unignored_dirs: BTreeSet::from(["target".to_string()]),
+            };
+            add_project(&project, Some(wanted.clone())).expect("add with settings on");
             add_project(&project, None).expect("legacy call site");
 
             let intent = load().expect("load");
-            assert!(
-                intent.projects[0].force_watch_gitignore,
-                "None must not clobber an existing flag"
+            assert_eq!(
+                intent.projects[0].settings, wanted,
+                "None must not clobber existing settings"
             );
         });
     }
@@ -291,21 +331,29 @@ mod tests {
             let intent = load().expect("load 1");
             let watched_at = intent.projects[0].watched_at;
 
-            add_project(&project, Some(true)).expect("update flag");
+            add_project(
+                &project,
+                Some(WatchSettings {
+                    force_watch_gitignore: true,
+                    ..Default::default()
+                }),
+            )
+            .expect("update flag");
             let intent = load().expect("load 2");
             assert_eq!(intent.projects[0].watched_at, watched_at);
         });
     }
 
     #[test]
-    fn load_accepts_legacy_json_without_flag() {
+    fn load_accepts_pre_0_19_json_with_neither_field() {
         with_test_home(|home| {
             let project = home.join("my-project");
             fs::create_dir_all(&project).expect("create project dir");
             let canonical = project.canonicalize().unwrap();
 
-            // Literal old-format JSON: no `force_watch_gitignore` field at all.
-            // This is what a v0.18-or-earlier intent.json looks like on disk.
+            // Literal old-format JSON: no `force_watch_gitignore` and no
+            // `unignored_dirs` at all. This is what a v0.18-or-earlier
+            // intent.json looks like on disk.
             let path = intent_path().expect("intent path");
             let legacy_json = format!(
                 r#"{{"projects":[{{"path":"{}","watched_at":"2026-01-01T00:00:00Z"}}]}}"#,
@@ -315,7 +363,93 @@ mod tests {
 
             let intent = load().expect("load legacy intent");
             assert_eq!(intent.projects.len(), 1);
-            assert!(!intent.projects[0].force_watch_gitignore);
+            assert_eq!(intent.projects[0].settings, WatchSettings::default());
+        });
+    }
+
+    #[test]
+    fn load_accepts_0_19_1_json_with_flag_but_no_unignored_dirs() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+            let canonical = project.canonicalize().unwrap();
+
+            // Literal v0.19.1-format JSON: has `force_watch_gitignore` but
+            // predates `unignored_dirs` entirely.
+            let path = intent_path().expect("intent path");
+            let v19_json = format!(
+                r#"{{"projects":[{{"path":"{}","watched_at":"2026-01-01T00:00:00Z","force_watch_gitignore":true}}]}}"#,
+                canonical.display()
+            );
+            fs::write(&path, v19_json).expect("write v0.19.1 intent");
+
+            let intent = load().expect("load v0.19.1 intent");
+            assert_eq!(intent.projects.len(), 1);
+            assert!(intent.projects[0].settings.force_watch_gitignore);
+            assert!(intent.projects[0].settings.unignored_dirs.is_empty());
+        });
+    }
+
+    #[test]
+    fn load_normalizes_unsorted_duplicated_unignored_dirs() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+            let canonical = project.canonicalize().unwrap();
+
+            // Hand-edited JSON: unsorted, with a duplicate entry.
+            let path = intent_path().expect("intent path");
+            let json = format!(
+                r#"{{"projects":[{{"path":"{}","watched_at":"2026-01-01T00:00:00Z","force_watch_gitignore":false,"unignored_dirs":["target","dist","target"]}}]}}"#,
+                canonical.display()
+            );
+            fs::write(&path, json).expect("write hand-edited intent");
+
+            let intent = load().expect("load hand-edited intent");
+            assert_eq!(
+                intent.projects[0].settings.unignored_dirs,
+                BTreeSet::from(["dist".to_string(), "target".to_string()]),
+                "unsorted, duplicated on-disk list must deserialize to an equal, deduped set"
+            );
+        });
+    }
+
+    #[test]
+    fn round_trip_preserves_both_fields_and_json_shape() {
+        with_test_home(|home| {
+            let project = home.join("my-project");
+            fs::create_dir_all(&project).expect("create project dir");
+
+            add_project(
+                &project,
+                Some(WatchSettings {
+                    force_watch_gitignore: true,
+                    unignored_dirs: BTreeSet::from(["target".to_string(), "dist".to_string()]),
+                }),
+            )
+            .expect("add with settings");
+
+            let path = intent_path().expect("intent path");
+            let raw = fs::read_to_string(&path).expect("read intent file");
+            let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+            let entry = &json["projects"][0];
+
+            // `force_watch_gitignore` and `unignored_dirs` are top-level
+            // sibling keys, not nested under a "settings" object — the
+            // v0.19.1 shape is unchanged.
+            assert!(entry.get("settings").is_none());
+            assert_eq!(entry["force_watch_gitignore"], serde_json::json!(true));
+            assert_eq!(
+                entry["unignored_dirs"],
+                serde_json::json!(["dist", "target"])
+            );
+
+            let intent = load().expect("load");
+            assert!(intent.projects[0].settings.force_watch_gitignore);
+            assert_eq!(
+                intent.projects[0].settings.unignored_dirs,
+                BTreeSet::from(["dist".to_string(), "target".to_string()])
+            );
         });
     }
 

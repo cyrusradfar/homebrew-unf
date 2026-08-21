@@ -16,6 +16,8 @@ use super::filter::Filter;
 use crate::engine::Engine;
 use crate::error::{UnfError, WatcherError};
 use crate::storage;
+#[cfg(test)]
+use crate::types::WatchSettings;
 
 /// Represents a single watched project within the global daemon.
 ///
@@ -67,7 +69,7 @@ impl DaemonState {
         let registered: HashMap<PathBuf, bool> = registry
             .projects
             .iter()
-            .map(|entry| (entry.path.clone(), entry.force_watch_gitignore))
+            .map(|entry| (entry.path.clone(), entry.settings.force_watch_gitignore))
             .collect();
 
         // Find projects to remove: keys in self.projects not in registry
@@ -477,7 +479,7 @@ mod tests {
             state.projects.insert(path.clone(), context);
 
             // Register the project with the flag off, matching the Filter above.
-            crate::registry::register_project(&path, Some(false))
+            crate::registry::register_project(&path, Some(WatchSettings::default()))
                 .expect("register project with flag off");
 
             // No-op sync: flag matches, so the Filter and debouncer must be
@@ -495,7 +497,14 @@ mod tests {
             );
 
             // Flip the flag in the registry and sync again.
-            crate::registry::register_project(&path, Some(true)).expect("flip flag to true");
+            crate::registry::register_project(
+                &path,
+                Some(WatchSettings {
+                    force_watch_gitignore: true,
+                    ..Default::default()
+                }),
+            )
+            .expect("flip flag to true");
             state
                 .sync_with_registry()
                 .expect("sync with flag change false -> true");
@@ -510,7 +519,8 @@ mod tests {
             );
 
             // Flip back and confirm the reverse direction also rebuilds.
-            crate::registry::register_project(&path, Some(false)).expect("flip flag back to false");
+            crate::registry::register_project(&path, Some(WatchSettings::default()))
+                .expect("flip flag back to false");
             state
                 .sync_with_registry()
                 .expect("sync with flag change true -> false");
@@ -545,8 +555,14 @@ mod tests {
             // Register with the flag ON before the daemon has ever seen this
             // project, so `add_project` must read it rather than default to
             // `false`.
-            crate::registry::register_project(&path, Some(true))
-                .expect("register project with flag on");
+            crate::registry::register_project(
+                &path,
+                Some(WatchSettings {
+                    force_watch_gitignore: true,
+                    ..Default::default()
+                }),
+            )
+            .expect("register project with flag on");
 
             state.sync_with_registry().expect("sync to add project");
 

@@ -12,6 +12,7 @@
 //! mechanism (launchd / systemd) keeps the sentinel alive; the sentinel
 //! keeps the daemon alive.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -32,6 +33,7 @@ use crate::intent::{self, Intent};
 use crate::process::PidFile;
 use crate::registry::{self, Registry};
 use crate::storage;
+use crate::types::WatchSettings;
 
 /// Default tick interval for sentinel health checks (seconds).
 const DEFAULT_TICK_INTERVAL_SECS: u64 = 15;
@@ -125,7 +127,7 @@ pub fn compute_drift(intent: &Intent, registry: &Registry) -> Vec<DriftEntry> {
             drift.push(DriftEntry {
                 path: entry.path.clone(),
                 kind: DriftKind::MissingFromRegistry,
-                force_watch_gitignore: entry.force_watch_gitignore,
+                force_watch_gitignore: entry.settings.force_watch_gitignore,
             });
         }
     }
@@ -568,8 +570,8 @@ fn sync_gitignore_flags(intent: &Intent, reg: &mut Registry) -> Vec<PathBuf> {
     let mut corrected = Vec::new();
     for entry in &mut reg.projects {
         if let Some(intent_entry) = intent.projects.iter().find(|i| i.path == entry.path) {
-            if entry.force_watch_gitignore != intent_entry.force_watch_gitignore {
-                entry.force_watch_gitignore = intent_entry.force_watch_gitignore;
+            if entry.settings.force_watch_gitignore != intent_entry.settings.force_watch_gitignore {
+                entry.settings.force_watch_gitignore = intent_entry.settings.force_watch_gitignore;
                 corrected.push(entry.path.clone());
             }
         }
@@ -603,7 +605,10 @@ fn reconcile(drift: &[DriftEntry]) -> Result<(), UnfError> {
                     reg.projects.push(registry::ProjectEntry {
                         path: entry.path.clone(),
                         registered: chrono::Utc::now(),
-                        force_watch_gitignore: entry.force_watch_gitignore,
+                        settings: WatchSettings {
+                            force_watch_gitignore: entry.force_watch_gitignore,
+                            unignored_dirs: BTreeSet::new(),
+                        },
                     });
                     changed = true;
                 }
@@ -917,7 +922,7 @@ mod tests {
             projects: vec![IntentEntry {
                 path: PathBuf::from("/foo/bar"),
                 watched_at: chrono::Utc::now(),
-                force_watch_gitignore: false,
+                settings: WatchSettings::default(),
             }],
         };
         let registry = Registry::default();
@@ -937,7 +942,10 @@ mod tests {
             projects: vec![IntentEntry {
                 path: PathBuf::from("/foo/bar"),
                 watched_at: chrono::Utc::now(),
-                force_watch_gitignore: true,
+                settings: WatchSettings {
+                    force_watch_gitignore: true,
+                    ..Default::default()
+                },
             }],
         };
         let registry = Registry::default();
@@ -953,7 +961,7 @@ mod tests {
             projects: vec![ProjectEntry {
                 path: PathBuf::from("/foo/bar"),
                 registered: chrono::Utc::now(),
-                force_watch_gitignore: false,
+                settings: WatchSettings::default(),
             }],
         };
         let drift = compute_drift(&intent, &registry);
@@ -969,14 +977,14 @@ mod tests {
             projects: vec![IntentEntry {
                 path: path.clone(),
                 watched_at: chrono::Utc::now(),
-                force_watch_gitignore: false,
+                settings: WatchSettings::default(),
             }],
         };
         let registry = Registry {
             projects: vec![ProjectEntry {
                 path: path.clone(),
                 registered: chrono::Utc::now(),
-                force_watch_gitignore: false,
+                settings: WatchSettings::default(),
             }],
         };
         let drift = compute_drift(&intent, &registry);
@@ -990,12 +998,12 @@ mod tests {
                 IntentEntry {
                     path: PathBuf::from("/project/a"),
                     watched_at: chrono::Utc::now(),
-                    force_watch_gitignore: false,
+                    settings: WatchSettings::default(),
                 },
                 IntentEntry {
                     path: PathBuf::from("/project/b"),
                     watched_at: chrono::Utc::now(),
-                    force_watch_gitignore: false,
+                    settings: WatchSettings::default(),
                 },
             ],
         };
@@ -1004,12 +1012,12 @@ mod tests {
                 ProjectEntry {
                     path: PathBuf::from("/project/a"),
                     registered: chrono::Utc::now(),
-                    force_watch_gitignore: false,
+                    settings: WatchSettings::default(),
                 },
                 ProjectEntry {
                     path: PathBuf::from("/project/c"),
                     registered: chrono::Utc::now(),
-                    force_watch_gitignore: false,
+                    settings: WatchSettings::default(),
                 },
             ],
         };
@@ -1297,7 +1305,10 @@ mod tests {
                 projects: vec![IntentEntry {
                     path: path.clone(),
                     watched_at: chrono::Utc::now(),
-                    force_watch_gitignore: true,
+                    settings: WatchSettings {
+                        force_watch_gitignore: true,
+                        ..Default::default()
+                    },
                 }],
             };
             registry::save(&Registry::default()).expect("save empty registry");
@@ -1308,7 +1319,7 @@ mod tests {
             let reg = registry::load().expect("load registry");
             assert_eq!(reg.projects.len(), 1);
             assert!(
-                reg.projects[0].force_watch_gitignore,
+                reg.projects[0].settings.force_watch_gitignore,
                 "restored project must keep the intent flag, not default to false"
             );
         });
@@ -1328,7 +1339,10 @@ mod tests {
                 projects: vec![IntentEntry {
                     path: path.clone(),
                     watched_at: chrono::Utc::now(),
-                    force_watch_gitignore: true,
+                    settings: WatchSettings {
+                        force_watch_gitignore: true,
+                        ..Default::default()
+                    },
                 }],
             };
             intent::save(&intent).expect("save intent");
@@ -1337,7 +1351,7 @@ mod tests {
                 projects: vec![ProjectEntry {
                     path: path.clone(),
                     registered: chrono::Utc::now(),
-                    force_watch_gitignore: false,
+                    settings: WatchSettings::default(),
                 }],
             };
             registry::save(&registry).expect("save registry");
@@ -1355,7 +1369,7 @@ mod tests {
             let reg = registry::load().expect("load registry");
             assert_eq!(reg.projects.len(), 1);
             assert!(
-                reg.projects[0].force_watch_gitignore,
+                reg.projects[0].settings.force_watch_gitignore,
                 "registry flag must be corrected to match intent with no drift present"
             );
         });

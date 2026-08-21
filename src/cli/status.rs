@@ -219,7 +219,7 @@ fn lookup_registry_facts(canonical_project_root: &Path) -> RegistryFacts {
     {
         Some(entry) => RegistryFacts {
             registered: true,
-            force_watch_gitignore: entry.force_watch_gitignore,
+            force_watch_gitignore: entry.settings.force_watch_gitignore,
         },
         None => RegistryFacts::default(),
     }
@@ -495,7 +495,14 @@ mod tests {
 
         let project_dir = temp.path().join("project");
         std::fs::create_dir_all(&project_dir).expect("create project dir");
-        crate::registry::register_project(&project_dir, Some(true)).expect("register project");
+        crate::registry::register_project(
+            &project_dir,
+            Some(crate::types::WatchSettings {
+                force_watch_gitignore: true,
+                ..Default::default()
+            }),
+        )
+        .expect("register project");
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
         let facts = lookup_registry_facts(&canonical);

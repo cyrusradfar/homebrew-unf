@@ -80,7 +80,7 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
     let mut infos = Vec::new();
 
     for entry in &reg.projects {
-        let info = gather_project_info(&entry.path, verbose, entry.force_watch_gitignore);
+        let info = gather_project_info(&entry.path, verbose, entry.settings.force_watch_gitignore);
         infos.push(info);
     }
 

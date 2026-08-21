@@ -4,6 +4,7 @@
 //! The watch command replaces the project-level logic from `unf init`
 //! and integrates with the single global daemon architecture.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::os::unix::process::CommandExt;
@@ -15,6 +16,7 @@ use crate::engine::Engine;
 use crate::error::UnfError;
 use crate::process::PidFile;
 use crate::storage;
+use crate::types::WatchSettings;
 
 /// JSON output for the watch command.
 #[derive(serde::Serialize)]
@@ -100,12 +102,18 @@ pub fn run(
     };
 
     // Record user intent (source of truth for what should be watched)
-    if let Err(e) = crate::intent::add_project(project_root, Some(force_watch_gitignore)) {
+    // TODO(UD-07): thread the real --unignore-dir set through instead of
+    // always resetting it to empty here.
+    let settings = WatchSettings {
+        force_watch_gitignore,
+        unignored_dirs: BTreeSet::new(),
+    };
+    if let Err(e) = crate::intent::add_project(project_root, Some(settings.clone())) {
         super::output::print_warning(&format!("Failed to record intent: {}", e));
     }
 
     // Register project in global registry
-    if let Err(e) = crate::registry::register_project(project_root, Some(force_watch_gitignore)) {
+    if let Err(e) = crate::registry::register_project(project_root, Some(settings)) {
         super::output::print_warning(&format!("Failed to register project: {}", e));
     }
 

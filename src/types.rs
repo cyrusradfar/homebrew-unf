@@ -4,9 +4,43 @@
 //! codebase. All types follow the SUPER principle of explicit data flow:
 //! they are plain data with no hidden state or side effects.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+
+/// Per-project watch behavior, persisted verbatim in both `projects.json`
+/// and `intent.json`.
+///
+/// Dependency-free by design: this is the shared value type consumed by
+/// `watcher::filter`, `registry`, `intent`, `sentinel`, and `daemon` without
+/// any of them learning about each other. `watcher::filter` in particular
+/// must never import `registry` or `intent`.
+///
+/// `#[serde(flatten)]` this into the containing entry type so the on-disk
+/// JSON keeps `force_watch_gitignore` and `unignored_dirs` as top-level
+/// sibling keys — never a nested object — matching the v0.19.1 file shape
+/// byte-for-byte.
+///
+/// `unignored_dirs` is a `BTreeSet`, not a `Vec`, on purpose: sorted and
+/// deduplicated is a type invariant, so `==` is order-insensitive and a
+/// hand-edited, unsorted `projects.json` deserializes to an equal set. That
+/// removes any need for a normalize-on-write helper and keeps a daemon
+/// reload comparison a plain `!=`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WatchSettings {
+    /// When true, the daemon records files `.gitignore` excludes and hidden
+    /// dotfiles for this project. `#[serde(default)]` keeps files written
+    /// before this field existed loading with the flag off.
+    #[serde(default)]
+    pub force_watch_gitignore: bool,
+    /// Names of hardcoded-excluded directories (e.g. `target`, `dist`) that
+    /// this project has opted back into recording. `#[serde(default)]`
+    /// keeps files written before this field existed loading with an empty
+    /// set.
+    #[serde(default)]
+    pub unignored_dirs: BTreeSet<String>,
+}
 
 /// BLAKE3 hex digest of file content.
 ///
