@@ -16,7 +16,6 @@ use super::filter::Filter;
 use crate::engine::Engine;
 use crate::error::{UnfError, WatcherError};
 use crate::storage;
-#[cfg(test)]
 use crate::types::WatchSettings;
 
 /// Represents a single watched project within the global daemon.
@@ -63,13 +62,13 @@ impl DaemonState {
         // Load current registry
         let registry = crate::registry::load()?;
 
-        // Map each registered path to its force_watch_gitignore flag. This
-        // doubles as the "registered set" for the remove/add diff below, so
-        // the registry is loaded exactly once per sync.
-        let registered: HashMap<PathBuf, bool> = registry
+        // Map each registered path to its settings. This doubles as the
+        // "registered set" for the remove/add diff below, so the registry is
+        // loaded exactly once per sync.
+        let registered: HashMap<PathBuf, WatchSettings> = registry
             .projects
             .iter()
-            .map(|entry| (entry.path.clone(), entry.settings.force_watch_gitignore))
+            .map(|entry| (entry.path.clone(), entry.settings.clone()))
             .collect();
 
         // Find projects to remove: keys in self.projects not in registry
@@ -81,24 +80,29 @@ impl DaemonState {
             .collect();
 
         // Find projects to add: paths in registry not in self.projects
-        let to_add: Vec<(PathBuf, bool)> = registered
+        let to_add: Vec<(PathBuf, WatchSettings)> = registered
             .iter()
             .filter(|(path, _)| !self.projects.contains_key(*path))
-            .map(|(path, &flag)| (path.clone(), flag))
+            .map(|(path, settings)| (path.clone(), settings.clone()))
             .collect();
 
         // Find projects to reload: present in both sets, but the registry's
-        // flag no longer matches the Filter the running context holds. Only
-        // the Filter is rebuilt (below) — the Engine, Debouncer, and OS
-        // watch registration are left untouched so unrelated projects keep
-        // their pending debounced events and this project's watch is not
-        // churned for a path that did not change.
-        let to_reload: Vec<(PathBuf, bool)> = self
+        // force_watch_gitignore flag no longer matches the Filter the
+        // running context holds. Only the Filter is rebuilt (below) — the
+        // Engine, Debouncer, and OS watch registration are left untouched so
+        // unrelated projects keep their pending debounced events and this
+        // project's watch is not churned for a path that did not change.
+        //
+        // This compares only force_watch_gitignore, matching the pre-UD-03
+        // trigger condition. Comparing the whole WatchSettings (so a change
+        // to unignored_dirs also triggers a reload) is UD-05's job.
+        let to_reload: Vec<(PathBuf, WatchSettings)> = self
             .projects
             .iter()
             .filter_map(|(path, ctx)| {
-                registered.get(path).and_then(|&want| {
-                    (want != ctx.filter.force_watch_gitignore()).then(|| (path.clone(), want))
+                registered.get(path).and_then(|want| {
+                    (want.force_watch_gitignore != ctx.filter.settings().force_watch_gitignore)
+                        .then(|| (path.clone(), want.clone()))
                 })
             })
             .collect();
@@ -109,8 +113,8 @@ impl DaemonState {
         }
 
         // Add projects (log errors but continue)
-        for (path, force_watch_gitignore) in to_add {
-            match self.add_project(&path, force_watch_gitignore) {
+        for (path, settings) in to_add {
+            match self.add_project(&path, settings) {
                 Ok(()) => {
                     // Project added successfully
                 }
@@ -122,8 +126,8 @@ impl DaemonState {
         }
 
         // Reload filters for projects whose flag changed (log and continue)
-        for (path, force_watch_gitignore) in to_reload {
-            match Filter::new(&path, force_watch_gitignore) {
+        for (path, settings) in to_reload {
+            match Filter::new(&path, settings) {
                 Ok(filter) => {
                     if let Some(ctx) = self.projects.get_mut(&path) {
                         ctx.filter = filter;
@@ -146,18 +150,14 @@ impl DaemonState {
     /// # Arguments
     ///
     /// * `path` - Canonical path to the project root
-    /// * `force_watch_gitignore` - The registry entry's flag for this path.
+    /// * `settings` - The registry entry's settings for this path.
     ///   `sync_with_registry` reads this from the registry it already
     ///   loaded, so it is passed in rather than read again here.
     ///
     /// # Returns
     ///
     /// Returns `Ok(())` on success, or an error if setup fails.
-    pub fn add_project(
-        &mut self,
-        path: &Path,
-        force_watch_gitignore: bool,
-    ) -> Result<(), UnfError> {
+    pub fn add_project(&mut self, path: &Path, settings: WatchSettings) -> Result<(), UnfError> {
         // Check for stopped sentinel
         let storage_dir = storage::resolve_storage_dir_canonical(path)?;
         if storage::stopped_path(&storage_dir).exists() {
@@ -168,7 +168,7 @@ impl DaemonState {
         let engine = Engine::open(path, &storage_dir)?;
 
         // Create Filter
-        let filter = Filter::new(path, force_watch_gitignore)?;
+        let filter = Filter::new(path, settings)?;
 
         // Create Debouncer
         let debouncer = Debouncer::new();
@@ -394,7 +394,7 @@ mod tests {
         let context = ProjectContext {
             root: path.clone(),
             engine,
-            filter: Filter::new(&path, false).expect("create filter"),
+            filter: Filter::new(&path, WatchSettings::default()).expect("create filter"),
             debouncer: Debouncer::new(),
         };
 
@@ -463,7 +463,7 @@ mod tests {
             let mut context = ProjectContext {
                 root: path.clone(),
                 engine,
-                filter: Filter::new(&path, false).expect("create filter"),
+                filter: Filter::new(&path, WatchSettings::default()).expect("create filter"),
                 debouncer: Debouncer::new(),
             };
             // Queue a pending debounced event. If sync rebuilds the whole
@@ -488,7 +488,10 @@ mod tests {
                 .sync_with_registry()
                 .expect("sync with unchanged flag");
             assert!(
-                !state.projects[&path].filter.force_watch_gitignore(),
+                !state.projects[&path]
+                    .filter
+                    .settings()
+                    .force_watch_gitignore,
                 "flag unchanged must leave the filter as-is"
             );
             assert!(
@@ -510,7 +513,10 @@ mod tests {
                 .expect("sync with flag change false -> true");
 
             assert!(
-                state.projects[&path].filter.force_watch_gitignore(),
+                state.projects[&path]
+                    .filter
+                    .settings()
+                    .force_watch_gitignore,
                 "flag flip false -> true must rebuild the Filter"
             );
             assert!(
@@ -525,7 +531,10 @@ mod tests {
                 .sync_with_registry()
                 .expect("sync with flag change true -> false");
             assert!(
-                !state.projects[&path].filter.force_watch_gitignore(),
+                !state.projects[&path]
+                    .filter
+                    .settings()
+                    .force_watch_gitignore,
                 "flag flip true -> false must rebuild the Filter back"
             );
 
@@ -568,7 +577,7 @@ mod tests {
 
             let ctx = state.projects.get(&path).expect("project was added");
             assert!(
-                ctx.filter.force_watch_gitignore(),
+                ctx.filter.settings().force_watch_gitignore,
                 "add_project must build the Filter from the registry's flag, not hardcode false"
             );
 
