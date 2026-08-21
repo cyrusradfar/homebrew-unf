@@ -23,6 +23,7 @@
 //! rules and downstream magic-number binary detection are unaffected by
 //! either setting.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use ignore::gitignore::GitignoreBuilder;
@@ -53,6 +54,116 @@ const IGNORED_DIRS: &[&str] = &[
 /// The one entry in `IGNORED_DIRS` that `WatchSettings::unignored_dirs` can
 /// never lift. See the hard refusal at the top of `Filter::should_track`.
 const PERMANENT_IGNORED_DIR: &str = ".git";
+
+/// Comma-joined `IGNORED_DIRS` entries a user could plausibly un-ignore,
+/// i.e. everything except `PERMANENT_IGNORED_DIR`. Shared by both
+/// `parse_unignore_dir` error branches that list eligible names.
+fn eligible_dirs_list() -> String {
+    IGNORED_DIRS
+        .iter()
+        .filter(|&&dir| dir != PERMANENT_IGNORED_DIR)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Validates a `--unignore-dir NAME` value.
+///
+/// Pure and unit-testable with no clap dependency: it matches clap's
+/// `fn(&str) -> Result<String, String>` value-parser shape, so it can be
+/// used directly as `value_parser = parse_unignore_dir` on the CLI's
+/// `Vec<String>` argument (wired up in UD-07).
+///
+/// Three refusal branches, each explaining the reason rather than issuing a
+/// bare rejection:
+///
+/// - `.git`, in any case (`.git`, `.GIT`, `.Git`, ...): permanently
+///   excluded. Explains why, since "invalid" alone would invite a user to
+///   keep guessing at spellings that can never work.
+/// - A name that differs from an eligible `IGNORED_DIRS` entry only by
+///   case, e.g. `Target`: suggests the lowercase form. `IGNORED_DIRS`
+///   matching in `should_track` is exact and case-sensitive, so `Target`
+///   would otherwise persist as a silent no-op.
+/// - Anything else, e.g. `logs`: not on the hardcoded list at all, so there
+///   is nothing for this flag to lift. Routes to `--force-watch-gitignore`,
+///   the more likely real intent — a name like `logs` is almost certainly
+///   being dropped by `.gitignore`, not by `IGNORED_DIRS`.
+pub fn parse_unignore_dir(name: &str) -> Result<String, String> {
+    // Checked case-insensitively and before the exact-match check below:
+    // `.GIT` / `.Git` are still permanently excluded, and the reason for
+    // refusing them is the same regardless of case, so they get the
+    // refusal message rather than a "did you mean '.git'" suggestion that
+    // would wrongly imply fixing the case helps.
+    if name.eq_ignore_ascii_case(PERMANENT_IGNORED_DIR) {
+        return Err(format!(
+            "{PERMANENT_IGNORED_DIR} can never be recorded. UNF would capture git's object \
+             store while git rewrites it, and restoring it could corrupt the repository. \
+             Eligible directories: {}",
+            eligible_dirs_list()
+        ));
+    }
+
+    if IGNORED_DIRS.contains(&name) {
+        return Ok(name.to_string());
+    }
+
+    let lower = name.to_lowercase();
+    if lower != name && IGNORED_DIRS.contains(&lower.as_str()) {
+        return Err(format!(
+            "unknown directory '{name}'. Did you mean '{lower}'? Names are case-sensitive."
+        ));
+    }
+
+    Err(format!(
+        "'{name}' is not on UNF's excluded list, so there is nothing to un-ignore. UNF \
+         already records it unless .gitignore excludes it — see --force-watch-gitignore. \
+         Eligible directories: {}",
+        eligible_dirs_list()
+    ))
+}
+
+/// Excluded directories, from `IGNORED_DIRS`, that exist as immediate
+/// children of `project_root` and could be opted back into tracking with
+/// `--unignore-dir`.
+///
+/// Performs a single `read_dir` of `project_root` — immediate children
+/// only. A nested `packages/web/node_modules` is never reported; only the
+/// project root's own contents are scanned. This is an I/O edge function,
+/// not a pure query: call it at the CLI edge (`unf watch`, `unf status`),
+/// never from `should_track`.
+///
+/// `.git` is deliberately omitted from the result. It exists in nearly
+/// every repository, is not actionable (it can never be un-ignored — see
+/// `PERMANENT_IGNORED_DIR`), and listing a permanently-excluded entry here
+/// would train users to ignore the rest of the message.
+///
+/// Returned in `IGNORED_DIRS` order, not filesystem order, so output is
+/// deterministic across runs. Values are `&'static str` borrowed from
+/// `IGNORED_DIRS`, never allocated from the directory entry, so callers get
+/// the canonical spelling.
+///
+/// Returns an empty `Vec` if `project_root` cannot be read (missing,
+/// unreadable, not a directory) rather than an error — this is a
+/// discoverability aid, not a correctness check, and `unf watch` must not
+/// fail because of it.
+pub fn eligible_unignore_dirs(project_root: &Path) -> Vec<&'static str> {
+    let entries = match std::fs::read_dir(project_root) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let present: HashSet<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+
+    IGNORED_DIRS
+        .iter()
+        .filter(|&&dir| dir != PERMANENT_IGNORED_DIR && present.contains(dir))
+        .copied()
+        .collect()
+}
 
 /// File extensions for binary and non-text files that should not be tracked.
 ///
@@ -219,6 +330,28 @@ impl Filter {
     /// Returns the settings this filter was constructed with.
     pub fn settings(&self) -> &WatchSettings {
         &self.settings
+    }
+
+    /// True when the loaded `.gitignore` also excludes `dir`, so lifting
+    /// `IGNORED_DIRS`'s built-in exclusion via `--unignore-dir` alone will
+    /// not record anything inside it (rule 3 in `should_track` still drops
+    /// it). Needed for the `unf watch` warning that `--unignore-dir target`
+    /// alone does nothing on a typical Rust project.
+    ///
+    /// Matches `dir` as a directory, not a file — `.gitignore` patterns
+    /// like `/target/` only match directory-mode lookups, and passing
+    /// `is_dir: false` to the `ignore` crate's matcher would silently miss
+    /// them.
+    ///
+    /// Always false when no `.gitignore` is loaded: either
+    /// `settings.force_watch_gitignore` is set (the matcher is never
+    /// built), or the project has no `.gitignore` file. A filter with
+    /// nothing loaded cannot be shadowing anything.
+    pub fn gitignore_shadows(&self, dir: &str) -> bool {
+        match &self.gitignore {
+            Some(gitignore) => gitignore.matched(dir, true).is_ignore(),
+            None => false,
+        }
     }
 
     /// Returns true if this path should be tracked by the flight recorder.
@@ -857,5 +990,126 @@ mod tests {
         // bytes, and `!<arch>` is not in MAGIC_NUMBERS. Magic-number
         // detection alone would treat rlibs as text.
         assert!(!is_likely_binary(b"!<arch>\n1234567890`\n"));
+    }
+
+    // -- parse_unignore_dir --------------------------------------------
+
+    #[test]
+    fn parse_unignore_dir_rejects_git() {
+        let err = parse_unignore_dir(".git").unwrap_err();
+        assert!(
+            err.contains("can never be recorded"),
+            "message should give a reason, not a bare refusal: {err}"
+        );
+        assert!(err.contains("object store"));
+        assert!(err.contains("Eligible directories:"));
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_git_regardless_of_case() {
+        // The reason .git is refused (git rewrites its own object store)
+        // holds regardless of spelling, so a case variant gets the same
+        // refusal message, not a "did you mean '.git'" suggestion that
+        // would wrongly imply fixing the case helps.
+        let err = parse_unignore_dir(".GIT").unwrap_err();
+        assert!(err.contains("can never be recorded"));
+    }
+
+    #[test]
+    fn parse_unignore_dir_suggests_case_correction() {
+        let err = parse_unignore_dir("Target").unwrap_err();
+        assert!(
+            err.contains("Did you mean 'target'"),
+            "expected a lowercase suggestion, got: {err}"
+        );
+        assert!(err.contains("case-sensitive"));
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_unknown_name() {
+        let err = parse_unignore_dir("logs").unwrap_err();
+        assert!(err.contains("'logs' is not on UNF's excluded list"));
+        assert!(
+            err.contains("--force-watch-gitignore"),
+            "unknown names should route to the likely real fix: {err}"
+        );
+        assert!(err.contains("Eligible directories:"));
+    }
+
+    #[test]
+    fn parse_unignore_dir_accepts_every_eligible_dir() {
+        for &dir in IGNORED_DIRS.iter().filter(|&&d| d != PERMANENT_IGNORED_DIR) {
+            assert_eq!(parse_unignore_dir(dir), Ok(dir.to_string()));
+        }
+    }
+
+    // -- gitignore_shadows -----------------------------------------------
+
+    #[test]
+    fn gitignore_shadows_matches_rule_three() {
+        let (filter, _temp) = filter_with_gitignore("/target\n", false);
+        assert!(filter.gitignore_shadows("target"));
+        assert!(!filter.gitignore_shadows("dist"));
+    }
+
+    #[test]
+    fn gitignore_shadows_false_when_forced() {
+        let (filter, _temp) = filter_with_gitignore("/target\n", true);
+        assert!(!filter.gitignore_shadows("target"));
+    }
+
+    #[test]
+    fn gitignore_shadows_false_when_no_gitignore_loaded() {
+        let filter = filter_without_gitignore();
+        assert!(!filter.gitignore_shadows("target"));
+    }
+
+    // -- eligible_unignore_dirs -------------------------------------------
+
+    #[test]
+    fn eligible_unignore_dirs_finds_top_level_only() {
+        let temp = TempDir::new().expect("create temp dir");
+        fs::create_dir(temp.path().join("target")).expect("create target");
+        fs::create_dir(temp.path().join("node_modules")).expect("create node_modules");
+        fs::create_dir(temp.path().join("src")).expect("create src");
+        fs::create_dir_all(temp.path().join("packages/web/node_modules"))
+            .expect("create nested node_modules");
+
+        let result = eligible_unignore_dirs(temp.path());
+
+        assert_eq!(result, vec!["node_modules", "target"]);
+    }
+
+    #[test]
+    fn eligible_unignore_dirs_omits_git() {
+        let temp = TempDir::new().expect("create temp dir");
+        fs::create_dir(temp.path().join(".git")).expect("create .git");
+        fs::create_dir(temp.path().join("target")).expect("create target");
+
+        let result = eligible_unignore_dirs(temp.path());
+
+        assert!(!result.contains(&".git"));
+        assert_eq!(result, vec!["target"]);
+    }
+
+    #[test]
+    fn eligible_unignore_dirs_ignores_files() {
+        let temp = TempDir::new().expect("create temp dir");
+        // A *file* named "build" must not be reported as eligible.
+        fs::write(temp.path().join("build"), b"not a directory").expect("write build file");
+
+        let result = eligible_unignore_dirs(temp.path());
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn eligible_unignore_dirs_does_not_error_on_unreadable_root() {
+        let temp = TempDir::new().expect("create temp dir");
+        let missing = temp.path().join("does-not-exist");
+
+        let result = eligible_unignore_dirs(&missing);
+
+        assert!(result.is_empty());
     }
 }
