@@ -87,22 +87,22 @@ impl DaemonState {
             .collect();
 
         // Find projects to reload: present in both sets, but the registry's
-        // force_watch_gitignore flag no longer matches the Filter the
-        // running context holds. Only the Filter is rebuilt (below) — the
-        // Engine, Debouncer, and OS watch registration are left untouched so
-        // unrelated projects keep their pending debounced events and this
-        // project's watch is not churned for a path that did not change.
+        // WatchSettings no longer match the Filter the running context
+        // holds. Only the Filter is rebuilt (below) — the Engine, Debouncer,
+        // and OS watch registration are left untouched so unrelated projects
+        // keep their pending debounced events and this project's watch is
+        // not churned for a path that did not change.
         //
-        // This compares only force_watch_gitignore, matching the pre-UD-03
-        // trigger condition. Comparing the whole WatchSettings (so a change
-        // to unignored_dirs also triggers a reload) is UD-05's job.
+        // `unignored_dirs` is a `BTreeSet`, so `!=` on the whole struct is
+        // order-insensitive: a hand-edited `projects.json` with the same set
+        // written in a different order compares equal and does not trigger
+        // a spurious reload.
         let to_reload: Vec<(PathBuf, WatchSettings)> = self
             .projects
             .iter()
             .filter_map(|(path, ctx)| {
                 registered.get(path).and_then(|want| {
-                    (want.force_watch_gitignore != ctx.filter.settings().force_watch_gitignore)
-                        .then(|| (path.clone(), want.clone()))
+                    (want != ctx.filter.settings()).then(|| (path.clone(), want.clone()))
                 })
             })
             .collect();
@@ -125,7 +125,7 @@ impl DaemonState {
             }
         }
 
-        // Reload filters for projects whose flag changed (log and continue)
+        // Reload filters for projects whose settings changed (log and continue)
         for (path, settings) in to_reload {
             match Filter::new(&path, settings) {
                 Ok(filter) => {
@@ -582,6 +582,292 @@ mod tests {
             );
 
             let _ = state.watcher.unwatch(&path);
+        });
+    }
+
+    #[test]
+    fn sync_reloads_filter_on_unignored_dirs_change() {
+        use std::collections::BTreeSet;
+        use std::time::Instant;
+        use tempfile::TempDir;
+
+        with_test_registry(|| {
+            let mut state = new_test_state();
+
+            let project_temp = TempDir::new().expect("create project dir");
+            let storage_temp = TempDir::new().expect("create storage dir");
+            let path = project_temp
+                .path()
+                .canonicalize()
+                .expect("canonicalize project path");
+
+            let engine =
+                Engine::init(&path, storage_temp.path()).expect("initialize engine for testing");
+
+            let mut context = ProjectContext {
+                root: path.clone(),
+                engine,
+                filter: Filter::new(&path, WatchSettings::default()).expect("create filter"),
+                debouncer: Debouncer::new(),
+            };
+            // Queue a pending debounced event. If sync rebuilds the whole
+            // ProjectContext (the rejected alternative) instead of just the
+            // Filter, this event is lost.
+            context.debouncer.push(
+                PathBuf::from("test.txt"),
+                crate::types::EventType::Modify,
+                Instant::now(),
+            );
+            assert!(context.debouncer.has_pending());
+
+            state.projects.insert(path.clone(), context);
+
+            // Register the project with an empty set, matching the Filter above.
+            crate::registry::register_project(&path, Some(WatchSettings::default()))
+                .expect("register project with empty unignored_dirs");
+
+            // No-op sync: settings match, so the Filter and debouncer must be
+            // left exactly as they are.
+            state
+                .sync_with_registry()
+                .expect("sync with unchanged settings");
+            assert!(
+                state.projects[&path]
+                    .filter
+                    .settings()
+                    .unignored_dirs
+                    .is_empty(),
+                "settings unchanged must leave the filter as-is"
+            );
+            assert!(
+                state.projects[&path].debouncer.has_pending(),
+                "no-op sync must not touch the debouncer"
+            );
+
+            // Add a dir to the set in the registry and sync again.
+            crate::registry::register_project(
+                &path,
+                Some(WatchSettings {
+                    unignored_dirs: BTreeSet::from(["target".to_string()]),
+                    ..Default::default()
+                }),
+            )
+            .expect("add target to unignored_dirs");
+            state
+                .sync_with_registry()
+                .expect("sync with unignored_dirs addition");
+
+            assert!(
+                state.projects[&path]
+                    .filter
+                    .settings()
+                    .unignored_dirs
+                    .contains("target"),
+                "adding a dir to unignored_dirs must rebuild the Filter"
+            );
+            assert!(
+                state.projects[&path].debouncer.has_pending(),
+                "reloading the Filter must not drop the pending debounced event"
+            );
+
+            // Remove it again and confirm the reverse direction also rebuilds.
+            crate::registry::register_project(&path, Some(WatchSettings::default()))
+                .expect("remove target from unignored_dirs");
+            state
+                .sync_with_registry()
+                .expect("sync with unignored_dirs removal");
+            assert!(
+                state.projects[&path]
+                    .filter
+                    .settings()
+                    .unignored_dirs
+                    .is_empty(),
+                "removing a dir from unignored_dirs must rebuild the Filter back"
+            );
+
+            let _ = state.watcher.unwatch(&path);
+        });
+    }
+
+    #[test]
+    fn sync_no_reload_when_unignored_dirs_reordered_on_disk() {
+        use std::collections::BTreeSet;
+        use std::fs;
+        use tempfile::TempDir;
+
+        with_test_registry(|| {
+            let mut state = new_test_state();
+
+            let project_temp = TempDir::new().expect("create project dir");
+            let storage_temp = TempDir::new().expect("create storage dir");
+            let path = project_temp
+                .path()
+                .canonicalize()
+                .expect("canonicalize project path");
+
+            // A .gitignore that shadows "target", so gitignore_shadows
+            // ("target") is observably true on a Filter built from it. This
+            // is the reload probe: Filter::new is the only place that reads
+            // .gitignore (should_track is pure over the cached rules), so if
+            // sync mistakenly rebuilds the Filter after the file is emptied
+            // below, the probe flips to false. A reorder-only registry
+            // change must leave it true.
+            fs::write(path.join(".gitignore"), "/target\n").expect("write .gitignore");
+
+            let settings = WatchSettings {
+                force_watch_gitignore: false,
+                unignored_dirs: BTreeSet::from(["dist".to_string(), "target".to_string()]),
+            };
+
+            let engine =
+                Engine::init(&path, storage_temp.path()).expect("initialize engine for testing");
+            let context = ProjectContext {
+                root: path.clone(),
+                engine,
+                filter: Filter::new(&path, settings.clone()).expect("create filter"),
+                debouncer: Debouncer::new(),
+            };
+            assert!(
+                context.filter.gitignore_shadows("target"),
+                "precondition: .gitignore must shadow target before the probe is armed"
+            );
+            state.projects.insert(path.clone(), context);
+
+            // Hand-write the registry with the SAME set as `settings`, but in
+            // reversed on-disk order, bypassing register_project (which
+            // always serializes a BTreeSet in sorted order). This exercises
+            // deserialization of an unsorted on-disk list, not just the
+            // in-memory `!=`, mirroring UD-02's literal-JSON test style.
+            let registry_path = crate::registry::registry_path().expect("registry path");
+            let json = format!(
+                r#"{{"projects":[{{"path":"{}","registered":"2026-01-01T00:00:00Z","force_watch_gitignore":false,"unignored_dirs":["target","dist"]}}]}}"#,
+                path.display()
+            );
+            fs::write(&registry_path, json).expect("write reordered registry");
+
+            // Empty the .gitignore. If sync erroneously reloads the Filter
+            // because reordering was mistaken for a real change, the
+            // rebuilt Filter loads this now-empty .gitignore and the probe
+            // flips to false.
+            fs::write(path.join(".gitignore"), "").expect("empty .gitignore");
+
+            state
+                .sync_with_registry()
+                .expect("sync with reordered on-disk unignored_dirs");
+
+            assert!(
+                state.projects[&path].filter.gitignore_shadows("target"),
+                "reordering unignored_dirs on disk must not rebuild the Filter"
+            );
+            assert_eq!(
+                state.projects[&path].filter.settings().unignored_dirs,
+                settings.unignored_dirs,
+                "settings must still reflect the original (equal) set"
+            );
+
+            let _ = state.watcher.unwatch(&path);
+        });
+    }
+
+    #[test]
+    fn sync_reload_leaves_unrelated_project_untouched() {
+        use std::collections::BTreeSet;
+        use std::time::Instant;
+        use tempfile::TempDir;
+
+        with_test_registry(|| {
+            let mut state = new_test_state();
+
+            // Project A: its settings will change.
+            let a_temp = TempDir::new().expect("create project A dir");
+            let a_storage = TempDir::new().expect("create storage A dir");
+            let a_path = a_temp
+                .path()
+                .canonicalize()
+                .expect("canonicalize project A path");
+            let a_engine = Engine::init(&a_path, a_storage.path()).expect("initialize engine A");
+            let mut a_context = ProjectContext {
+                root: a_path.clone(),
+                engine: a_engine,
+                filter: Filter::new(&a_path, WatchSettings::default()).expect("create filter A"),
+                debouncer: Debouncer::new(),
+            };
+            a_context.debouncer.push(
+                PathBuf::from("a.txt"),
+                crate::types::EventType::Modify,
+                Instant::now(),
+            );
+
+            // Project B: its settings stay the same and must be untouched by
+            // A's reload.
+            let b_temp = TempDir::new().expect("create project B dir");
+            let b_storage = TempDir::new().expect("create storage B dir");
+            let b_path = b_temp
+                .path()
+                .canonicalize()
+                .expect("canonicalize project B path");
+            let b_engine = Engine::init(&b_path, b_storage.path()).expect("initialize engine B");
+            let mut b_context = ProjectContext {
+                root: b_path.clone(),
+                engine: b_engine,
+                filter: Filter::new(&b_path, WatchSettings::default()).expect("create filter B"),
+                debouncer: Debouncer::new(),
+            };
+            b_context.debouncer.push(
+                PathBuf::from("b.txt"),
+                crate::types::EventType::Modify,
+                Instant::now(),
+            );
+
+            state.projects.insert(a_path.clone(), a_context);
+            state.projects.insert(b_path.clone(), b_context);
+
+            crate::registry::register_project(&a_path, Some(WatchSettings::default()))
+                .expect("register project A");
+            crate::registry::register_project(&b_path, Some(WatchSettings::default()))
+                .expect("register project B");
+
+            // Only A's settings change.
+            crate::registry::register_project(
+                &a_path,
+                Some(WatchSettings {
+                    unignored_dirs: BTreeSet::from(["target".to_string()]),
+                    ..Default::default()
+                }),
+            )
+            .expect("change A's unignored_dirs");
+
+            state
+                .sync_with_registry()
+                .expect("sync with only project A changed");
+
+            assert!(
+                state.projects[&a_path]
+                    .filter
+                    .settings()
+                    .unignored_dirs
+                    .contains("target"),
+                "A's filter must be rebuilt"
+            );
+            assert!(
+                state.projects[&b_path]
+                    .filter
+                    .settings()
+                    .unignored_dirs
+                    .is_empty(),
+                "B's settings must be unaffected by A's reload"
+            );
+            assert!(
+                state.projects[&b_path].debouncer.has_pending(),
+                "B's pending debounced event must survive A's reload"
+            );
+            assert!(
+                state.projects[&a_path].debouncer.has_pending(),
+                "A's pending debounced event must survive its own reload"
+            );
+
+            let _ = state.watcher.unwatch(&a_path);
+            let _ = state.watcher.unwatch(&b_path);
         });
     }
 }
