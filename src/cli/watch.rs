@@ -51,18 +51,6 @@ fn print_gitignore_override_warning() {
     eprintln!("  Run `unf watch` with no flag to turn this off.");
 }
 
-/// Excluded directories present in the project root that are still not
-/// recorded, i.e. the scan result minus what the user opted into.
-///
-/// Pure: takes the scan result rather than reading the disk itself.
-fn not_recorded_dirs<'a>(present: &[&'a str], unignored: &BTreeSet<String>) -> Vec<&'a str> {
-    present
-        .iter()
-        .copied()
-        .filter(|dir| !unignored.contains(*dir))
-        .collect()
-}
-
 /// Lines of the "not recorded in this project" note.
 ///
 /// Element 0 carries the `note:` prefix; the rest are indented hint lines.
@@ -78,10 +66,7 @@ fn not_recorded_note_lines(not_recorded: &[&str]) -> Vec<String> {
 
     vec![
         format!("not recorded in this project: {}", not_recorded.join(", ")),
-        format!(
-            "Record one with `unf watch --unignore-dir {}`. See `unf watch --help`.",
-            not_recorded[0]
-        ),
+        super::output::unignore_hint(not_recorded[0]),
     ]
 }
 
@@ -153,7 +138,7 @@ fn print_unignore_notes(settings: &WatchSettings, excluded_present: &[&str]) {
         super::output::print_note(&format!("recording normally-excluded: {names}"));
     }
 
-    let not_recorded = not_recorded_dirs(excluded_present, &settings.unignored_dirs);
+    let not_recorded = filter::not_recorded_dirs(excluded_present, &settings.unignored_dirs);
     let mut lines = not_recorded_note_lines(&not_recorded).into_iter();
     if let Some(headline) = lines.next() {
         super::output::print_note(&headline);
@@ -528,7 +513,7 @@ mod tests {
         let present = ["node_modules", "target", "dist"];
 
         assert_eq!(
-            not_recorded_dirs(&present, &unignored),
+            filter::not_recorded_dirs(&present, &unignored),
             vec!["node_modules", "dist"]
         );
     }
@@ -539,7 +524,7 @@ mod tests {
             .into_iter()
             .collect();
 
-        assert!(not_recorded_dirs(&["target", "dist"], &unignored).is_empty());
+        assert!(filter::not_recorded_dirs(&["target", "dist"], &unignored).is_empty());
     }
 
     #[test]

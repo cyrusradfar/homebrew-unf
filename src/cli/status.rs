@@ -223,18 +223,6 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     Ok(())
 }
 
-/// Excluded directories present in the project root that are still not
-/// recorded, i.e. the shallow-scan result minus what the user opted into.
-///
-/// Pure: takes the scan result rather than reading the disk itself.
-fn not_recorded_dirs<'a>(present: &[&'a str], unignored: &BTreeSet<String>) -> Vec<&'a str> {
-    present
-        .iter()
-        .copied()
-        .filter(|dir| !unignored.contains(*dir))
-        .collect()
-}
-
 /// The un-ignore lines of the human status report, indented and ready to
 /// print in order.
 ///
@@ -255,12 +243,10 @@ fn unignore_report_lines(present: &[&str], unignored: &BTreeSet<String>) -> Vec<
         lines.push(format!("  Un-ignored:  {}", names.join(", ")));
     }
 
-    let not_recorded = not_recorded_dirs(present, unignored);
+    let not_recorded = filter::not_recorded_dirs(present, unignored);
     if let Some(first) = not_recorded.first() {
         lines.push(format!("  Not recorded:  {}", not_recorded.join(", ")));
-        lines.push(format!(
-            "    Record one with `unf watch --unignore-dir {first}`. See `unf watch --help`."
-        ));
+        lines.push(format!("    {}", super::output::unignore_hint(first)));
     }
 
     lines
@@ -691,7 +677,7 @@ mod tests {
         let present = ["node_modules", "target", "dist"];
 
         assert_eq!(
-            not_recorded_dirs(&present, &unignored(&["target"])),
+            filter::not_recorded_dirs(&present, &unignored(&["target"])),
             vec!["node_modules", "dist"]
         );
     }
@@ -700,7 +686,7 @@ mod tests {
     fn not_recorded_dirs_empty_when_everything_is_unignored() {
         let present = ["target", "dist"];
 
-        assert!(not_recorded_dirs(&present, &unignored(&["target", "dist"])).is_empty());
+        assert!(filter::not_recorded_dirs(&present, &unignored(&["target", "dist"])).is_empty());
     }
 
     #[test]

@@ -23,6 +23,7 @@
 //! rules and downstream magic-number binary detection are unaffected by
 //! either setting.
 
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -142,6 +143,24 @@ pub fn parse_unignore_dir(name: &str) -> Result<String, String> {
 /// `IGNORED_DIRS`, never allocated from the directory entry, so callers get
 /// the canonical spelling.
 ///
+/// Excluded directories present in the project root that this project still
+/// does not record: the [`eligible_unignore_dirs`] result minus the names
+/// the user opted into.
+///
+/// Pure — it takes the scan result rather than reading the disk itself, so
+/// a caller that already has the scan does not pay for a second `read_dir`.
+///
+/// Lives here beside [`eligible_unignore_dirs`] because `unf watch` and
+/// `unf status` both report this remainder and must agree on it. Two
+/// private copies would be free to drift apart.
+pub fn not_recorded_dirs<'a>(present: &[&'a str], unignored: &BTreeSet<String>) -> Vec<&'a str> {
+    present
+        .iter()
+        .copied()
+        .filter(|dir| !unignored.contains(*dir))
+        .collect()
+}
+
 /// Returns an empty `Vec` if `project_root` cannot be read (missing,
 /// unreadable, not a directory) rather than an error — this is a
 /// discoverability aid, not a correctness check, and `unf watch` must not

@@ -147,6 +147,21 @@ pub fn print_note(msg: &str) {
     }
 }
 
+/// The paste-ready hint that follows a "not recorded" report.
+///
+/// Names a real directory rather than a `<NAME>` placeholder, so the reader
+/// copies the line instead of doing the substitution.
+///
+/// Shared by `unf watch` and `unf status` so the two cannot word the same
+/// advice differently. Callers supply their own indentation: the note in
+/// `unf watch` and the status report indent to different depths.
+pub fn unignore_hint(first_not_recorded: &str) -> String {
+    format!(
+        "Record one with `unf watch --unignore-dir {first_not_recorded}`. \
+See `unf watch --help`."
+    )
+}
+
 /// Formats a byte count as a human-readable size string.
 ///
 /// Converts bytes to KB, MB, or GB with one decimal place.
