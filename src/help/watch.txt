@@ -4,16 +4,63 @@ by default and does not record the files it excludes.
 Examples:
   unf watch                          Start watching the current directory
   unf watch --force-watch-gitignore  Also record gitignored files and dotfiles
+  unf watch --unignore-dir target    Also record the target directory
 
 --force-watch-gitignore:
   UNF records the files that .gitignore excludes. It also records hidden
   dotfiles. The setting stays on for this project until you turn it off.
   Run `unf watch` with no flag to turn it off.
 
-  UNF never records these, with or without the flag:
-    .git  node_modules  target  .next  __pycache__  .venv  venv  .tox
-    dist  build  binary files
-
   Warning: secrets in ignored files go into the recording. Files like
   .env.local and credential files are recorded. Use this flag with care
   on projects that hold secrets.
+
+Excluded directories:
+  UNF skips these directories in every project:
+    .git  node_modules  target  .next  __pycache__  .venv  venv  .tox
+    dist  build
+
+  These directories hold dependencies and build output. They are large.
+  They change on every build. UNF skips them to keep the recording small
+  and to keep `unf log` readable. UNF also skips binary files everywhere.
+
+  `unf watch` names the excluded directories that it finds in your project.
+  It looks at the top level of the project only. A nested directory, such
+  as packages/web/node_modules, is skipped but not named.
+
+--unignore-dir NAME:
+  Records one excluded directory in this project. Repeat the flag to add
+  more than one directory:
+    unf watch --unignore-dir dist --unignore-dir build
+
+  Valid names:
+    node_modules  target  .next  __pycache__  .venv  venv  .tox  dist
+    build
+
+  UNF never records .git, and the flag refuses that name. UNF would copy
+  git's object store while git rewrites it. A restore could then damage
+  the repository. Git already records your history.
+
+  The setting stays on for this project until you turn it off. Run
+  `unf watch` with no flag to turn it off.
+
+  Cost: these directories are large and they change often. A Rust target
+  directory holds gigabytes. UNF skips the compiled parts of it, such as
+  .rlib and .o files. Thousands of small text files remain, and cargo
+  rewrites them on every build. Each build then adds snapshots. Check the
+  store size with `unf status`. Free space with `unf prune --older-than 7d`.
+
+  The other rules still apply inside the directory. UNF skips binary
+  files, and it obeys .gitignore unless you also turn that off.
+
+Both flags together:
+  Most projects also list these directories in .gitignore. Two rules then
+  exclude the same directory. --unignore-dir lifts the first rule only.
+  The .gitignore rule still applies, so UNF records nothing.
+
+  This is the usual case for target in a Rust project. Use both flags:
+    unf watch --unignore-dir target --force-watch-gitignore
+
+  `unf watch` warns you when .gitignore also excludes a directory that you
+  asked for. Read the warning: without the second flag, the directory
+  stays unrecorded.
