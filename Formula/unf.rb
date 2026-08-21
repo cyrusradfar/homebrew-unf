@@ -23,7 +23,6 @@ class Unf < Formula
     end
   end
 
-  conflicts_with "unf-staging", because: "both install an  binary"
 
   def install
     bin.install "unf"
