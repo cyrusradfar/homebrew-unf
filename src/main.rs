@@ -265,6 +265,14 @@ struct WatchArgs {
     /// Also record gitignored files and hidden dotfiles
     #[arg(long)]
     force_watch_gitignore: bool,
+
+    /// Also record an excluded directory such as target (repeat to add more)
+    // Validated by clap before `cli::watch::run` sees any value, so a bad
+    // name anywhere in a repeated flag set aborts the whole command instead
+    // of writing a half-applied list to the registry. Kept off the doc
+    // comment so `--help` shows the one-line description only.
+    #[arg(long, value_name = "NAME", value_parser = watcher::filter::parse_unignore_dir)]
+    unignore_dir: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -414,8 +422,14 @@ fn main() {
         Commands::Init => resolve_project_root(cli.project.as_deref())
             .and_then(|root| cli::init::run(&root, format)),
 
-        Commands::Watch(args) => resolve_project_root(cli.project.as_deref())
-            .and_then(|root| cli::watch::run(&root, format, args.force_watch_gitignore)),
+        Commands::Watch(args) => resolve_project_root(cli.project.as_deref()).and_then(|root| {
+            cli::watch::run(
+                &root,
+                format,
+                args.force_watch_gitignore,
+                &args.unignore_dir,
+            )
+        }),
 
         Commands::Unwatch => resolve_project_root(cli.project.as_deref())
             .and_then(|root| cli::unwatch::run(&root, format)),

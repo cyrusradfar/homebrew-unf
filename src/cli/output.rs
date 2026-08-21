@@ -118,6 +118,35 @@ pub fn print_warning(msg: &str) {
     }
 }
 
+/// Prints an informational note to stderr with a dim `note:` prefix.
+///
+/// A note reports normal, correct behavior that the user did not ask about.
+/// It is deliberately **not** `print_warning`: the excluded-directory notice
+/// fires on every `unf watch` in every Rust or Node project, and a yellow
+/// `warning:` on expected behavior would devalue the real warning printed
+/// two lines away.
+///
+/// Notes go to stderr, like every other message helper here. Only data
+/// belongs on stdout — see rule 2 of the CLI style guide. Callers still
+/// suppress notes under `--json`: a note on stderr would not corrupt the
+/// document, but machine consumers should read fields, not parse prose.
+/// Continuation lines use the same two-space hint indent as `print_error`.
+///
+/// # Examples
+///
+/// ```text
+/// note: not recorded in this project: node_modules, dist
+///   Record one with `unf watch --unignore-dir node_modules`. See `unf watch --help`.
+/// ```
+pub fn print_note(msg: &str) {
+    let colored = use_color();
+    if colored {
+        eprintln!("{}note:{} {}", colors::DIM, colors::RESET, msg);
+    } else {
+        eprintln!("note: {}", msg);
+    }
+}
+
 /// Formats a byte count as a human-readable size string.
 ///
 /// Converts bytes to KB, MB, or GB with one decimal place.
