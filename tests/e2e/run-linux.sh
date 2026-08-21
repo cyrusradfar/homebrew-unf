@@ -46,7 +46,7 @@ if [[ "$FROM_SOURCE" == "true" ]]; then
         -e FROM_SOURCE=true \
         -u linuxbrew \
         unf-e2e-source \
-        bash -c 'cp -r /src /tmp/build && cd /tmp/build && cargo build --release 2>&1 && sudo cp target/release/unf /usr/local/bin/unf && bash /home/linuxbrew/smoke-test.sh'
+        bash -c 'mkdir -p /tmp/build && tar -C /src -cf - --exclude=./target --exclude=./app/target --exclude=./.git . | tar -C /tmp/build -xf - && cd /tmp/build && cargo build --release 2>&1 && sudo cp target/release/unf /usr/local/bin/unf && bash /home/linuxbrew/smoke-test.sh'
 else
     # Build Docker image (x86_64 — matches the Linux release binary)
     docker build --platform linux/amd64 -f "$SCRIPT_DIR/Dockerfile.e2e" -t unf-e2e "$SCRIPT_DIR"
