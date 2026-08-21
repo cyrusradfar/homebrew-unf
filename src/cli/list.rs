@@ -10,6 +10,7 @@ use crate::error::UnfError;
 use crate::process::PidFile;
 use crate::registry;
 use crate::storage;
+use crate::types::WatchSettings;
 
 /// JSON output for a single project in the list.
 #[derive(serde::Serialize)]
@@ -29,6 +30,10 @@ struct ProjectInfo {
     /// True when this project runs with `--force-watch-gitignore`.
     /// Always serialized; the `status` string never carries the marker.
     force_watch_gitignore: bool,
+    /// Excluded directories this project records, from `--unignore-dir`.
+    /// Always serialized as an array, empty when none. The default table
+    /// carries no marker for this state — only the verbose column shows it.
+    unignored_dirs: Vec<String>,
     // Private fields for human output formatting (not serialized)
     #[serde(skip)]
     oldest_snapshot_time: Option<chrono::DateTime<chrono::Utc>>,
@@ -80,7 +85,7 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
     let mut infos = Vec::new();
 
     for entry in &reg.projects {
-        let info = gather_project_info(&entry.path, verbose, entry.settings.force_watch_gitignore);
+        let info = gather_project_info(&entry.path, verbose, &entry.settings);
         infos.push(info);
     }
 
@@ -103,6 +108,7 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
             size: String,
             files: String,     // only used in verbose
             gitignore: String, // only used in verbose
+            unignored: String, // only used in verbose
             range: String,
         }
 
@@ -149,6 +155,7 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
                 size: size_str,
                 files: files_str,
                 gitignore: gitignore_label(info.force_watch_gitignore).to_string(),
+                unignored: unignored_label(&info.unignored_dirs),
                 range: range_str,
             });
         }
@@ -160,6 +167,7 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
         let mut col_size_width = 4; // "SIZE"
         let mut col_files_width = 5; // "FILES"
         let mut col_gitignore_width = GITIGNORE_HEADER.len();
+        let mut col_unignored_width = UNIGNORED_HEADER.len();
         let mut col_range_width = 5; // "RANGE"
 
         for row in &rows {
@@ -170,6 +178,7 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
             col_size_width = col_size_width.max(row.size.len());
             col_files_width = col_files_width.max(row.files.len());
             col_gitignore_width = col_gitignore_width.max(row.gitignore.len());
+            col_unignored_width = col_unignored_width.max(row.unignored.len());
             col_range_width = col_range_width.max(row.range.len());
         }
 
@@ -197,6 +206,11 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
                 "  {:<width_gitignore$}",
                 GITIGNORE_HEADER,
                 width_gitignore = col_gitignore_width
+            );
+            print!(
+                "  {:<width_unignored$}",
+                UNIGNORED_HEADER,
+                width_unignored = col_unignored_width
             );
         }
 
@@ -235,6 +249,11 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
                     row.gitignore,
                     width_gitignore = col_gitignore_width
                 );
+                print!(
+                    "  {:<width_unignored$}",
+                    row.unignored,
+                    width_unignored = col_unignored_width
+                );
             }
 
             println!("  {}", row.range);
@@ -252,6 +271,19 @@ pub fn run(format: OutputFormat, verbose: bool) -> Result<(), UnfError> {
 
 /// Header for the verbose-only gitignore column.
 const GITIGNORE_HEADER: &str = "GITIGNORE";
+
+/// Header for the verbose-only un-ignored-directories column.
+const UNIGNORED_HEADER: &str = "UNIGNORED";
+
+/// Value shown in the `UNIGNORED` column when nothing is opted in.
+///
+/// A dash, not an empty cell: an empty cell reads as missing data.
+const UNIGNORED_EMPTY: &str = "-";
+
+/// How many directory names the `UNIGNORED` column spells out before it
+/// switches to a `+N` remainder. Two keeps the column narrow enough that
+/// `RANGE` still fits on an 80-column terminal.
+const UNIGNORED_NAMES_SHOWN: usize = 2;
 
 /// Suffix shown on the status cell of a project that forces gitignore.
 const FORCE_GITIGNORE_MARKER: &str = "*";
@@ -278,6 +310,36 @@ fn gitignore_label(force_watch_gitignore: bool) -> &'static str {
         "forced"
     } else {
         "respected"
+    }
+}
+
+/// Returns the verbose `UNIGNORED` column value for a project.
+///
+/// Names are already sorted and deduplicated — they arrive from a
+/// `BTreeSet` — so this only has to decide how many of them fit.
+///
+/// * empty -> `-`
+/// * one or two -> `target` / `target,dist`
+/// * more -> `target,dist+2`, the first two names plus a remainder count
+///
+/// The count is what matters once the list is long: a user who sees `+2`
+/// runs `unf status` in that project for the full list. Comma without a
+/// space keeps the cell a single word, so the column stays scannable.
+fn unignored_label(dirs: &[String]) -> String {
+    if dirs.is_empty() {
+        return UNIGNORED_EMPTY.to_string();
+    }
+
+    let shown = dirs
+        .iter()
+        .take(UNIGNORED_NAMES_SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+
+    match dirs.len().saturating_sub(UNIGNORED_NAMES_SHOWN) {
+        0 => shown,
+        hidden => format!("{shown}+{hidden}"),
     }
 }
 
@@ -321,15 +383,20 @@ fn render_status_cell(status: &str, marker: &str, width: usize, use_color: bool)
 /// # Arguments
 ///
 /// * `project_path` - Absolute path to the project root
-/// * `force_watch_gitignore` - The registry flag for this project. Passed in by
-///   the caller, which already holds the registry entry, so this function never
-///   reloads `projects.json`.
+/// * `settings` - The registry entry's watch settings. Passed in by the caller,
+///   which already holds the registry entry, so this function never reloads
+///   `projects.json`. Taking the whole value rather than one parameter per
+///   setting keeps the signature from growing with every new knob.
 fn gather_project_info(
     project_path: &Path,
     _verbose: bool,
-    force_watch_gitignore: bool,
+    settings: &WatchSettings,
 ) -> ProjectInfo {
     let path_str = project_path.display().to_string();
+    let force_watch_gitignore = settings.force_watch_gitignore;
+    // Built once per project: at most nine short names, cloned into each of
+    // the early-return payloads below.
+    let unignored_dirs: Vec<String> = settings.unignored_dirs.iter().cloned().collect();
 
     // Resolve the centralized storage directory
     let storage_dir = match storage::resolve_storage_dir_canonical(project_path) {
@@ -344,6 +411,7 @@ fn gather_project_info(
                 recording_since: None,
                 last_activity: None,
                 force_watch_gitignore,
+                unignored_dirs: unignored_dirs.clone(),
                 oldest_snapshot_time: None,
                 newest_snapshot_time: None,
             };
@@ -360,6 +428,7 @@ fn gather_project_info(
             recording_since: None,
             last_activity: None,
             force_watch_gitignore,
+            unignored_dirs: unignored_dirs.clone(),
             oldest_snapshot_time: None,
             newest_snapshot_time: None,
         };
@@ -411,6 +480,7 @@ fn gather_project_info(
                 recording_since: recording_str,
                 last_activity: activity_str,
                 force_watch_gitignore,
+                unignored_dirs: unignored_dirs.clone(),
                 oldest_snapshot_time: oldest,
                 newest_snapshot_time: newest,
             }
@@ -424,6 +494,7 @@ fn gather_project_info(
             recording_since: None,
             last_activity: None,
             force_watch_gitignore,
+            unignored_dirs: unignored_dirs.clone(),
             oldest_snapshot_time: None,
             newest_snapshot_time: None,
         },
@@ -462,22 +533,50 @@ mod tests {
 
     use super::super::output::colors;
 
+    /// Builds the settings a registry entry would carry.
+    fn settings(force_watch_gitignore: bool, dirs: &[&str]) -> WatchSettings {
+        WatchSettings {
+            force_watch_gitignore,
+            unignored_dirs: dirs.iter().map(|d| (*d).to_string()).collect(),
+        }
+    }
+
+    /// Builds an owned name list the way `ProjectInfo` carries it.
+    fn names(dirs: &[&str]) -> Vec<String> {
+        dirs.iter().map(|d| (*d).to_string()).collect()
+    }
+
     #[test]
     fn gather_info_missing_directory() {
-        let info = gather_project_info(Path::new("/nonexistent/path"), false, false);
+        let info =
+            gather_project_info(Path::new("/nonexistent/path"), false, &settings(false, &[]));
         assert_eq!(info.status, "error");
         assert!(info.snapshots.is_none());
         assert!(info.store_bytes.is_none());
         assert!(!info.force_watch_gitignore);
+        assert!(info.unignored_dirs.is_empty());
     }
 
     #[test]
     fn gather_info_early_return_keeps_the_flag() {
         // The error path must carry the flag too, or a broken project would
         // silently report "respected".
-        let info = gather_project_info(Path::new("/nonexistent/path"), false, true);
+        let info = gather_project_info(Path::new("/nonexistent/path"), false, &settings(true, &[]));
         assert_eq!(info.status, "error");
         assert!(info.force_watch_gitignore);
+    }
+
+    #[test]
+    fn gather_info_early_return_keeps_the_unignore_list() {
+        // Same reasoning as the flag: a broken project must not report an
+        // empty list it does not have.
+        let info = gather_project_info(
+            Path::new("/nonexistent/path"),
+            false,
+            &settings(false, &["target"]),
+        );
+        assert_eq!(info.status, "error");
+        assert_eq!(info.unignored_dirs, names(&["target"]));
     }
 
     #[test]
@@ -540,8 +639,42 @@ mod tests {
     }
 
     #[test]
+    fn unignore_list_adds_no_marker_to_the_default_table() {
+        // The default table stays visually unchanged: only
+        // --force-watch-gitignore earns a symbol, so readers never need a
+        // two-symbol legend.
+        assert_eq!(status_marker(false), "");
+    }
+
+    #[test]
+    fn unignored_label_is_a_dash_when_empty() {
+        // A dash, not an empty cell — an empty cell reads as missing data.
+        assert_eq!(unignored_label(&[]), "-");
+    }
+
+    #[test]
+    fn unignored_label_spells_out_short_lists() {
+        assert_eq!(unignored_label(&names(&["target"])), "target");
+        assert_eq!(unignored_label(&names(&["dist", "target"])), "dist,target");
+    }
+
+    #[test]
+    fn unignored_label_truncates_long_lists_with_a_remainder() {
+        assert_eq!(
+            unignored_label(&names(&["target", "dist", "build", "venv"])),
+            "target,dist+2"
+        );
+    }
+
+    #[test]
+    fn unignored_label_remainder_counts_every_hidden_name() {
+        let dirs = names(&["a", "b", "c", "d", "e", "f", "g"]);
+        assert_eq!(unignored_label(&dirs), "a,b+5");
+    }
+
+    #[test]
     fn json_always_carries_the_flag_and_never_the_marker() {
-        let info = gather_project_info(Path::new("/nonexistent/path"), false, true);
+        let info = gather_project_info(Path::new("/nonexistent/path"), false, &settings(true, &[]));
         let value = serde_json::to_value(&info).expect("serialize");
 
         assert_eq!(
@@ -559,12 +692,47 @@ mod tests {
 
     #[test]
     fn json_carries_a_false_flag_explicitly() {
-        let info = gather_project_info(Path::new("/nonexistent/path"), false, false);
+        let info =
+            gather_project_info(Path::new("/nonexistent/path"), false, &settings(false, &[]));
         let value = serde_json::to_value(&info).expect("serialize");
 
         assert_eq!(
             value["force_watch_gitignore"],
             serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn json_always_carries_unignored_dirs_as_an_array() {
+        // Empty, never absent: scripts and the Tauri app must not treat a
+        // missing field as an empty list.
+        let info =
+            gather_project_info(Path::new("/nonexistent/path"), false, &settings(false, &[]));
+        let value = serde_json::to_value(&info).expect("serialize");
+
+        assert_eq!(value["unignored_dirs"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn json_carries_unignored_dirs_sorted() {
+        let info = gather_project_info(
+            Path::new("/nonexistent/path"),
+            false,
+            &settings(false, &["target", "dist"]),
+        );
+        let value = serde_json::to_value(&info).expect("serialize");
+
+        // BTreeSet ordering survives the trip to JSON.
+        assert_eq!(
+            value["unignored_dirs"],
+            serde_json::json!(["dist", "target"])
+        );
+
+        let status = value["status"].as_str().expect("status is a string");
+        assert!(
+            !status.contains('*') && !status.contains('+'),
+            "status leaked a marker: {}",
+            status
         );
     }
 }

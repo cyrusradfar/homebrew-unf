@@ -5,6 +5,7 @@
 //! - Snapshot count, tracked files, and store size
 //! - Time since recording started
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use chrono::Utc;
@@ -14,6 +15,8 @@ use crate::engine::Engine;
 use crate::error::UnfError;
 use crate::process::PidFile;
 use crate::storage;
+use crate::types::WatchSettings;
+use crate::watcher::filter;
 
 /// JSON output for the status command.
 #[derive(serde::Serialize)]
@@ -37,6 +40,14 @@ struct StatusOutput {
     /// True when this project runs with `--force-watch-gitignore`.
     /// Always serialized so scripts can read it without a presence check.
     force_watch_gitignore: bool,
+    /// Excluded directories found in the project root by a shallow scan,
+    /// whether or not they are un-ignored. Always serialized as an array,
+    /// empty when none, so scripts never treat absence as empty.
+    excluded_dirs_present: Vec<String>,
+    /// Excluded directories this project records, from `--unignore-dir`.
+    /// Always serialized as an array. The still-skipped remainder is
+    /// `excluded_dirs_present` minus this list.
+    unignored_dirs: Vec<String>,
 }
 
 /// Status modes for unwatched directories.
@@ -83,11 +94,21 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
 
-    // One registry load serves both the mode decision and the gitignore flag.
+    // One registry load serves the mode decision and every settings-derived
+    // line and field below.
     let facts = lookup_registry_facts(&canonical_project_root);
-    let force_watch_gitignore = facts.force_watch_gitignore;
+    let force_watch_gitignore = facts.settings.force_watch_gitignore;
+    let unignored_dirs: Vec<String> = facts.settings.unignored_dirs.iter().cloned().collect();
 
-    let mode = determine_status_mode(facts);
+    // One shallow scan of the project root, shared by the JSON field and the
+    // human lines. It runs in every mode: a machine consumer must not see an
+    // empty list just because the daemon happens to be down. Never fails —
+    // an unreadable root yields an empty list.
+    let excluded_present = filter::eligible_unignore_dirs(project_root);
+    let excluded_dirs_present: Vec<String> =
+        excluded_present.iter().map(|d| (*d).to_string()).collect();
+
+    let mode = determine_status_mode(&facts);
 
     // Step 2: Handle each mode
     match mode {
@@ -104,6 +125,8 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
                 status_mode: Some(0),
                 auto_restart,
                 force_watch_gitignore,
+                excluded_dirs_present,
+                unignored_dirs,
             };
 
             if format == OutputFormat::Json {
@@ -128,6 +151,8 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
                 status_mode: Some(1),
                 auto_restart,
                 force_watch_gitignore,
+                excluded_dirs_present,
+                unignored_dirs,
             };
 
             if format == OutputFormat::Json {
@@ -168,6 +193,8 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         status_mode: Some(2),
         auto_restart,
         force_watch_gitignore,
+        excluded_dirs_present,
+        unignored_dirs,
     };
 
     if format == OutputFormat::Json {
@@ -177,6 +204,11 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         println!("  Snapshots:  {}", format_number(snapshot_count));
         println!("  Files tracked:  {}", format_number(file_count));
         println!("  Store size:  {}", super::format_size(store_size));
+        // Mode 2 only, and each line only when it applies. Modes 0 and 1
+        // record nothing, so these lines would be noise there.
+        for line in unignore_report_lines(&excluded_present, &facts.settings.unignored_dirs) {
+            println!("{}", line);
+        }
         // Only the non-default state earns a line. Respecting .gitignore is
         // what users expect, so silence means "respected".
         if force_watch_gitignore {
@@ -191,16 +223,61 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     Ok(())
 }
 
+/// Excluded directories present in the project root that are still not
+/// recorded, i.e. the shallow-scan result minus what the user opted into.
+///
+/// Pure: takes the scan result rather than reading the disk itself.
+fn not_recorded_dirs<'a>(present: &[&'a str], unignored: &BTreeSet<String>) -> Vec<&'a str> {
+    present
+        .iter()
+        .copied()
+        .filter(|dir| !unignored.contains(*dir))
+        .collect()
+}
+
+/// The un-ignore lines of the human status report, indented and ready to
+/// print in order.
+///
+/// Line 1 names what this project also records. Line 2 names what it still
+/// skips, and line 3 is the paste-ready hint for opting one of them in —
+/// naming a real directory rather than a `<NAME>` placeholder, so the reader
+/// does no substitution.
+///
+/// Each line appears only when it applies, matching the `Gitignore:`
+/// precedent: the default state is the expected state and earns no line. A
+/// project with an empty set and no excluded directories in its root — the
+/// common case — gets an empty `Vec` and prints nothing.
+fn unignore_report_lines(present: &[&str], unignored: &BTreeSet<String>) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if !unignored.is_empty() {
+        let names: Vec<&str> = unignored.iter().map(String::as_str).collect();
+        lines.push(format!("  Un-ignored:  {}", names.join(", ")));
+    }
+
+    let not_recorded = not_recorded_dirs(present, unignored);
+    if let Some(first) = not_recorded.first() {
+        lines.push(format!("  Not recorded:  {}", not_recorded.join(", ")));
+        lines.push(format!(
+            "    Record one with `unf watch --unignore-dir {first}`. See `unf watch --help`."
+        ));
+    }
+
+    lines
+}
+
 /// What the global registry says about one project.
 ///
 /// Both facts come from a single `registry::load()` so the status path never
 /// reads `projects.json` more than once.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RegistryFacts {
     /// The project has an entry in the registry.
     registered: bool,
-    /// The entry carries `--force-watch-gitignore`.
-    force_watch_gitignore: bool,
+    /// The whole per-project watch settings from the entry. Holding the
+    /// value type rather than one field per setting keeps this struct from
+    /// growing a field every time a new knob lands.
+    settings: WatchSettings,
 }
 
 /// Looks up a canonicalized project path in the global registry.
@@ -219,7 +296,7 @@ fn lookup_registry_facts(canonical_project_root: &Path) -> RegistryFacts {
     {
         Some(entry) => RegistryFacts {
             registered: true,
-            force_watch_gitignore: entry.settings.force_watch_gitignore,
+            settings: entry.settings.clone(),
         },
         None => RegistryFacts::default(),
     }
@@ -230,7 +307,7 @@ fn lookup_registry_facts(canonical_project_root: &Path) -> RegistryFacts {
 /// Mode 0 (NeverWatched): Directory has no registry entry.
 /// Mode 1 (PreviouslyWatched): Directory is in the registry but the daemon isn't running.
 /// Mode 2 (ActivelyWatching): Daemon is alive and this directory is registered.
-fn determine_status_mode(facts: RegistryFacts) -> StatusMode {
+fn determine_status_mode(facts: &RegistryFacts) -> StatusMode {
     if !facts.registered {
         return StatusMode::NeverWatched;
     }
@@ -254,7 +331,7 @@ fn determine_status_mode(facts: RegistryFacts) -> StatusMode {
 /// # Returns
 ///
 /// `true` if the daemon is alive and this project is registered.
-fn is_daemon_watching_project(facts: RegistryFacts) -> bool {
+fn is_daemon_watching_project(facts: &RegistryFacts) -> bool {
     if !facts.registered {
         return false;
     }
@@ -401,7 +478,7 @@ mod tests {
     #[test]
     fn is_daemon_watching_project_unregistered() {
         // An unregistered project is never "watching", whatever the daemon does.
-        assert!(!is_daemon_watching_project(RegistryFacts::default()));
+        assert!(!is_daemon_watching_project(&RegistryFacts::default()));
     }
 
     #[test]
@@ -413,9 +490,9 @@ mod tests {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", temp.path());
 
-        let watching = is_daemon_watching_project(RegistryFacts {
+        let watching = is_daemon_watching_project(&RegistryFacts {
             registered: true,
-            force_watch_gitignore: false,
+            settings: WatchSettings::default(),
         });
 
         if let Some(h) = original_home {
@@ -451,7 +528,7 @@ mod tests {
         }
 
         assert!(!facts.registered);
-        assert_eq!(determine_status_mode(facts), StatusMode::NeverWatched);
+        assert_eq!(determine_status_mode(&facts), StatusMode::NeverWatched);
     }
 
     #[test]
@@ -475,7 +552,7 @@ mod tests {
 
         let facts = lookup_registry_facts(&canonical);
         assert!(facts.registered);
-        assert_eq!(determine_status_mode(facts), StatusMode::PreviouslyWatched);
+        assert_eq!(determine_status_mode(&facts), StatusMode::PreviouslyWatched);
 
         // Cleanup
         if let Some(h) = original_home {
@@ -514,7 +591,7 @@ mod tests {
         }
 
         assert!(facts.registered);
-        assert!(facts.force_watch_gitignore);
+        assert!(facts.settings.force_watch_gitignore);
     }
 
     /// Builds a minimal Mode 0 payload for serialization tests.
@@ -530,7 +607,14 @@ mod tests {
             status_mode: Some(0),
             auto_restart: false,
             force_watch_gitignore,
+            excluded_dirs_present: Vec::new(),
+            unignored_dirs: Vec::new(),
         }
+    }
+
+    /// Builds a `BTreeSet` of un-ignored directory names from string slices.
+    fn unignored(dirs: &[&str]) -> BTreeSet<String> {
+        dirs.iter().map(|d| (*d).to_string()).collect()
     }
 
     #[test]
@@ -540,5 +624,138 @@ mod tests {
 
         let on = serde_json::to_value(never_watched_output(true)).expect("serialize");
         assert_eq!(on["force_watch_gitignore"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn json_always_carries_unignore_fields_as_arrays() {
+        // Empty, never absent: a script must not have to treat a missing
+        // field as an empty list.
+        let value = serde_json::to_value(never_watched_output(false)).expect("serialize");
+
+        assert_eq!(value["unignored_dirs"], serde_json::json!([]));
+        assert_eq!(value["excluded_dirs_present"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn json_carries_unignore_fields_when_set() {
+        let mut output = never_watched_output(false);
+        output.unignored_dirs = vec!["target".to_string()];
+        output.excluded_dirs_present = vec!["node_modules".to_string(), "target".to_string()];
+
+        let value = serde_json::to_value(output).expect("serialize");
+
+        assert_eq!(value["unignored_dirs"], serde_json::json!(["target"]));
+        assert_eq!(
+            value["excluded_dirs_present"],
+            serde_json::json!(["node_modules", "target"])
+        );
+    }
+
+    #[test]
+    fn lookup_registry_facts_reads_unignored_dirs() {
+        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+
+        let temp = tempfile::TempDir::new().expect("create temp");
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let project_dir = temp.path().join("project");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        crate::registry::register_project(
+            &project_dir,
+            Some(WatchSettings {
+                force_watch_gitignore: false,
+                unignored_dirs: unignored(&["dist", "target"]),
+            }),
+        )
+        .expect("register project");
+
+        let canonical = project_dir.canonicalize().expect("canonicalize");
+        let facts = lookup_registry_facts(&canonical);
+
+        if let Some(h) = original_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        assert!(facts.registered);
+        assert_eq!(
+            facts.settings.unignored_dirs,
+            unignored(&["dist", "target"])
+        );
+    }
+
+    #[test]
+    fn not_recorded_dirs_omits_unignored_ones() {
+        let present = ["node_modules", "target", "dist"];
+
+        assert_eq!(
+            not_recorded_dirs(&present, &unignored(&["target"])),
+            vec!["node_modules", "dist"]
+        );
+    }
+
+    #[test]
+    fn not_recorded_dirs_empty_when_everything_is_unignored() {
+        let present = ["target", "dist"];
+
+        assert!(not_recorded_dirs(&present, &unignored(&["target", "dist"])).is_empty());
+    }
+
+    #[test]
+    fn unignore_report_lines_silent_in_the_default_case() {
+        // Nothing opted in and nothing excluded present: silence means the
+        // default, exactly like the `Gitignore:` line.
+        assert!(unignore_report_lines(&[], &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn unignore_report_lines_reports_only_the_unignored_list() {
+        // Everything present is already opted in, so no "Not recorded" line
+        // and no hint.
+        let lines = unignore_report_lines(&["target"], &unignored(&["target"]));
+
+        assert_eq!(lines, vec!["  Un-ignored:  target".to_string()]);
+    }
+
+    #[test]
+    fn unignore_report_lines_reports_only_the_remainder() {
+        let lines = unignore_report_lines(&["node_modules", "dist"], &BTreeSet::new());
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "  Not recorded:  node_modules, dist");
+        assert_eq!(
+            lines[1],
+            "    Record one with `unf watch --unignore-dir node_modules`. See `unf watch --help`."
+        );
+    }
+
+    #[test]
+    fn unignore_report_lines_full_report_is_ordered() {
+        let lines =
+            unignore_report_lines(&["node_modules", "target", "dist"], &unignored(&["target"]));
+
+        assert_eq!(
+            lines,
+            vec![
+                "  Un-ignored:  target".to_string(),
+                "  Not recorded:  node_modules, dist".to_string(),
+                "    Record one with `unf watch --unignore-dir node_modules`. See `unf watch --help`."
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn unignore_report_hint_names_a_real_directory() {
+        // A `<NAME>` placeholder would make the reader do the substitution.
+        let lines = unignore_report_lines(&["dist"], &BTreeSet::new());
+
+        assert!(
+            lines[1].contains("--unignore-dir dist"),
+            "hint was not paste-ready: {}",
+            lines[1]
+        );
     }
 }
