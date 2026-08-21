@@ -5,25 +5,25 @@ class Unf < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://downloads.unfudged.io/releases/v0.18.5/unf-v0.18.5-aarch64-apple-darwin.tar.gz"
-      sha256 "46cfc1fd606a70743e79a1ab5dbe0997c1b4d9c88f4c0de4afd8acbed7f54a48"
+      url "https://downloads.unfudged.io/releases/v0.19.1/unf-v0.19.1-aarch64-apple-darwin.tar.gz"
+      sha256 "265e7da055289be30c651a8cfdaaae56dcb933ddd3a2dcac9eb6bef21768098a"
     else
-      url "https://downloads.unfudged.io/releases/v0.18.5/unf-v0.18.5-x86_64-apple-darwin.tar.gz"
-      sha256 "932e89f84bdac9d3e2a6176aac37ea3d8756e8b6f9e5c795ef66c9c7b57dd93b"
+      url "https://downloads.unfudged.io/releases/v0.19.1/unf-v0.19.1-x86_64-apple-darwin.tar.gz"
+      sha256 "808e230a97ce17a749bdf84e2816d96ca99f721ac9ca14c66822a712e9d6c3c5"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://downloads.unfudged.io/releases/v0.18.5/unf-v0.18.5-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "3cabf437b43e55a7be0671fe0e92f9d078278033c0091c69774342017b50f783"
+      url "https://downloads.unfudged.io/releases/v0.19.1/unf-v0.19.1-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "e9e46b8ff67fe1a78fc66899803250770d5e427ffc77037ee09172334f5539e5"
     else
-      url "https://downloads.unfudged.io/releases/v0.18.5/unf-v0.18.5-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "e2cfc599d247bd354247591e85432c8a930b2245cea9fe41fabba21a26aa0be1"
+      url "https://downloads.unfudged.io/releases/v0.19.1/unf-v0.19.1-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "02244cfb228d038af293e25fb1c19ea769c1fd3c7d336484f475c7c9a2a941ac"
     end
   end
 
-  conflicts_with "unf-staging", because: "both install an `unf` binary"
+  conflicts_with "unf-staging", because: "both install an  binary"
 
   def install
     bin.install "unf"
