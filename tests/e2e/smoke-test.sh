@@ -586,7 +586,11 @@ echo ""
 echo "=== Test 19: Sentinel single-instance (flock) ==="
 
 # Count sentinel processes — should be exactly 1
-SENTINEL_COUNT=$(pgrep -fc "unf __sentinel" 2>/dev/null || echo "0")
+# macOS pgrep has no -c flag: `pgrep -fc` exits 2 with a usage error, the
+# stderr is swallowed, and the `|| echo 0` made this report 0 sentinels on
+# every macOS run regardless of reality. Count lines instead — portable.
+SENTINEL_COUNT=$(pgrep -f "unf __sentinel" 2>/dev/null | wc -l | tr -d " ")
+SENTINEL_COUNT=${SENTINEL_COUNT:-0}
 if [[ "$SENTINEL_COUNT" -ne 1 ]]; then
   fail "Flock" "Expected 1 sentinel, found $SENTINEL_COUNT"
 fi
