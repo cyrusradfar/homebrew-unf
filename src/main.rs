@@ -227,7 +227,7 @@ struct RestoreArgs {
     #[arg(long)]
     dry_run: bool,
 
-    /// Skip confirmation prompt (required for non-interactive use)
+    /// Skip the confirmation prompt, which UNF shows only on a terminal
     #[arg(long, short = 'y')]
     yes: bool,
 }

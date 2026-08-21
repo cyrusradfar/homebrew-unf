@@ -4,4 +4,12 @@ Examples:
   unf restore --at 1h --dry-run       Preview what would be restored
   unf restore --session -y            Restore to the start of last work session
 
-The -y flag skips the confirmation prompt (required for scripts and agents).
+The -y flag skips the confirmation prompt.
+
+UNF shows the prompt only when stdout is a terminal. A script, a pipe, an
+agent, or --json gets no prompt, with or without -y. Do not depend on the
+prompt to stop an unwanted restore in those contexts. Use --dry-run first
+to see what changes.
+
+UNF always takes a safety snapshot before it restores. You can get the
+previous state back.
