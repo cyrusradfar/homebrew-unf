@@ -23,7 +23,6 @@ class UnfStaging < Formula
     end
   end
 
-
   def install
     bin.install "unf"
   end

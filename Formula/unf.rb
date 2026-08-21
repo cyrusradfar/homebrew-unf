@@ -23,7 +23,6 @@ class Unf < Formula
     end
   end
 
-
   def install
     bin.install "unf"
   end
