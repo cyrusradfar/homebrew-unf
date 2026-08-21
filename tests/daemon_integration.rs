@@ -157,6 +157,77 @@ fn wait_until_gitignore_reapplied(unf_home: &Path, project_root: &Path) {
     );
 }
 
+/// Returns the intent-file path for an isolated UNF_HOME.
+fn intent_path(unf_home: &Path) -> PathBuf {
+    unf_home.join("intent.json")
+}
+
+/// Directly rewrites `unignored_dirs` for `project_root`'s entry in BOTH the
+/// registry (`projects.json`) and the intent file (`intent.json`), bypassing
+/// the CLI's `parse_unignore_dir` validator entirely.
+///
+/// Used only by the UD-10 `.git` defence-in-depth scenario: the ticket
+/// requires proving the hard refusal inside `Filter::should_track`, not just
+/// that the CLI parser rejects `--unignore-dir .git`. Both files must be
+/// edited, not just the registry — UD-06's sentinel resync treats
+/// `intent.json` as the source of truth and would otherwise revert a
+/// registry-only edit on its next tick, which would make the test's
+/// "not recorded" assertion pass for the wrong reason (reverted settings,
+/// not the hard refusal).
+fn hand_edit_unignored_dirs(unf_home: &Path, project_root: &Path, dirs: &[&str]) {
+    let canonical = project_root
+        .canonicalize()
+        .expect("project root should be canonicalizable");
+
+    for path in [registry_path(unf_home), intent_path(unf_home)] {
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        let mut value: serde_json::Value = serde_json::from_str(&content)
+            .unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
+        let projects = value
+            .get_mut("projects")
+            .and_then(|p| p.as_array_mut())
+            .unwrap_or_else(|| panic!("no \"projects\" array in {}", path.display()));
+        let entry = projects
+            .iter_mut()
+            .find(|e| {
+                e.get("path").and_then(|p| p.as_str()).map(PathBuf::from) == Some(canonical.clone())
+            })
+            .unwrap_or_else(|| {
+                panic!("no entry for {} in {}", canonical.display(), path.display())
+            });
+        entry["unignored_dirs"] = serde_json::json!(dirs);
+        let rewritten = serde_json::to_string_pretty(&value).expect("serialize edited JSON");
+        fs::write(&path, rewritten).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
+    }
+}
+
+/// Poll for a SIGUSR1-triggered registry reload to have rebuilt the daemon's
+/// Filter back to excluding `dir` again, by writing successive probe files
+/// inside `project_root/dir` until one is confirmed NOT recorded.
+///
+/// Mirrors `wait_until_gitignore_reapplied` (see its comment for why a fixed
+/// sleep between "signal sent" and "write the real test file" is a race),
+/// but targets a subdirectory instead of the project root so it can confirm
+/// a `--unignore-dir` list reset rather than a gitignore-flag reset.
+fn wait_until_unignore_dir_reverted(unf_home: &Path, project_root: &Path, dir: &str) {
+    const MAX_PROBES: u32 = 10;
+    let probe_dir = project_root.join(dir);
+    fs::create_dir_all(&probe_dir).expect("create probe dir");
+    for i in 0..MAX_PROBES {
+        let rel_path = format!("{}/revert_probe_{}.log", dir, i);
+        fs::write(project_root.join(&rel_path), "probe\n").expect("write probe file");
+        wait_past_debounce();
+        if !is_recorded(unf_home, project_root, &rel_path) {
+            return;
+        }
+    }
+    panic!(
+        "'{}' was not re-excluded by the daemon within {} probes",
+        dir, MAX_PROBES
+    );
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -648,4 +719,211 @@ fn force_watch_gitignore_end_to_end() {
     fs::write(temp.path().join("c.log"), "line one\n").expect("write c.log");
     wait_past_debounce();
     assert_not_recorded(unf_home.path(), temp.path(), "c.log");
+}
+
+/// Test 10: `--unignore-dir` end-to-end (UD-10).
+///
+/// Walks all 7 scenarios from `docs/tickets/watch-unignore-dirs.md` UD-10 in
+/// one function sharing a single daemon, mirroring
+/// `force_watch_gitignore_end_to_end`: scenario 2's no-restart assertion
+/// depends on scenario 1's daemon still being the one running, and scenario
+/// 7 depends on scenario 2's flag flip carrying forward. Scenarios 3 and 5
+/// use their own project directories (B and C) added to the same daemon,
+/// since they start from preconditions (an existing `.gitignore` entry, a
+/// hand-edited registry) that would otherwise interfere with project A's
+/// phases if reused.
+#[test]
+fn unignore_dir_end_to_end() {
+    let temp_a = TempDir::new().expect("Failed to create temp dir A");
+    let temp_b = TempDir::new().expect("Failed to create temp dir B");
+    let temp_c = TempDir::new().expect("Failed to create temp dir C");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    // ------------------------------------------------------------------
+    // Scenario 1: target/notes.rs is NOT recorded by default.
+    // ------------------------------------------------------------------
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_a.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let pid_after_a1 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after watching A");
+    assert!(
+        is_alive(pid_after_a1),
+        "Daemon should be alive after watching A"
+    );
+
+    fs::create_dir_all(temp_a.path().join("target")).expect("mkdir target");
+    fs::write(temp_a.path().join("target/notes.rs"), "// notes\n").expect("write target/notes.rs");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_a.path(), "target/notes.rs");
+
+    // ------------------------------------------------------------------
+    // Scenario 2: re-watch A with --unignore-dir target, no .gitignore
+    // entry: recorded, with NO daemon restart. PID is asserted unchanged
+    // BEFORE the recording check, per the ticket.
+    // ------------------------------------------------------------------
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_a.path())
+        .arg("watch")
+        .arg("--unignore-dir")
+        .arg("target")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(300));
+
+    let pid_after_a2 = read_pid(&pid_path(unf_home.path()))
+        .expect("Should read PID after re-watch with --unignore-dir target");
+    assert_eq!(
+        pid_after_a1, pid_after_a2,
+        "re-watching A with --unignore-dir target must reuse the running \
+         daemon (same PID), not restart it"
+    );
+
+    fs::write(temp_a.path().join("target/tracked.rs"), "// tracked\n")
+        .expect("write target/tracked.rs");
+    wait_until_recorded(unf_home.path(), temp_a.path(), "target/tracked.rs");
+
+    // ------------------------------------------------------------------
+    // Scenario 4: node_modules/ stays excluded while target is un-ignored.
+    // Scenario 6: a .rlib inside the now-un-ignored target/ is still
+    // rejected by the extension rule (UD-01).
+    //
+    // Both are written only after `wait_until_recorded` above already
+    // proved the reload landed, so a "not recorded" result here cannot be
+    // explained away by the OLD (pre-reload) filter simply not having
+    // gotten to them yet.
+    // ------------------------------------------------------------------
+    fs::create_dir_all(temp_a.path().join("node_modules")).expect("mkdir node_modules");
+    fs::write(temp_a.path().join("node_modules/x.js"), "x\n").expect("write node_modules/x.js");
+    fs::write(
+        temp_a.path().join("target/lib.rlib"),
+        "not a real archive\n",
+    )
+    .expect("write target/lib.rlib");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_a.path(), "node_modules/x.js");
+    assert_not_recorded(unf_home.path(), temp_a.path(), "target/lib.rlib");
+
+    // ------------------------------------------------------------------
+    // Scenario 7: plain `unf watch` resets the un-ignore list; target
+    // stops being recorded.
+    // ------------------------------------------------------------------
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_a.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(300));
+
+    let pid_after_a3 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after final re-watch of A");
+    assert_eq!(
+        pid_after_a2, pid_after_a3,
+        "resetting the un-ignore list must also reuse the running daemon"
+    );
+
+    wait_until_unignore_dir_reverted(unf_home.path(), temp_a.path(), "target");
+
+    // ------------------------------------------------------------------
+    // Scenario 3: target un-ignored AND gitignored — still not recorded
+    // until --force-watch-gitignore is added too. This is the combination
+    // real users will hit, since target is gitignored in nearly every
+    // Rust project. Project B: same daemon, fresh project.
+    // ------------------------------------------------------------------
+    fs::write(temp_b.path().join(".gitignore"), "/target\n").expect("write .gitignore");
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_b.path())
+        .arg("watch")
+        .arg("--unignore-dir")
+        .arg("target")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let pid_after_b1 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after watching B");
+    assert_eq!(
+        pid_after_a3, pid_after_b1,
+        "adding project B must reuse the running daemon, not spawn a new one"
+    );
+
+    fs::create_dir_all(temp_b.path().join("target")).expect("mkdir target (B)");
+    fs::write(temp_b.path().join("target/shadowed.rs"), "// shadowed\n")
+        .expect("write target/shadowed.rs");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_b.path(), "target/shadowed.rs");
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_b.path())
+        .arg("watch")
+        .arg("--unignore-dir")
+        .arg("target")
+        .arg("--force-watch-gitignore")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(300));
+
+    let pid_after_b2 = read_pid(&pid_path(unf_home.path()))
+        .expect("Should read PID after adding --force-watch-gitignore to B");
+    assert_eq!(
+        pid_after_b1, pid_after_b2,
+        "adding --force-watch-gitignore to B must reuse the running daemon"
+    );
+
+    fs::write(temp_b.path().join("target/recorded.rs"), "// recorded\n")
+        .expect("write target/recorded.rs");
+    wait_until_recorded(unf_home.path(), temp_b.path(), "target/recorded.rs");
+
+    // ------------------------------------------------------------------
+    // Scenario 5: .git/config is never recorded even if ".git" is forced
+    // into unignored_dirs BY HAND (both projects.json and intent.json,
+    // bypassing the CLI parser entirely). This proves the hard refusal
+    // inside `Filter::should_track`, not just CLI validation.
+    //
+    // "target" is hand-edited in alongside ".git" purely as a reload
+    // witness: a positive recording under target/ proves the daemon
+    // actually picked up the hand-edited settings, so the negative .git
+    // assertion below cannot be explained by "the reload never happened."
+    // ------------------------------------------------------------------
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_c.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let pid_after_c1 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after watching C");
+    assert_eq!(
+        pid_after_b2, pid_after_c1,
+        "adding project C must reuse the running daemon, not spawn a new one"
+    );
+
+    hand_edit_unignored_dirs(unf_home.path(), temp_c.path(), &["target", ".git"]);
+    // Signal the daemon directly, bypassing `unf watch` (which would
+    // overwrite the hand edit with CLI-validated settings). Only PIDs read
+    // from this test's own UNF_HOME are ever signaled — see the daemon
+    // safety notes at the top of this file.
+    let kill_result = unsafe { libc::kill(pid_after_c1 as i32, libc::SIGUSR1) };
+    assert_eq!(
+        kill_result, 0,
+        "failed to signal daemon (PID {}) to reload the hand-edited registry",
+        pid_after_c1
+    );
+
+    fs::create_dir_all(temp_c.path().join("target")).expect("mkdir target (C)");
+    fs::write(temp_c.path().join("target/proof.rs"), "// reload proof\n")
+        .expect("write target/proof.rs");
+    wait_until_recorded(unf_home.path(), temp_c.path(), "target/proof.rs");
+
+    fs::create_dir_all(temp_c.path().join(".git")).expect("mkdir .git");
+    fs::write(temp_c.path().join(".git/config"), "[core]\n").expect("write .git/config");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_c.path(), ".git/config");
 }
