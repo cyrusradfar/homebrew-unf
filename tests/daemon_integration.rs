@@ -103,6 +103,40 @@ fn wait_until_recorded(unf_home: &Path, project_root: &Path, rel_path: &str) {
     panic!("{} was not recorded within the poll timeout", rel_path);
 }
 
+/// Poll for `rel_path` to be recorded, REWRITING it between rounds.
+///
+/// `wait_until_recorded` writes once and then only polls, which cannot
+/// recover from an event the daemon legitimately dropped. After a
+/// SIGUSR1 the reload is asynchronous: a write that lands before the
+/// Filter is rebuilt is rejected by the OLD filter, and nothing ever
+/// re-offers it, because the file never changes again. Waiting longer
+/// does not help — the event is already gone. Rewriting gives the
+/// reloaded Filter a fresh event.
+///
+/// Each round polls for longer than the 3s debounce window before
+/// rewriting. Rewriting faster than that would keep resetting the
+/// debouncer's silence window and the batch would never flush at all.
+fn wait_until_recorded_with_rewrite(unf_home: &Path, project_root: &Path, rel_path: &str) {
+    for round in 0..5 {
+        fs::write(
+            project_root.join(rel_path),
+            format!("// reload probe {}\n", round),
+        )
+        .unwrap_or_else(|e| panic!("write {}: {}", rel_path, e));
+
+        for _ in 0..24 {
+            thread::sleep(Duration::from_millis(250));
+            if is_recorded(unf_home, project_root, rel_path) {
+                return;
+            }
+        }
+    }
+    panic!(
+        "{} was not recorded after 5 rewrite rounds; the daemon never picked up the reload",
+        rel_path
+    );
+}
+
 /// Sleep past the debounce window, with margin for daemon processing time.
 ///
 /// Proving a file was NOT recorded needs a real wait, not an immediate
@@ -743,6 +777,18 @@ fn unignore_dir_end_to_end() {
     // ------------------------------------------------------------------
     // Scenario 1: target/notes.rs is NOT recorded by default.
     // ------------------------------------------------------------------
+    // Excluded directories are created BEFORE the first `unf watch` in each
+    // project, deliberately. On Linux, inotify registers one watch per
+    // directory, so a file written into a directory that was created after
+    // the recursive watch was established can be missed entirely while the
+    // watch for it is still being added. macOS FSEvents is path-based and
+    // does not have this window, which is why creating them late passed
+    // locally and failed on the Linux CI runner. Creating them up front
+    // also stops every "not recorded" assertion below from passing
+    // vacuously because the watcher never saw the file at all.
+    fs::create_dir_all(temp_a.path().join("target")).expect("mkdir target (A)");
+    fs::create_dir_all(temp_a.path().join("node_modules")).expect("mkdir node_modules (A)");
+
     isolated_cmd(unf_home.path())
         .current_dir(temp_a.path())
         .arg("watch")
@@ -757,7 +803,6 @@ fn unignore_dir_end_to_end() {
         "Daemon should be alive after watching A"
     );
 
-    fs::create_dir_all(temp_a.path().join("target")).expect("mkdir target");
     fs::write(temp_a.path().join("target/notes.rs"), "// notes\n").expect("write target/notes.rs");
     wait_past_debounce();
     assert_not_recorded(unf_home.path(), temp_a.path(), "target/notes.rs");
@@ -798,7 +843,6 @@ fn unignore_dir_end_to_end() {
     // explained away by the OLD (pre-reload) filter simply not having
     // gotten to them yet.
     // ------------------------------------------------------------------
-    fs::create_dir_all(temp_a.path().join("node_modules")).expect("mkdir node_modules");
     fs::write(temp_a.path().join("node_modules/x.js"), "x\n").expect("write node_modules/x.js");
     fs::write(
         temp_a.path().join("target/lib.rlib"),
@@ -836,6 +880,7 @@ fn unignore_dir_end_to_end() {
     // Rust project. Project B: same daemon, fresh project.
     // ------------------------------------------------------------------
     fs::write(temp_b.path().join(".gitignore"), "/target\n").expect("write .gitignore");
+    fs::create_dir_all(temp_b.path().join("target")).expect("mkdir target (B)");
 
     isolated_cmd(unf_home.path())
         .current_dir(temp_b.path())
@@ -891,6 +936,9 @@ fn unignore_dir_end_to_end() {
     // actually picked up the hand-edited settings, so the negative .git
     // assertion below cannot be explained by "the reload never happened."
     // ------------------------------------------------------------------
+    fs::create_dir_all(temp_c.path().join("target")).expect("mkdir target (C)");
+    fs::create_dir_all(temp_c.path().join(".git")).expect("mkdir .git (C)");
+
     isolated_cmd(unf_home.path())
         .current_dir(temp_c.path())
         .arg("watch")
@@ -917,12 +965,12 @@ fn unignore_dir_end_to_end() {
         pid_after_c1
     );
 
-    fs::create_dir_all(temp_c.path().join("target")).expect("mkdir target (C)");
-    fs::write(temp_c.path().join("target/proof.rs"), "// reload proof\n")
-        .expect("write target/proof.rs");
-    wait_until_recorded(unf_home.path(), temp_c.path(), "target/proof.rs");
+    // The SIGUSR1 reload is asynchronous, so this rewrites the probe until
+    // the rebuilt Filter accepts it. A single write can land before the
+    // reload is applied, get rejected by the old Filter, and never be
+    // re-offered.
+    wait_until_recorded_with_rewrite(unf_home.path(), temp_c.path(), "target/proof.rs");
 
-    fs::create_dir_all(temp_c.path().join(".git")).expect("mkdir .git");
     fs::write(temp_c.path().join(".git/config"), "[core]\n").expect("write .git/config");
     wait_past_debounce();
     assert_not_recorded(unf_home.path(), temp_c.path(), ".git/config");
