@@ -31,8 +31,10 @@ struct WatchOutput {
     /// instead of treating an absent field as `false`.
     force_watch_gitignore: bool,
     /// Excluded directories this project now records, from `--unignore-dir`.
-    /// Always serialized as an array, empty when none, so consumers never
-    /// have to treat an absent field as empty.
+    /// Holds bare names (`target`) and `.git`-rooted paths (`.git/hooks`)
+    /// in the same array, each verbatim as validated. Always serialized as
+    /// an array, empty when none, so consumers never have to treat an
+    /// absent field as empty.
     unignored_dirs: Vec<String>,
     /// Excluded directories found in the project root by a shallow scan,
     /// whether or not they are un-ignored. Always serialized as an array.
@@ -91,10 +93,37 @@ fn gitignore_shadow_warning_lines(shadowed: &[&str]) -> Vec<String> {
     ]
 }
 
+/// True when an `unignored_dirs` entry is a `.git`-rooted path rather than
+/// a bare directory name.
+///
+/// Entries are always stored `/`-joined — `parse_unignore_dir` normalises
+/// `\` to `/` and strips trailing slashes — and a bare `.git` is never
+/// accepted, so a `.git/` prefix is an exact test for the path shape.
+///
+/// Used to keep `.git` paths out of the `.gitignore`-shadow check. Git
+/// never consults `.gitignore` inside `.git`, so naming `.gitignore` as the
+/// reason a hook is not recorded points the reader at the wrong file and
+/// asks for an edit that should not matter.
+///
+/// Known gap, and the reason this is suppression at the CLI edge rather
+/// than a fix: `Filter::should_track` still applies the `.gitignore`
+/// matcher to `.git`-rooted paths, so a rule like `hooks/` does currently
+/// stop `.git/hooks` from being recorded. Aligning the filter with git —
+/// skipping the `.gitignore` rules for allowlisted `.git` paths — belongs
+/// in `watcher::filter`, not here.
+fn is_git_path_entry(dir: &str) -> bool {
+    dir.starts_with(".git/")
+}
+
 /// Un-ignored directories that the project's `.gitignore` also excludes.
 ///
 /// Asks the same matcher the daemon will use, by building one throwaway
 /// `Filter`, so the diagnostic cannot drift from rule 3's real behavior.
+///
+/// `.git`-rooted entries are never reported, whatever the matcher says:
+/// git does not apply `.gitignore` inside `.git`, so the warning would name
+/// a cause that is not the real one and ask for an edit that changes
+/// nothing. See [`is_git_path_entry`].
 ///
 /// Returns an empty `Vec` when `Filter::new` fails — a malformed
 /// `.gitignore` must not make `unf watch` fail for the sake of a
@@ -113,9 +142,32 @@ fn shadowed_unignored_dirs(project_root: &Path, settings: &WatchSettings) -> Vec
     settings
         .unignored_dirs
         .iter()
+        .filter(|dir| !is_git_path_entry(dir))
         .filter(|dir| filter.gitignore_shadows(dir))
         .cloned()
         .collect()
+}
+
+/// The one-line confirmation of what this project now also records.
+///
+/// Entries are `, `-joined in `BTreeSet` order, which sorts `.git` paths
+/// ahead of bare names. Comma-space, not comma alone: a `.git/hooks` entry
+/// already contains a `/`, so the separator has to stay visually distinct
+/// from the characters inside an entry.
+///
+/// Returns `None` when nothing is un-ignored, so the caller prints nothing
+/// rather than a note with an empty list.
+fn recording_note_line(unignored: &BTreeSet<String>) -> Option<String> {
+    if unignored.is_empty() {
+        return None;
+    }
+
+    let entries = unignored
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("recording normally-excluded: {entries}"))
 }
 
 /// Prints the human-format un-ignore notices to stderr.
@@ -128,14 +180,8 @@ fn shadowed_unignored_dirs(project_root: &Path, settings: &WatchSettings) -> Vec
 /// corrupt the document, but machine consumers should read the
 /// `unignored_dirs` and `excluded_dirs_present` fields, not parse prose.
 fn print_unignore_notes(settings: &WatchSettings, excluded_present: &[&str]) {
-    if !settings.unignored_dirs.is_empty() {
-        let names = settings
-            .unignored_dirs
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        super::output::print_note(&format!("recording normally-excluded: {names}"));
+    if let Some(headline) = recording_note_line(&settings.unignored_dirs) {
+        super::output::print_note(&headline);
     }
 
     let not_recorded = filter::not_recorded_dirs(excluded_present, &settings.unignored_dirs);
@@ -186,11 +232,14 @@ fn print_gitignore_shadow_warning(project_root: &Path, settings: &WatchSettings)
 /// * `force_watch_gitignore` - When true, record gitignored files and hidden
 ///   dotfiles for this project. The value is always written, so a plain
 ///   `unf watch` turns a previously set override back off.
-/// * `unignore_dir` - Excluded directories to record for this project, from
-///   repeated `--unignore-dir NAME` flags. Already validated by clap's
-///   value parser, so every name is an eligible `IGNORED_DIRS` entry and
-///   never `.git`. Written as a whole set, so a plain `unf watch` clears a
-///   previously set list, exactly like `force_watch_gitignore`.
+/// * `unignore_dir` - Excluded directories and `.git` paths to record for
+///   this project, from repeated `--unignore-dir NAME` flags. Already
+///   validated by clap's value parser, so every value is either an eligible
+///   `IGNORED_DIRS` name or an allowlisted `.git`-rooted path such as
+///   `.git/hooks`; bare `.git` and everything off the allowlist is rejected
+///   before this function runs. Written as a whole set, so a plain
+///   `unf watch` clears a previously set list, exactly like
+///   `force_watch_gitignore`.
 ///
 /// # Returns
 ///
@@ -545,6 +594,80 @@ mod tests {
     }
 
     #[test]
+    fn recording_note_line_is_none_when_nothing_unignored() {
+        assert!(recording_note_line(&BTreeSet::new()).is_none());
+    }
+
+    /// A mixed list must stay readable now that entries can contain `/`.
+    /// `.git` paths sort first, and the comma-space separator keeps each
+    /// entry legible against the slashes inside it.
+    #[test]
+    fn recording_note_line_joins_names_and_git_paths_readably() {
+        let settings = settings_from_flags(false, &["target", ".git/hooks", ".git/info/exclude"]);
+
+        assert_eq!(
+            recording_note_line(&settings.unignored_dirs),
+            Some("recording normally-excluded: .git/hooks, .git/info/exclude, target".to_string())
+        );
+    }
+
+    /// The flag round-trips a `.git` path: clap's value parser accepts it,
+    /// and the value `run` persists is byte-identical to what was typed.
+    /// Both `projects.json` and `intent.json` are written from this one
+    /// `WatchSettings`, so one serde round-trip covers both files.
+    #[test]
+    fn validated_git_paths_round_trip_through_watch_settings() {
+        let typed = [".git/hooks", "target"];
+        let validated: Vec<String> = typed
+            .iter()
+            .map(|value| filter::parse_unignore_dir(value).expect("accepted by the value parser"))
+            .collect();
+
+        let settings = WatchSettings {
+            force_watch_gitignore: false,
+            unignored_dirs: validated.iter().cloned().collect::<BTreeSet<String>>(),
+        };
+
+        let json = serde_json::to_string(&settings).expect("serialize WatchSettings");
+        let restored: WatchSettings = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.unignored_dirs, settings.unignored_dirs);
+        assert!(restored.unignored_dirs.contains(".git/hooks"));
+        assert!(restored.unignored_dirs.contains("target"));
+    }
+
+    /// A refused path fails validation, which aborts the command before
+    /// `run` is ever called — so nothing is written. Pinned here because
+    /// "writes nothing" is a property of the CLI wiring, not of the
+    /// validator alone.
+    #[test]
+    fn refused_git_paths_never_reach_the_settings_write() {
+        for value in [".git", ".git/objects", ".git/refs", ".git/hooks/../objects"] {
+            assert!(
+                filter::parse_unignore_dir(value).is_err(),
+                "'{value}' must never produce a value to persist"
+            );
+        }
+    }
+
+    #[test]
+    fn watch_output_carries_git_path_entries_unchanged() {
+        let json = to_json(&WatchOutput {
+            status: "started".to_string(),
+            snapshots_preserved: None,
+            auto_restart: Some(true),
+            force_watch_gitignore: false,
+            unignored_dirs: vec![".git/hooks".to_string(), "target".to_string()],
+            excluded_dirs_present: vec!["target".to_string()],
+        });
+
+        assert_eq!(
+            json["unignored_dirs"],
+            serde_json::json!([".git/hooks", "target"])
+        );
+    }
+
+    #[test]
     fn gitignore_shadow_warning_lines_name_the_second_flag() {
         let lines = gitignore_shadow_warning_lines(&["target"]);
 
@@ -578,6 +701,55 @@ mod tests {
             shadowed_unignored_dirs(temp.path(), &settings),
             vec!["target".to_string()]
         );
+    }
+
+    /// The shadow warning never names a `.git` path. The matcher will
+    /// happily match one — a `hooks/` rule matches `.git/hooks` — so this
+    /// test pins both halves: the matcher matches, and the diagnostic
+    /// stays silent anyway. Without both assertions the suppression could
+    /// be deleted as an apparent no-op.
+    #[test]
+    fn shadowed_unignored_dirs_never_warns_about_git_paths() {
+        let temp = TempDir::new().expect("create temp dir");
+        fs::write(temp.path().join(".gitignore"), "hooks/\nconfig\n").expect("write .gitignore");
+
+        let settings = settings_from_flags(false, &[".git/hooks", ".git/config"]);
+
+        let filter = Filter::new(temp.path(), settings.clone()).expect("build filter");
+        assert!(
+            filter.gitignore_shadows(".git/hooks"),
+            "precondition: the raw matcher does shadow this path"
+        );
+
+        assert!(shadowed_unignored_dirs(temp.path(), &settings).is_empty());
+    }
+
+    /// Suppression is per entry, not per invocation: a genuinely shadowed
+    /// bare name is still reported when a `.git` path sits beside it.
+    #[test]
+    fn shadowed_unignored_dirs_still_reports_names_beside_git_paths() {
+        let temp = TempDir::new().expect("create temp dir");
+        fs::write(temp.path().join(".gitignore"), "/target\nhooks/\n").expect("write .gitignore");
+
+        let settings = settings_from_flags(false, &["target", ".git/hooks"]);
+
+        assert_eq!(
+            shadowed_unignored_dirs(temp.path(), &settings),
+            vec!["target".to_string()]
+        );
+    }
+
+    #[test]
+    fn is_git_path_entry_matches_only_git_rooted_paths() {
+        assert!(is_git_path_entry(".git/hooks"));
+        assert!(is_git_path_entry(".git/info/exclude"));
+
+        assert!(!is_git_path_entry("target"));
+        // Neighbours that merely start with the same letters. Suppressing
+        // these would silence a warning the user can act on.
+        assert!(!is_git_path_entry(".github"));
+        assert!(!is_git_path_entry(".gitignore"));
+        assert!(!is_git_path_entry(".gitmodules"));
     }
 
     #[test]

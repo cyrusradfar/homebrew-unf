@@ -705,6 +705,18 @@ mod tests {
         assert_eq!(lines, vec!["  Un-ignored:  target".to_string()]);
     }
 
+    /// The `Un-ignored:` line carries `.git` paths beside bare names.
+    /// Entries sort `.git` first and are `, `-joined, so the slashes inside
+    /// an entry never read as the separator between two entries.
+    #[test]
+    fn unignore_report_lines_render_git_paths_beside_names() {
+        let lines = unignore_report_lines(&["target"], &unignored(&["target", ".git/hooks"]));
+
+        assert_eq!(lines[0], "  Un-ignored:  .git/hooks, target");
+        // `.git` is never in `present`, so it adds no "Not recorded" line.
+        assert_eq!(lines.len(), 1);
+    }
+
     #[test]
     fn unignore_report_lines_reports_only_the_remainder() {
         let lines = unignore_report_lines(&["node_modules", "dist"], &BTreeSet::new());

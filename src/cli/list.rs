@@ -658,6 +658,40 @@ mod tests {
         assert_eq!(unignored_label(&names(&["dist", "target"])), "dist,target");
     }
 
+    /// `.git` paths are longer than bare names but stay inside the widest
+    /// cell the column already had to size for: two full names plus a
+    /// remainder, e.g. `node_modules,__pycache__+2`. No format change is
+    /// needed, and the cell is still one word, so the column stays
+    /// scannable.
+    #[test]
+    fn unignored_label_renders_git_paths_within_the_existing_width() {
+        assert_eq!(
+            unignored_label(&names(&[".git/hooks", "target"])),
+            ".git/hooks,target"
+        );
+
+        let widest = unignored_label(&names(&[
+            ".git/config",
+            ".git/hooks",
+            ".git/info/exclude",
+            "target",
+        ]));
+        assert_eq!(widest, ".git/config,.git/hooks+2");
+        assert!(!widest.contains(' '), "the cell stays a single word");
+
+        // The column already had to size for two long bare names plus a
+        // remainder. Paths do not push it past that, so the existing
+        // truncation needs no change.
+        let widest_names =
+            unignored_label(&names(&["node_modules", "__pycache__", "target", "build"]));
+        assert!(
+            widest.len() <= widest_names.len(),
+            "{widest} ({}) must not exceed {widest_names} ({})",
+            widest.len(),
+            widest_names.len()
+        );
+    }
+
     #[test]
     fn unignored_label_truncates_long_lists_with_a_remainder() {
         assert_eq!(

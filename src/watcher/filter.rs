@@ -608,6 +608,7 @@ impl Filter {
             .filter_map(|c| c.as_os_str().to_str())
             .collect();
 
+        let mut in_allowed_git_path = false;
         if let Some(git_idx) = components.iter().position(|&c| c == PERMANENT_IGNORED_DIR) {
             let remainder = &components[git_idx + 1..];
             let allowed = GIT_RECORDABLE_PATHS.iter().any(|&allowed_path| {
@@ -621,6 +622,7 @@ impl Filter {
             if !allowed {
                 return false;
             }
+            in_allowed_git_path = true;
         }
 
         for component in path.components() {
@@ -649,8 +651,18 @@ impl Filter {
             }
         }
 
-        // 3. If .gitignore loaded, check if path is ignored
-        if let Some(ref gitignore) = self.gitignore {
+        // 3. If .gitignore loaded, check if path is ignored.
+        //
+        // Skipped inside an allowed `.git` path. Git never applies
+        // .gitignore to anything under .git — those rules govern the
+        // working tree only — so applying them here would be wrong on
+        // git's own terms. It would also silently defeat the opt-in: a
+        // repository whose .gitignore happens to carry a `config` or
+        // `hooks/` rule would make `--unignore-dir .git/config` record
+        // nothing, while `unf watch` cheerfully confirmed it was
+        // recording. The allowlist in rule 1 is what bounds this, and it
+        // has already run.
+        if let Some(gitignore) = self.gitignore.as_ref().filter(|_| !in_allowed_git_path) {
             // Convert to relative path if it starts with project_root.
             // If strip_prefix fails, the path is absolute and outside the project root,
             // so we use the absolute path directly. The gitignore matcher handles both
@@ -1162,6 +1174,46 @@ mod tests {
             .expect("create filter");
 
         assert!(filter.should_track(Path::new("/project/.git/hooks/pre-commit")));
+    }
+
+    #[test]
+    fn allowed_git_path_ignores_gitignore_rules() {
+        // The failure this prevents: a repository whose .gitignore happens
+        // to carry a `config` or `hooks/` rule would make
+        // `--unignore-dir .git/config` record NOTHING, while `unf watch`
+        // confirmed it was recording. Git never applies .gitignore under
+        // .git — those rules govern the working tree — so neither do we.
+        let temp = TempDir::new().expect("create temp dir");
+        fs::write(temp.path().join(".gitignore"), "config\nhooks/\n").expect("write .gitignore");
+        let filter = Filter::new(
+            temp.path(),
+            settings_with_unignored(&[".git/config", ".git/hooks"]),
+        )
+        .expect("create filter");
+
+        assert!(
+            filter.should_track(&temp.path().join(".git/config")),
+            ".gitignore `config` rule must not defeat --unignore-dir .git/config"
+        );
+        assert!(
+            filter.should_track(&temp.path().join(".git/hooks/pre-commit")),
+            ".gitignore `hooks/` rule must not defeat --unignore-dir .git/hooks"
+        );
+    }
+
+    #[test]
+    fn gitignore_still_applies_outside_git_when_git_path_allowed() {
+        // The skip above is scoped to allowed .git paths only. An ordinary
+        // working-tree file must still obey .gitignore.
+        let temp = TempDir::new().expect("create temp dir");
+        fs::write(temp.path().join(".gitignore"), "config\n").expect("write .gitignore");
+        let filter =
+            Filter::new(temp.path(), settings_with_unignored(&[".git/config"])).expect("filter");
+
+        assert!(
+            !filter.should_track(&temp.path().join("config")),
+            "a working-tree file named config must still be gitignored"
+        );
     }
 
     #[test]
