@@ -16,10 +16,14 @@
 //!   are exactly the ignored ones (e.g. `.env.local`, gitignored scratch
 //!   directories).
 //! - `unignored_dirs` opts specific hardcoded-excluded directories (e.g.
-//!   `target`) back into tracking.
+//!   `target`) back into tracking. It can also carry `.git`-rooted paths
+//!   (`.git/hooks`, `.git/config`, `.git/info/exclude` — see
+//!   `GIT_RECORDABLE_PATHS`); everything else under `.git`, including the
+//!   object store, is refused unconditionally.
 //!
-//! `.git` is the one directory neither setting can lift — `should_track`
-//! hard-refuses it before consulting `unignored_dirs` at all. Extension
+//! `should_track` re-checks a `.git` entry against `GIT_RECORDABLE_PATHS`
+//! itself rather than trusting `unignored_dirs` — a hand-edited settings
+//! file can never widen access to `.git` beyond the allowlist. Extension
 //! rules and downstream magic-number binary detection are unaffected by
 //! either setting.
 
@@ -36,9 +40,11 @@ use crate::types::WatchSettings;
 ///
 /// These are common directories containing build artifacts, dependencies,
 /// and internal state that should not be part of the flight recorder. All
-/// but `.git` can be opted back into tracking per-project via
-/// `WatchSettings::unignored_dirs`; `.git` is permanently excluded (see the
-/// hard refusal in `Filter::should_track`).
+/// but `.git` can be opted back into tracking per-project, as a bare name,
+/// via `WatchSettings::unignored_dirs`. `.git` is permanently excluded as a
+/// whole directory; specific paths inside it can be opted back in via
+/// `.git`-rooted entries in `unignored_dirs` — see `GIT_RECORDABLE_PATHS`
+/// and the position-aware handling in `Filter::should_track`.
 const IGNORED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -52,8 +58,12 @@ const IGNORED_DIRS: &[&str] = &[
     "build",
 ];
 
-/// The one entry in `IGNORED_DIRS` that `WatchSettings::unignored_dirs` can
-/// never lift. See the hard refusal at the top of `Filter::should_track`.
+/// The one entry in `IGNORED_DIRS` that can never be lifted as a bare name:
+/// a literal `.git` entry in `unignored_dirs` — hand-edited or otherwise —
+/// never grants access to anything under it. Specific paths under `.git`
+/// can still be recorded, but only via `.git`-rooted entries checked
+/// against `GIT_RECORDABLE_PATHS`; see the position-aware handling at the
+/// top of `Filter::should_track`.
 const PERMANENT_IGNORED_DIR: &str = ".git";
 
 /// Comma-joined `IGNORED_DIRS` entries a user could plausibly un-ignore,
@@ -549,8 +559,15 @@ impl Filter {
     ///
     /// A path is tracked if it passes all of these checks:
     /// 1. No path component matches IGNORED_DIRS, unless that component is
-    ///    in `settings.unignored_dirs` — except `.git`, which can never be
-    ///    un-ignored
+    ///    in `settings.unignored_dirs` — except `.git`, which is never
+    ///    matched as a bare name. A `.git` component instead opens a
+    ///    position-aware check: the remainder of the path after it is
+    ///    tracked only when it is covered by a `.git`-rooted entry in
+    ///    `settings.unignored_dirs` that is independently re-checked here
+    ///    against `GIT_RECORDABLE_PATHS` (e.g. `.git/hooks`, `.git/config`).
+    ///    Everything else under `.git`, including the object store and
+    ///    refs, is refused unconditionally, even if `unignored_dirs`
+    ///    (which may be hand-edited) claims otherwise.
     /// 2. File extension is not in IGNORED_EXTENSIONS
     /// 3. If .gitignore is loaded, the path must not be ignored by it
     ///    (never loaded when `settings.force_watch_gitignore` is true)
@@ -559,16 +576,60 @@ impl Filter {
     pub fn should_track(&self, path: &Path) -> bool {
         // 1. Check if any path component matches IGNORED_DIRS, allowing for
         // per-project opt-in via settings.unignored_dirs.
+        //
+        // `.git` gets position-aware handling, unlike every other
+        // IGNORED_DIRS entry. A bare-name entry (`target`) matches any
+        // occurrence of that exact component, but a `.git` entry in
+        // unignored_dirs is a *path* (`.git/hooks`), not a name — it must
+        // match against what comes AFTER `.git` in the path, not the
+        // `.git` component itself. So: find the first `.git` component
+        // (wherever it occurs — a nested `.git`, e.g. `sub/.git/hooks/x`,
+        // is deliberately treated identically to a top-level one, so a
+        // nested repository's hooks obey the same allowlist rather than
+        // falling through unfiltered), take everything after it as the
+        // remainder, and track only when that remainder is prefixed by an
+        // entry that is BOTH present in unignored_dirs AND independently
+        // re-checked here against GIT_RECORDABLE_PATHS. Matching is by
+        // component, never by string prefix, so `.git/hooks-evil/x` is
+        // never mistaken for a child of an allowed `.git/hooks`. A
+        // "prefixed by" match (not exact-length) is what lets children of
+        // an allowed directory, like `.git/hooks/nested/deeper.sh`, be
+        // tracked recursively.
+        //
+        // The GIT_RECORDABLE_PATHS re-check is deliberate, as a second
+        // layer on top of CLI validation (parse_unignore_dir). A
+        // hand-edited projects.json setting unignored_dirs to include
+        // ".git/objects" must not be able to make the daemon record git's
+        // object store — GIT_RECORDABLE_PATHS is consulted directly here,
+        // never assumed from what's already in unignored_dirs. Do not
+        // "simplify" this by trusting unignored_dirs alone.
+        let components: Vec<&str> = path
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
+
+        if let Some(git_idx) = components.iter().position(|&c| c == PERMANENT_IGNORED_DIR) {
+            let remainder = &components[git_idx + 1..];
+            let allowed = GIT_RECORDABLE_PATHS.iter().any(|&allowed_path| {
+                let allowed_parts: Vec<&str> = allowed_path.split('/').collect();
+                remainder.starts_with(allowed_parts.as_slice())
+                    && self
+                        .settings
+                        .unignored_dirs
+                        .contains(&format!("{PERMANENT_IGNORED_DIR}/{allowed_path}"))
+            });
+            if !allowed {
+                return false;
+            }
+        }
+
         for component in path.components() {
             if let Some(comp_str) = component.as_os_str().to_str() {
-                // `.git` is hard-refused here, before consulting
-                // unignored_dirs, deliberately as a second layer on top of
-                // CLI validation. A hand-edited projects.json setting
-                // unignored_dirs to include ".git" must not be able to make
-                // the daemon record git's object store. Do not "simplify"
-                // this into the IGNORED_DIRS branch below.
+                // `.git` components are handled entirely above — skipped
+                // here so a hand-edited bare ".git" entry in unignored_dirs
+                // can never be matched as an ordinary IGNORED_DIRS name.
                 if comp_str == PERMANENT_IGNORED_DIR {
-                    return false;
+                    continue;
                 }
                 if IGNORED_DIRS.contains(&comp_str)
                     && !self.settings.unignored_dirs.contains(comp_str)
@@ -1090,6 +1151,161 @@ mod tests {
 
         assert!(!filter.should_track(Path::new("/project/.git/config")));
         assert!(!filter.should_track(Path::new("/project/.git/objects/ab/cd")));
+    }
+
+    // -- GP-03: should_track honours .git paths -----------------------
+
+    #[test]
+    fn git_hooks_file_tracked_when_unignored() {
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+
+        assert!(filter.should_track(Path::new("/project/.git/hooks/pre-commit")));
+    }
+
+    #[test]
+    fn git_config_tracked_when_unignored() {
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/config"]))
+            .expect("create filter");
+
+        assert!(filter.should_track(Path::new("/project/.git/config")));
+    }
+
+    #[test]
+    fn git_objects_refused_even_when_hand_edited_into_unignored_dirs() {
+        // The most important test in the ticket. A hand-edited
+        // projects.json can set unignored_dirs to ".git/objects" directly,
+        // bypassing parse_unignore_dir entirely. should_track must still
+        // refuse it: GIT_RECORDABLE_PATHS is re-checked here as the source
+        // of truth, never assumed from what unignored_dirs already holds.
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/objects"]))
+            .expect("create filter");
+
+        assert!(!filter.should_track(Path::new("/project/.git/objects/ab/cdef")));
+    }
+
+    #[test]
+    fn git_refs_and_index_refused_while_hooks_allowed() {
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+
+        assert!(!filter.should_track(Path::new("/project/.git/refs/heads/main")));
+        assert!(!filter.should_track(Path::new("/project/.git/index")));
+    }
+
+    #[test]
+    fn git_hooks_evil_refused_while_hooks_allowed() {
+        // Component match, never a string prefix: ".git/hooks-evil" must
+        // not be mistaken for a child of the allowed ".git/hooks".
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+
+        assert!(!filter.should_track(Path::new("/project/.git/hooks-evil/x")));
+    }
+
+    #[test]
+    fn git_hooks_children_tracked_recursively() {
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+
+        assert!(filter.should_track(Path::new("/project/.git/hooks/nested/deeper.sh")));
+    }
+
+    #[test]
+    fn git_paths_refused_by_default_with_empty_unignored_dirs() {
+        // Baseline: an empty unignored_dirs behaves exactly like 0.20.0 —
+        // everything under .git is refused, including allowlisted names,
+        // because nothing has opted them in.
+        let filter = filter_without_gitignore();
+
+        assert!(!filter.should_track(Path::new("/project/.git/hooks/pre-commit")));
+        assert!(!filter.should_track(Path::new("/project/.git/config")));
+        assert!(!filter.should_track(Path::new("/project/.git/objects/ab/cdef")));
+    }
+
+    #[test]
+    fn nested_git_dir_honours_same_allowlist_as_top_level() {
+        // Decision: a nested .git (e.g. a directory tree that happens to
+        // contain another repository somewhere under it) is treated
+        // identically to a top-level one — the first .git component found,
+        // wherever it sits in the path, opens the same position-aware
+        // check. This is the safe choice: anything else would let a nested
+        // .git's contents fall through unfiltered, since they would never
+        // match PERMANENT_IGNORED_DIR at component index 0.
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+
+        assert!(filter.should_track(Path::new("/project/sub/.git/hooks/pre-commit")));
+        assert!(!filter.should_track(Path::new("/project/sub/.git/objects/ab/cdef")));
+    }
+
+    #[test]
+    fn git_hooks_allowed_path_still_subject_to_extension_rule() {
+        // Rule 2 (IGNORED_EXTENSIONS) still runs after rule 1 admits the
+        // path — sitting under an allowed .git path is not a blanket pass.
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+
+        assert!(!filter.should_track(Path::new("/project/.git/hooks/libfoo.rlib")));
+    }
+
+    #[test]
+    fn git_hooks_allowed_path_content_still_subject_to_binary_detection() {
+        // should_track is path-only and has no content-based rule; binary
+        // detection (is_likely_binary, GP-01) is applied independently by
+        // the engine on every path that passes the filter, regardless of
+        // where it sits. A zlib-compressed loose-object blob placed under
+        // an allowed .git path is still caught there — being on an allowed
+        // path only clears rule 1, not the downstream binary check. Same
+        // real git loose-object bytes as is_likely_binary_real_git_loose_object.
+        const REAL_GIT_LOOSE_OBJECT: &[u8] = b"\x78\x01\x0d\xca\x31\x0e\x80\x20\x0c\x00\x40\x67\x5f\xd1\x0f\x90\xb8\xf9\x1e\x4a\x0b\x36\x29\xd4\xd4\x32\xe8\xeb\x65\xbe\x43\x35\x84\xf3\xd8\xe6\xa8\x93\x1a\x13\x54\x95\x76\x05\x38\x17\x73\x62\x87\xe0\x27\xe0\xce\xaf\x5a\x5e\x68\x0e\x9f\x0a\x42\xcf\x4d\x4a\x1a\xb3\xe3\x2a\xc4\xc1\x25\xc4\xc6\xfe\x03\x54\xe8\x1c\x6f";
+
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+        let blob_path = Path::new("/project/.git/hooks/blob");
+
+        // The path itself clears rule 1 ...
+        assert!(filter.should_track(blob_path));
+        // ... but its content would still be refused downstream.
+        assert!(is_likely_binary(REAL_GIT_LOOSE_OBJECT));
+    }
+
+    #[test]
+    fn git_submodule_gitlink_file_itself_refused() {
+        // D4: a submodule's `.git` is a FILE (a gitlink), not a directory.
+        // The remainder after the .git component is empty in that case,
+        // and no GIT_RECORDABLE_PATHS entry can match an empty remainder,
+        // so the gitlink file itself is refused regardless of what is in
+        // unignored_dirs.
+        let temp = TempDir::new().expect("create temp dir");
+        let filter = Filter::new(temp.path(), settings_with_unignored(&[".git/hooks"]))
+            .expect("create filter");
+
+        assert!(!filter.should_track(Path::new("/project/sub/.git")));
+    }
+
+    #[test]
+    fn git_bare_entry_in_unignored_dirs_grants_nothing() {
+        // Reinforces git_dir_refused_even_when_unignored with an
+        // allowlisted-looking path present too: a bare ".git" entry,
+        // hand-edited into unignored_dirs, must not be treated as an
+        // ordinary IGNORED_DIRS name, and must not combine with
+        // GIT_RECORDABLE_PATHS to grant access to anything.
+        let temp = TempDir::new().expect("create temp dir");
+        let filter =
+            Filter::new(temp.path(), settings_with_unignored(&[".git"])).expect("create filter");
+
+        assert!(!filter.should_track(Path::new("/project/.git/hooks/pre-commit")));
+        assert!(!filter.should_track(Path::new("/project/.git/config")));
     }
 
     #[test]
