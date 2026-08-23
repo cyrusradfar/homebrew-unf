@@ -33,3 +33,13 @@ jobs:
       - name: Run Biome
         working-directory: app/ui
         run: npx biome check .
+      # Biome does not type-check, and biome.json disables noUnusedVariables,
+      # noUnusedImports, noNonNullAssertion, and noExplicitAny. svelte-check is
+      # what actually catches type errors; without it 22 of them survived every
+      # release gate up to 0.20.0.
+      - name: Type-check (svelte-check)
+        working-directory: app/ui
+        run: npm run check
+      - name: Unit tests (vitest)
+        working-directory: app/ui
+        run: npm test

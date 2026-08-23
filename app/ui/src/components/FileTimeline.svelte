@@ -2,7 +2,6 @@
 import { extractCandidates } from "../lib/filterUtils";
 import {
 	activeTab,
-	densityBuckets,
 	fileFilters,
 	fileTree,
 	GLOBAL_TAB,

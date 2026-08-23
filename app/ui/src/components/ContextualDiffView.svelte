@@ -1,11 +1,6 @@
 <script lang="ts">
 import { getDiff, getFileContent } from "../lib/api";
-import {
-	buildRenderItems,
-	type CollapsedRegion,
-	findWordDiffPairs,
-	formatHunkHeader,
-} from "../lib/diff-helpers";
+import { buildRenderItems, findWordDiffPairs, formatHunkHeader } from "../lib/diff-helpers";
 import { highlightLines } from "../lib/highlight";
 import { detectLanguage } from "../lib/language-map";
 import {
@@ -16,7 +11,6 @@ import {
 	selectedEntry,
 	viewMode,
 } from "../lib/stores";
-import type { WordSegment } from "../lib/word-diff";
 
 // Track which entry is currently loaded to avoid redundant fetches
 let currentEntryId = $state<number | null>(null);
@@ -238,10 +232,7 @@ function toggleCollapsedRegion(regionIndex: number) {
                 <div class="hunk-header">{formatHunkHeader(item.data)}</div>
               {:else if item.type === "line"}
                 {@const line = item.data}
-                {@const wordDiffSegments =
-                  item.hunkIndex !== undefined && item.lineIndex !== undefined
-                    ? wordDiffsByHunk[item.hunkIndex]?.get(item.lineIndex)
-                    : undefined}
+                {@const wordDiffSegments = wordDiffsByHunk[item.hunkIndex]?.get(item.lineIndex)}
                 <div class="diff-line {line.op}">
                   <span class="gutter old-num">
                     {line.old_num !== undefined ? String(line.old_num) : ""}

@@ -11,7 +11,10 @@ interface Props {
 
 let { visible, onClose }: Props = $props();
 
-let state = $state("idle");
+/** The storage-migration flow this popover is currently showing. */
+type MigrationState = "idle" | "confirm" | "migrating" | "success" | "error";
+
+let migrationState = $state<MigrationState>("idle");
 let config = $state<ConfigResponse | null>(null);
 let selectedPath = $state("");
 let errorMessage = $state("");
@@ -21,7 +24,7 @@ let loading = $state(false);
 
 // Load config when popover becomes visible
 $effect(() => {
-	if (visible && state === "idle") {
+	if (visible && migrationState === "idle") {
 		loadConfig();
 	}
 });
@@ -48,7 +51,7 @@ async function handleChangeLocation() {
 		const selected = await open({ directory: true, title: "Choose new storage location" });
 		if (selected && typeof selected === "string") {
 			selectedPath = selected;
-			state = "confirm";
+			migrationState = "confirm";
 		}
 	} catch (err) {
 		// User cancelled
@@ -56,47 +59,47 @@ async function handleChangeLocation() {
 }
 
 function handleCancel() {
-	state = "idle";
+	migrationState = "idle";
 	selectedPath = "";
 }
 
 async function handleMoveStorage() {
-	state = "migrating";
+	migrationState = "migrating";
 	migratingStep = `Copying ${config ? formatBytes(config.disk_usage_bytes) : "data"}...`;
 	// Yield so Svelte updates the DOM before the async IPC call
 	await tick();
 	try {
 		const result = await moveStorage(selectedPath);
 		backupPath = result.backup_path || "";
-		state = "success";
+		migrationState = "success";
 		// Reload config to reflect new state
 		await loadConfig();
 		// Auto-dismiss success after 10s
 		setTimeout(() => {
-			if (state === "success") {
-				state = "idle";
+			if (migrationState === "success") {
+				migrationState = "idle";
 			}
 		}, 10000);
 	} catch (err: any) {
-		state = "error";
+		migrationState = "error";
 		errorMessage = err?.message || String(err) || "Migration failed";
 	}
 }
 
 function handleDismissError() {
-	state = "idle";
+	migrationState = "idle";
 	errorMessage = "";
 	loadConfig();
 }
 
 function handleClose() {
-	if (state === "migrating") return; // Can't close during migration
+	if (migrationState === "migrating") return; // Can't close during migration
 	onClose();
 }
 
 // Handle Escape key
 function handleKeydown(e: KeyboardEvent) {
-	if (e.key === "Escape" && visible && state !== "migrating") {
+	if (e.key === "Escape" && visible && migrationState !== "migrating") {
 		handleClose();
 	}
 }
@@ -106,13 +109,13 @@ function handleKeydown(e: KeyboardEvent) {
 
 {#if visible}
   <!-- Backdrop (not during migration) -->
-  {#if state !== 'migrating'}
+  {#if migrationState !== 'migrating'}
     <div class="popover-backdrop" role="button" tabindex="0" onclick={handleClose} onkeydown={(e) => e.key === 'Enter' && handleClose()}></div>
   {/if}
 
-  <div class="settings-popover" class:locked={state === 'migrating'}>
+  <div class="settings-popover" class:locked={migrationState === 'migrating'}>
     <!-- STATE: IDLE -->
-    {#if state === 'idle'}
+    {#if migrationState === 'idle'}
       <div class="popover-header">
         <span class="popover-title">Settings</span>
       </div>
@@ -141,7 +144,7 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
 
     <!-- STATE: CONFIRM -->
-    {:else if state === 'confirm'}
+    {:else if migrationState === 'confirm'}
       <div class="popover-header">
         <span class="popover-title">Move Storage</span>
       </div>
@@ -168,7 +171,7 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
 
     <!-- STATE: MIGRATING -->
-    {:else if state === 'migrating'}
+    {:else if migrationState === 'migrating'}
       <div class="popover-header">
         <span class="popover-title">Moving Storage...</span>
       </div>
@@ -183,7 +186,7 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
 
     <!-- STATE: SUCCESS -->
-    {:else if state === 'success'}
+    {:else if migrationState === 'success'}
       <div class="popover-header">
         <span class="popover-title success-title">Moved Successfully</span>
       </div>
@@ -199,7 +202,7 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
 
     <!-- STATE: ERROR -->
-    {:else if state === 'error'}
+    {:else if migrationState === 'error'}
       <div class="popover-header">
         <span class="popover-title error-title">Storage Move Failed</span>
       </div>

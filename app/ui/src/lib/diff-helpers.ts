@@ -14,12 +14,18 @@ export interface CollapsedRegion {
 	functionName: string | null;
 }
 
-export interface RenderItem {
-	type: "region" | "hunk-header" | "line";
-	data: CollapsedRegion | DiffHunk | DiffHunkLine;
-	hunkIndex?: number;
-	lineIndex?: number;
-}
+/**
+ * A single entry in the flat diff render list.
+ *
+ * Discriminated on `type` so that narrowing on `item.type` also narrows
+ * `item.data` (and the index fields) to the shape that variant really carries.
+ * The variants mirror exactly what `buildRenderItems` constructs: only "line"
+ * items know which hunk and line they came from.
+ */
+export type RenderItem =
+	| { type: "region"; data: CollapsedRegion }
+	| { type: "hunk-header"; data: DiffHunk }
+	| { type: "line"; data: DiffHunkLine; hunkIndex: number; lineIndex: number };
 
 /**
  * Find word-diff pairs in a sequence of hunk lines.
@@ -115,10 +121,15 @@ export function buildRenderItems(hunks: DiffHunk[], lang: string | null): Render
 	const regionMap = new Map(regions.map((r) => [r.regionIndex, r]));
 	let regionIdx = 0;
 
-	if (regionMap.has(regionIdx)) {
-		items.push({ type: "region", data: regionMap.get(regionIdx)! });
+	/** Push the region at the current index, if one exists, and advance past it. */
+	const pushRegionIfPresent = () => {
+		const region = regionMap.get(regionIdx);
+		if (!region) return;
+		items.push({ type: "region", data: region });
 		regionIdx++;
-	}
+	};
+
+	pushRegionIfPresent();
 
 	for (let hunkIndex = 0; hunkIndex < hunks.length; hunkIndex++) {
 		const hunk = hunks[hunkIndex];
@@ -128,10 +139,7 @@ export function buildRenderItems(hunks: DiffHunk[], lang: string | null): Render
 			items.push({ type: "line", data: hunk.lines[lineIndex], hunkIndex, lineIndex });
 		}
 
-		if (regionMap.has(regionIdx)) {
-			items.push({ type: "region", data: regionMap.get(regionIdx)! });
-			regionIdx++;
-		}
+		pushRegionIfPresent();
 	}
 	return items;
 }
