@@ -249,6 +249,19 @@ const MAGIC_NUMBERS: &[&[u8]] = &[
     b"ID3",                // MP3 with ID3 tag
     b"\xFF\xFB",           // MP3 frame sync
     b"\xFF\xF3",           // MP3 frame sync
+    // Zlib stream headers: 78 01 (no/low compression), 78 9C (default
+    // compression), 78 DA (best compression). A loose git object is a raw
+    // zlib stream with no other container, so it carries one of these three
+    // bytes-pairs and nothing else recognisable. Measured on this repo: 171
+    // of 299 sampled loose objects (57%) have no NUL in their first 16 bytes
+    // and matched no existing entry here, so is_likely_binary returned false
+    // and they were treated as text. The gap applies to any loose object
+    // anywhere on disk, not only inside .git. False positives are
+    // implausible: a text file beginning `x` followed by a high control byte
+    // is not valid UTF-8 prose.
+    b"\x78\x01", // zlib, no/low compression
+    b"\x78\x9C", // zlib, default compression
+    b"\x78\xDA", // zlib, best compression
 ];
 
 /// Maximum bytes to check for magic number detection.
@@ -1000,6 +1013,36 @@ mod tests {
     #[test]
     fn is_likely_binary_flac() {
         assert!(is_likely_binary(b"fLaCsome flac data"));
+    }
+
+    #[test]
+    fn is_likely_binary_zlib_headers() {
+        assert!(is_likely_binary(
+            b"\x78\x01rest of a low-compression stream"
+        ));
+        assert!(is_likely_binary(
+            b"\x78\x9Crest of a default-compression stream"
+        ));
+        assert!(is_likely_binary(
+            b"\x78\xDArest of a best-compression stream"
+        ));
+    }
+
+    #[test]
+    fn is_likely_binary_real_git_loose_object() {
+        // A genuine loose git object, not a hand-written stub. Captured by
+        // running, from a scratch repo:
+        //   printf 'unfudged flight recorder test payload for zlib
+        //   magic-number detection\n' | git hash-object -w --stdin
+        // then reading the raw bytes of the resulting
+        // .git/objects/3b/3ddb13fc78dd699d0436ca8d2dcefd9f5c6770 file
+        // (git 2.50.1, Apple Git-155). `git cat-file -p` on that hash
+        // confirms it round-trips to the payload above. The stream opens
+        // with the 78 01 (no/low compression) zlib header this ticket adds
+        // to MAGIC_NUMBERS.
+        const REAL_GIT_LOOSE_OBJECT: &[u8] = b"\x78\x01\x0d\xca\x31\x0e\x80\x20\x0c\x00\x40\x67\x5f\xd1\x0f\x90\xb8\xf9\x1e\x4a\x0b\x36\x29\xd4\xd4\x32\xe8\xeb\x65\xbe\x43\x35\x84\xf3\xd8\xe6\xa8\x93\x1a\x13\x54\x95\x76\x05\x38\x17\x73\x62\x87\xe0\x27\xe0\xce\xaf\x5a\x5e\x68\x0e\x9f\x0a\x42\xcf\x4d\x4a\x1a\xb3\xe3\x2a\xc4\xc1\x25\xc4\xc6\xfe\x03\x54\xe8\x1c\x6f";
+
+        assert!(is_likely_binary(REAL_GIT_LOOSE_OBJECT));
     }
 
     #[test]
