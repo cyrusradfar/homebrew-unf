@@ -25,7 +25,7 @@
 
 use std::collections::BTreeSet;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use ignore::gitignore::GitignoreBuilder;
 
@@ -68,6 +68,69 @@ fn eligible_dirs_list() -> String {
         .join(", ")
 }
 
+/// `.git`-rooted paths `--unignore-dir` may record, given as the remainder
+/// after the `.git/` root (see [`parse_unignore_dir`]).
+///
+/// This is an **allowlist**, deliberately not a denylist. A denylist records
+/// any *new* git internal by default as git evolves — it fails unsafe: a
+/// future git version could add a sensitive file nobody has denylisted yet,
+/// and it would be recorded before anyone noticed. An allowlist fails safe:
+/// an unrecognised path is refused until someone deliberately adds it here.
+///
+/// Deliberately excluded, and why (see `docs/design/unignore-git-paths.md`
+/// decision D2 for the full table):
+/// - `objects` — git's object store. Measured at 2.4 GB in this repository
+///   alone, and 57% of sampled loose objects evaded binary detection before
+///   GP-01 — they would have been captured and line-diffed as text.
+/// - `refs`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `packed-refs` — restoring a
+///   stale ref repoints the repository at the wrong commit.
+/// - `index` — binary, and a stale index left behind by a restore is a
+///   confusing broken state, not a recoverable one.
+/// - `logs` — the reflog: high churn, no user-authored content.
+/// - `modules` — nested submodule gitdirs; reaches into another
+///   repository's internals through a path the user never named.
+const GIT_RECORDABLE_PATHS: &[&str] = &["hooks", "config", "info/exclude"];
+
+/// `GIT_RECORDABLE_PATHS` entries rendered as full `.git/`-prefixed paths
+/// and comma-joined, e.g. `".git/hooks, .git/config, .git/info/exclude"`.
+/// Shared by every `parse_unignore_dir` branch that needs to show a user
+/// which `.git` paths work, so the list shown to the user can never drift
+/// from the constant that actually gates them.
+fn git_recordable_paths_list() -> String {
+    GIT_RECORDABLE_PATHS
+        .iter()
+        .map(|path| format!(".git/{path}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The specific reason a non-allowlisted `.git` path is unsafe to record,
+/// for the handful of names a reader of issue #5 is most likely to try.
+/// `None` for anything else — `parse_unignore_dir` falls back to a generic
+/// "not on the allowlist" reason in that case, which is still accurate, just
+/// not tailored to a path-specific risk.
+fn git_path_danger_reason(remainder: &str) -> Option<&'static str> {
+    match remainder {
+        "objects" => Some(
+            "it is git's object store — gigabytes in a typical repository, and most loose \
+             objects are compressed binary that would be captured and diffed as text",
+        ),
+        "refs" | "HEAD" | "ORIG_HEAD" | "FETCH_HEAD" | "packed-refs" => {
+            Some("restoring a stale version of it would repoint the repository at the wrong commit")
+        }
+        "index" => Some(
+            "it is a binary file, and a stale index left behind by a restore is a confusing \
+             broken state, not a recoverable one",
+        ),
+        "logs" => Some("it is the reflog — high churn, with no user-authored content"),
+        "modules" => Some(
+            "it holds nested submodule gitdirs, reaching into another repository's internals \
+             through a path you never named",
+        ),
+        _ => None,
+    }
+}
+
 /// Validates a `--unignore-dir NAME` value.
 ///
 /// Pure and unit-testable with no clap dependency: it matches clap's
@@ -75,12 +138,36 @@ fn eligible_dirs_list() -> String {
 /// used directly as `value_parser = parse_unignore_dir` on the CLI's
 /// `Vec<String>` argument (wired up in UD-07).
 ///
-/// Three refusal branches, each explaining the reason rather than issuing a
-/// bare rejection:
+/// Accepts two shapes, checked in this order:
 ///
-/// - `.git`, in any case (`.git`, `.GIT`, `.Git`, ...): permanently
-///   excluded. Explains why, since "invalid" alone would invite a user to
-///   keep guessing at spellings that can never work.
+/// 1. A bare `IGNORED_DIRS` name (`target`, `dist`, ...) — accepted
+///    verbatim, as in 0.20.0.
+/// 2. A `.git`-rooted path whose remainder is on `GIT_RECORDABLE_PATHS`
+///    (`.git/hooks`, `.git/config`, `.git/info/exclude`) — accepted in
+///    `/`-joined normalised form, which strips any trailing slash
+///    (`.git/hooks/` -> `.git/hooks`) and, on input, treats `\` the same as
+///    `/` so a path typed with Windows-style separators still normalises to
+///    the canonical `/`-joined stored form.
+///
+/// Refusal branches, each explaining the reason rather than issuing a bare
+/// rejection:
+///
+/// - An absolute path, or anything containing a `..` component: refused
+///   outright, before any allowlist check. A traversal like
+///   `.git/hooks/../objects` must never get a chance to reach the object
+///   store by hiding behind an allowed-looking prefix.
+/// - Bare `.git`, in any case (`.git`, `.GIT`, `.Git`, ...) with no
+///   remainder: permanently excluded as a whole. This is the single most
+///   likely thing a reader of issue #5 will type, so the message names the
+///   paths that DO work (`.git/hooks`, `.git/config`, ...) rather than
+///   leaving the reader to guess.
+/// - `.git/<not on GIT_RECORDABLE_PATHS>` (`.git/objects`, `.git/refs`,
+///   `.git/index`, `.git/logs`, `.git/modules`, `.git/hooks-evil`, ...):
+///   refused, naming the allowlist. `objects`, `refs`, `index`, `logs`, and
+///   `modules` each get their own specific reason (see
+///   [`git_path_danger_reason`]) since those are the ones people will try.
+///   Matched by path *component*, never by string prefix, so
+///   `.git/hooks-evil` is never mistaken for a prefix of `.git/hooks`.
 /// - A name that differs from an eligible `IGNORED_DIRS` entry only by
 ///   case, e.g. `Target`: suggests the lowercase form. `IGNORED_DIRS`
 ///   matching in `should_track` is exact and case-sensitive, so `Target`
@@ -90,6 +177,75 @@ fn eligible_dirs_list() -> String {
 ///   the more likely real intent — a name like `logs` is almost certainly
 ///   being dropped by `.gitignore`, not by `IGNORED_DIRS`.
 pub fn parse_unignore_dir(name: &str) -> Result<String, String> {
+    // `\` is treated the same as `/` throughout, so a path typed with
+    // Windows-style separators still normalises to the canonical
+    // `/`-joined stored form. `name` (not `normalized`) is what gets
+    // echoed back in error messages, so refusals quote exactly what the
+    // user typed.
+    let normalized = name.replace('\\', "/");
+
+    // Absolute paths are refused before any other analysis: --unignore-dir
+    // values are always relative to the project root, so an absolute path
+    // is never a valid answer regardless of what it points at.
+    if normalized.starts_with('/') || Path::new(&normalized).is_absolute() {
+        return Err(format!(
+            "'{name}' is an absolute path. --unignore-dir takes a bare directory name or a \
+             path rooted at .git, both relative to the project root."
+        ));
+    }
+
+    let components: Vec<Component> = Path::new(&normalized).components().collect();
+
+    // A `..` anywhere refuses the whole value, before it is ever matched
+    // against the allowlist below. A traversal must never get a chance to
+    // reach the object store by riding along behind an allowed-looking
+    // prefix such as `.git/hooks/../objects`.
+    if components.iter().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!(
+            "'{name}' contains '..', which is refused outright — a path that can climb out \
+             of its stated location must never be trusted near git's object store."
+        ));
+    }
+
+    let parts: Vec<&str> = components
+        .iter()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    // Shape 2: a `.git`-rooted path. Checked before the bare-name branches
+    // below — ".git/hooks" would otherwise fall through every one of them
+    // and land on the generic "unknown name" message, which is a worse
+    // answer than the specific ones here.
+    if parts.first() == Some(&PERMANENT_IGNORED_DIR) {
+        if parts.len() == 1 {
+            // Bare `.git`, with or without a trailing slash. Name the
+            // paths that DO work; a bare refusal would send the reader
+            // back to guessing.
+            return Err(format!(
+                "'.git' can never be recorded as a whole — it would capture git's object \
+                 store while git rewrites it, and restoring it could corrupt the repository. \
+                 UNF can record specific paths inside it: {}.",
+                git_recordable_paths_list()
+            ));
+        }
+
+        let remainder = parts[1..].join("/");
+        if GIT_RECORDABLE_PATHS.contains(&remainder.as_str()) {
+            return Ok(format!(".git/{remainder}"));
+        }
+
+        let reason = git_path_danger_reason(&remainder)
+            .map(|reason| format!(" — {reason}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "'.git/{remainder}' can never be recorded{reason}. UNF can record: {}.",
+            git_recordable_paths_list()
+        ));
+    }
+
     // Checked case-insensitively and before the exact-match check below:
     // `.GIT` / `.Git` are still permanently excluded, and the reason for
     // refusing them is the same regardless of case, so they get the
@@ -1057,14 +1213,25 @@ mod tests {
     // -- parse_unignore_dir --------------------------------------------
 
     #[test]
-    fn parse_unignore_dir_rejects_git() {
+    fn parse_unignore_dir_rejects_bare_git() {
         let err = parse_unignore_dir(".git").unwrap_err();
         assert!(
             err.contains("can never be recorded"),
             "message should give a reason, not a bare refusal: {err}"
         );
         assert!(err.contains("object store"));
-        assert!(err.contains("Eligible directories:"));
+        assert!(
+            err.contains(".git/hooks") && err.contains(".git/config"),
+            "message must route the reader to the paths that DO work: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_bare_git_with_trailing_slash() {
+        // ".git/" has one path component, same as bare ".git" — same
+        // refusal, not treated as ".git" + an empty remainder.
+        let err = parse_unignore_dir(".git/").unwrap_err();
+        assert!(err.contains("can never be recorded as a whole"));
     }
 
     #[test]
@@ -1103,6 +1270,82 @@ mod tests {
         for &dir in IGNORED_DIRS.iter().filter(|&&d| d != PERMANENT_IGNORED_DIR) {
             assert_eq!(parse_unignore_dir(dir), Ok(dir.to_string()));
         }
+    }
+
+    // -- parse_unignore_dir: .git-rooted paths ---------------------------
+
+    #[test]
+    fn parse_unignore_dir_accepts_every_git_recordable_path() {
+        for &path in GIT_RECORDABLE_PATHS {
+            assert_eq!(
+                parse_unignore_dir(&format!(".git/{path}")),
+                Ok(format!(".git/{path}"))
+            );
+        }
+    }
+
+    #[test]
+    fn parse_unignore_dir_normalises_trailing_slash() {
+        assert_eq!(
+            parse_unignore_dir(".git/hooks/"),
+            Ok(".git/hooks".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_git_objects_with_specific_reason() {
+        let err = parse_unignore_dir(".git/objects").unwrap_err();
+        assert!(err.contains("object store"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_git_refs_with_specific_reason() {
+        let err = parse_unignore_dir(".git/refs").unwrap_err();
+        assert!(err.contains("repoint"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_git_index() {
+        let err = parse_unignore_dir(".git/index").unwrap_err();
+        assert!(err.contains("can never be recorded"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_git_logs() {
+        let err = parse_unignore_dir(".git/logs").unwrap_err();
+        assert!(err.contains("can never be recorded"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_git_modules() {
+        let err = parse_unignore_dir(".git/modules").unwrap_err();
+        assert!(err.contains("can never be recorded"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_git_path_traversal() {
+        let err = parse_unignore_dir(".git/hooks/../objects").unwrap_err();
+        assert!(err.contains(".."), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_lookalike_git_path_not_as_prefix() {
+        // ".git/hooks-evil" must not be treated as a prefix match on the
+        // allowlisted ".git/hooks" — component matching, not string prefix.
+        let err = parse_unignore_dir(".git/hooks-evil").unwrap_err();
+        assert!(err.contains("can never be recorded"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_absolute_path() {
+        let err = parse_unignore_dir("/etc/passwd").unwrap_err();
+        assert!(err.contains("absolute path"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_unignore_dir_rejects_absolute_git_path() {
+        let err = parse_unignore_dir("/.git/hooks").unwrap_err();
+        assert!(err.contains("absolute path"), "got: {err}");
     }
 
     // -- gitignore_shadows -----------------------------------------------
