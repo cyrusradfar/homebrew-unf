@@ -975,3 +975,209 @@ fn unignore_dir_end_to_end() {
     wait_past_debounce();
     assert_not_recorded(unf_home.path(), temp_c.path(), ".git/config");
 }
+
+/// Walks the 7 scenarios from GP-06 (`docs/tickets/unignore-git-paths.md`),
+/// mirroring `unignore_dir_end_to_end`'s structure: one daemon shared across
+/// steps so PID-unchanged assertions can chain through the whole test.
+/// Project A carries scenarios 1, 2, 3, 5, 6, 7 in sequence; project B is a
+/// fresh project used only for scenario 4, so the hand-edited registry entry
+/// (which bypasses the CLI entirely) never has to be unwound to keep testing
+/// project A's plain-`unf watch` reset in scenario 7.
+#[test]
+fn unignore_git_paths_end_to_end() {
+    let temp_a = TempDir::new().expect("Failed to create temp dir A");
+    let temp_b = TempDir::new().expect("Failed to create temp dir B");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    // Same real git loose-object bytes as
+    // `git_hooks_allowed_path_content_still_subject_to_binary_detection` in
+    // src/watcher/filter.rs — a genuine zlib stream (header 0x78 0x01), not
+    // a hand-written stub, per GP-01's acceptance criteria.
+    const REAL_GIT_LOOSE_OBJECT: &[u8] = b"\x78\x01\x0d\xca\x31\x0e\x80\x20\x0c\x00\x40\x67\x5f\xd1\x0f\x90\xb8\xf9\x1e\x4a\x0b\x36\x29\xd4\xd4\x32\xe8\xeb\x65\xbe\x43\x35\x84\xf3\xd8\xe6\xa8\x93\x1a\x13\x54\x95\x76\x05\x38\x17\x73\x62\x87\xe0\x27\xe0\xce\xaf\x5a\x5e\x68\x0e\x9f\x0a\x42\xcf\x4d\x4a\x1a\xb3\xe3\x2a\xc4\xc1\x25\xc4\xc6\xfe\x03\x54\xe8\x1c\x6f";
+
+    // ------------------------------------------------------------------
+    // Scenario 1: .git/hooks/pre-commit is NOT recorded by default.
+    //
+    // Every directory used anywhere below for project A is created BEFORE
+    // the first `unf watch`, including .git/objects/ab, deliberately. On
+    // Linux, inotify registers one watch per directory, so a file written
+    // into a directory created after the recursive watch was established
+    // can be missed entirely while the watch for it is still being added.
+    // macOS FSEvents is path-based and has no such window, which is why
+    // creating them late passes locally and fails only on Linux CI (see
+    // the identical note on `unignore_dir_end_to_end` above).
+    //
+    // .gitignore is also written up front, with a `hooks/` rule, so
+    // scenario 6 (gitignore is skipped inside an allowed .git path) is
+    // proven by the SAME reload as scenario 2 below rather than needing a
+    // second one: `Daemon::sync_with_registry` only rebuilds a project's
+    // Filter when its WatchSettings actually changed (the `to_reload`
+    // diff), so a .gitignore edit written after that point would still
+    // need an unrelated settings change to ever be picked up. Seeding it
+    // before the very first watch sidesteps that entirely.
+    // ------------------------------------------------------------------
+    fs::write(temp_a.path().join(".gitignore"), "hooks/\n").expect("write .gitignore (A)");
+    fs::create_dir_all(temp_a.path().join(".git/hooks")).expect("mkdir .git/hooks (A)");
+    fs::create_dir_all(temp_a.path().join(".git/objects/ab")).expect("mkdir .git/objects/ab (A)");
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_a.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let pid_after_a1 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after watching A");
+    assert!(
+        is_alive(pid_after_a1),
+        "Daemon should be alive after watching A"
+    );
+
+    fs::write(
+        temp_a.path().join(".git/hooks/pre-commit"),
+        "#!/bin/sh\necho pre-commit\n",
+    )
+    .expect("write .git/hooks/pre-commit");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_a.path(), ".git/hooks/pre-commit");
+
+    // ------------------------------------------------------------------
+    // Scenario 2: re-watch A with --unignore-dir .git/hooks: recorded,
+    // with NO daemon restart. PID is asserted unchanged BEFORE the
+    // recording check, per the ticket.
+    //
+    // Scenario 6 rides along here: .gitignore has carried a `hooks/` rule
+    // since before the very first watch above, so this write being
+    // recorded proves .gitignore is skipped inside an allowed .git path,
+    // not merely that .git/hooks is allowed at all.
+    // ------------------------------------------------------------------
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_a.path())
+        .arg("watch")
+        .arg("--unignore-dir")
+        .arg(".git/hooks")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(300));
+
+    let pid_after_a2 = read_pid(&pid_path(unf_home.path()))
+        .expect("Should read PID after re-watch with --unignore-dir .git/hooks");
+    assert_eq!(
+        pid_after_a1, pid_after_a2,
+        "re-watching A with --unignore-dir .git/hooks must reuse the running \
+         daemon (same PID), not restart it"
+    );
+
+    fs::write(
+        temp_a.path().join(".git/hooks/post-commit"),
+        "#!/bin/sh\necho post-commit\n",
+    )
+    .expect("write .git/hooks/post-commit");
+    wait_until_recorded(unf_home.path(), temp_a.path(), ".git/hooks/post-commit");
+
+    // ------------------------------------------------------------------
+    // Scenario 3: .git/objects/** is NOT recorded while .git/hooks is
+    // allowed — the whole point of the feature. Plain text content,
+    // deliberately, to isolate the path refusal inside `should_track`
+    // from the content-based binary check exercised separately in
+    // scenario 5 below.
+    // ------------------------------------------------------------------
+    fs::write(
+        temp_a.path().join(".git/objects/ab/cdef"),
+        "not really a loose object, but should never be recorded either way\n",
+    )
+    .expect("write .git/objects/ab/cdef");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_a.path(), ".git/objects/ab/cdef");
+
+    // ------------------------------------------------------------------
+    // Scenario 5: a real zlib-compressed blob written under the
+    // now-allowed .git/hooks path is still not recorded — being on an
+    // allowed path only clears the `should_track` path check (rule 1),
+    // not the downstream magic-number binary check (GP-01).
+    // ------------------------------------------------------------------
+    fs::write(temp_a.path().join(".git/hooks/blob"), REAL_GIT_LOOSE_OBJECT)
+        .expect("write .git/hooks/blob");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_a.path(), ".git/hooks/blob");
+
+    // ------------------------------------------------------------------
+    // Scenario 7: plain `unf watch` resets the un-ignore list; hooks stop
+    // being recorded.
+    // ------------------------------------------------------------------
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_a.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(300));
+
+    let pid_after_a3 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after final re-watch of A");
+    assert_eq!(
+        pid_after_a2, pid_after_a3,
+        "resetting the un-ignore list must also reuse the running daemon"
+    );
+
+    wait_until_unignore_dir_reverted(unf_home.path(), temp_a.path(), ".git/hooks");
+
+    // ------------------------------------------------------------------
+    // Scenario 4: .git/objects forced into unignored_dirs BY HAND (both
+    // projects.json and intent.json, bypassing the CLI's
+    // `parse_unignore_dir` validator entirely): still refused. Proves the
+    // `should_track` layer independently of CLI validation. Project B:
+    // same daemon, fresh project, so this hand-edited entry never has to
+    // be unwound to keep testing project A's plain-`unf watch` reset
+    // above.
+    //
+    // "target" is hand-edited in alongside ".git/objects" purely as a
+    // reload witness: a positive recording under target/ proves the
+    // daemon actually picked up the hand-edited settings, so the negative
+    // .git/objects assertion below cannot be explained by "the reload
+    // never happened."
+    // ------------------------------------------------------------------
+    fs::create_dir_all(temp_b.path().join("target")).expect("mkdir target (B)");
+    fs::create_dir_all(temp_b.path().join(".git/objects/ab")).expect("mkdir .git/objects/ab (B)");
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp_b.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let pid_after_b1 =
+        read_pid(&pid_path(unf_home.path())).expect("Should read PID after watching B");
+    assert_eq!(
+        pid_after_a3, pid_after_b1,
+        "adding project B must reuse the running daemon, not spawn a new one"
+    );
+
+    hand_edit_unignored_dirs(unf_home.path(), temp_b.path(), &["target", ".git/objects"]);
+    // Signal the daemon directly, bypassing `unf watch` (which would
+    // overwrite the hand edit with CLI-validated settings). Only PIDs read
+    // from this test's own UNF_HOME are ever signaled — see the daemon
+    // safety notes at the top of this file.
+    let kill_result = unsafe { libc::kill(pid_after_b1 as i32, libc::SIGUSR1) };
+    assert_eq!(
+        kill_result, 0,
+        "failed to signal daemon (PID {}) to reload the hand-edited registry",
+        pid_after_b1
+    );
+
+    // The SIGUSR1 reload is asynchronous, so this rewrites the probe until
+    // the rebuilt Filter accepts it. A single write can land before the
+    // reload is applied, get rejected by the old Filter, and never be
+    // re-offered.
+    wait_until_recorded_with_rewrite(unf_home.path(), temp_b.path(), "target/proof.rs");
+
+    fs::write(
+        temp_b.path().join(".git/objects/ab/cdef"),
+        "still refused even with .git/objects hand-forced into unignored_dirs\n",
+    )
+    .expect("write .git/objects/ab/cdef (B)");
+    wait_past_debounce();
+    assert_not_recorded(unf_home.path(), temp_b.path(), ".git/objects/ab/cdef");
+}
