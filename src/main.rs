@@ -266,7 +266,7 @@ struct WatchArgs {
     #[arg(long)]
     force_watch_gitignore: bool,
 
-    /// Also record an excluded directory such as target (repeat to add more)
+    /// Also record an excluded directory (target) or a git path (.git/hooks); repeat to add more
     // Validated by clap before `cli::watch::run` sees any value, so a bad
     // name anywhere in a repeated flag set aborts the whole command instead
     // of writing a half-applied list to the registry. Kept off the doc

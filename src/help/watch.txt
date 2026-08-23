@@ -2,9 +2,10 @@ Starts the flight recorder for the current directory. UNF respects .gitignore
 by default and does not record the files it excludes.
 
 Examples:
-  unf watch                          Start watching the current directory
-  unf watch --force-watch-gitignore  Also record gitignored files and dotfiles
-  unf watch --unignore-dir target    Also record the target directory
+  unf watch                            Start watching the current directory
+  unf watch --force-watch-gitignore    Also record gitignored and hidden files
+  unf watch --unignore-dir target      Also record the target directory
+  unf watch --unignore-dir .git/hooks  Also record the git hooks
 
 --force-watch-gitignore:
   UNF records the files that .gitignore excludes. It also records hidden
@@ -28,30 +29,82 @@ Excluded directories:
   It looks at the top level of the project only. A nested directory, such
   as packages/web/node_modules, is skipped but not named.
 
+  UNF skips .git as a whole directory. It can record three paths inside
+  it. See "Git paths" below.
+
 --unignore-dir NAME:
   Records one excluded directory in this project. Repeat the flag to add
   more than one directory:
     unf watch --unignore-dir dist --unignore-dir build
 
+  The flag takes two forms. The first form is a bare directory name. The
+  second form is a path inside .git.
+
   Valid names:
     node_modules  target  .next  __pycache__  .venv  venv  .tox  dist
     build
 
-  UNF never records .git, and the flag refuses that name. UNF would copy
-  git's object store while git rewrites it. A restore could then damage
-  the repository. Git already records your history.
+  Valid git paths:
+    .git/hooks  .git/config  .git/info/exclude
 
   The setting stays on for this project until you turn it off. Run
   `unf watch` with no flag to turn it off.
 
-  Cost: these directories are large and they change often. A Rust target
-  directory holds gigabytes. UNF skips the compiled parts of it, such as
-  .rlib and .o files. Thousands of small text files remain, and cargo
-  rewrites them on every build. Each build then adds snapshots. Check the
-  store size with `unf status`. Free space with `unf prune --older-than 7d`.
+  Cost of a name: these directories are large and they change often. A
+  Rust target directory holds gigabytes. UNF skips the compiled parts of
+  it, such as .rlib and .o files. Thousands of small text files remain,
+  and cargo rewrites them on every build. Each build then adds snapshots.
+  Check the store size with `unf status`. Free space with
+  `unf prune --older-than 7d`.
 
   The other rules still apply inside the directory. UNF skips binary
   files, and it obeys .gitignore unless you also turn that off.
+
+Git paths:
+  Git does not track the files inside .git. So git cannot recover them.
+  UNF can record three of them:
+    unf watch --unignore-dir .git/hooks --unignore-dir .git/config
+
+  Valid git paths:
+    .git/hooks         Every hook, and every file below it
+    .git/config        The repository configuration
+    .git/info/exclude  The local ignore file
+
+  Use this when an agent writes a hook or changes a remote.
+
+  UNF refuses every other path inside .git. The flag gives you the reason
+  each time. The object store, .git/objects, holds gigabytes of
+  compressed data, and git rewrites it constantly. The refs, .git/refs,
+  point at commits. A restore of a stale ref would point the repository
+  at the wrong commit. UNF also refuses .git/index, .git/logs, and
+  .git/modules. UNF refuses the bare name .git for the same reasons.
+
+  UNF refuses these paths twice. The flag refuses them, and the recorder
+  refuses them again. An edited settings file cannot record the object
+  store.
+
+  Cost: this is cheap. It is not like target. A new repository holds 14
+  hooks. All 14 are .sample files, and git never changes them. UNF
+  records them once and then stays quiet. After that, UNF records a hook
+  only when you or an agent edits it. .git/config changes when a remote
+  or a setting changes, which is rare.
+
+  .gitignore does not apply inside .git. Git applies .gitignore to the
+  working tree only. UNF does the same. So a git path works on its own.
+  You do not need --force-watch-gitignore with it.
+
+  The other rules still apply. UNF skips binary files inside .git. It
+  also skips a file whose name starts with a dot.
+
+  Submodules are not covered. A submodule keeps its .git as a file, not
+  as a directory. That file points into the parent .git/modules
+  directory, and UNF refuses that path. So `--unignore-dir .git/hooks`
+  records the hooks of this repository only. It does not record the hooks
+  of a submodule.
+
+  Restore care: `unf restore` can put back an old .git/config. That can
+  revert a remote URL. UNF always takes a safety snapshot before it
+  restores, so you can get the current file back.
 
 Both flags together:
   Most projects also list these directories in .gitignore. Two rules then
@@ -64,3 +117,6 @@ Both flags together:
   `unf watch` warns you when .gitignore also excludes a directory that you
   asked for. Read the warning: without the second flag, the directory
   stays unrecorded.
+
+  Git paths are different. .gitignore never applies inside .git, so a git
+  path needs one flag only.
