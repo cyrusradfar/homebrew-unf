@@ -166,7 +166,15 @@ for BOOT_ATTEMPT in $(seq 1 "$MAX_BOOT_ATTEMPTS"); do
     echo "[FAIL] Timed out waiting for VM IP after ${MAX_BOOT_ATTEMPTS} attempts"
     echo ""
     echo "This usually means the macOS Virtualization framework (vmnet) is stuck."
-    echo "Try: reboot your Mac, or run 'sudo launchctl kickstart -k system/com.apple.networking.vmnet'"
+    echo "Before assuming vmnet is broken, check it directly — this hint used to"
+    echo "name a service that does not exist on macOS 26, which sends you nowhere:"
+    echo "  ifconfig bridge100     # host side of the shared network, only exists while a VM runs"
+    echo "  ping -c 3 <vm-ip>      # tart ip reads the DHCP lease file, so it reports an"
+    echo "                         # address even when the VM is unreachable"
+    echo "If the bridge is up and the VM answers ping, networking is fine and the VM"
+    echo "is simply slow to start sshd — re-run before touching system networking."
+    echo "Otherwise: reboot, or restart the DHCP daemon with"
+    echo "  sudo launchctl kickstart -k system/com.apple.bootpd"
     exit 1
   fi
   echo "[PASS] VM IP: ${VM_IP}"
