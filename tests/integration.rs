@@ -2673,3 +2673,355 @@ fn sentinel_clears_stale_stopped_file() {
         "sentinel should clear stale stopped file for intended project within 15s"
     );
 }
+
+// --- T6: `--json` machine-timestamp contract guard ---
+//
+// The shipped v0.21.0 Mac app resolves the CLI at a fixed path and appends
+// `--json` to every call. v0.21.1 ships no app-side fix, so the entire
+// contract between app and CLI is the `--json` schema. T5 (commit 2833347)
+// added a UTC offset to `format_local_time`. A design audit concluded this
+// is safe because only two *display* strings route through it in `--json`
+// output — `recording_since` and `last_activity` in `list --json` — and no
+// app handler reads either.
+//
+// The tests below prove that mechanically: every timestamp-shaped string
+// found anywhere in the `--json` output of `list`, `log`, `status`, and
+// `log --density` must parse as RFC 3339 with a `+00:00` offset, except the
+// two named display fields. That catches a future field accidentally
+// routed through `format_local_time` even if nobody remembers to update
+// this test file's field list.
+//
+// A v0.21.0-vs-v0.21.1 binary capture diff remains a release-gate item
+// (see the release checklist) — deliberately out of scope here, since
+// building or checking out the old revision would require a `git checkout`
+// that could destroy other agents' in-flight work in this same tree.
+
+/// Fields whose value is a human display string by design, not a
+/// machine-readable timestamp. Both appear only in `list --json`.
+///
+/// `recording_since` is the local-time display companion to
+/// `oldest_snapshot_time` — see `list_json_omits_oldest_and_newest_snapshot_time_keys`
+/// below for why that machine-readable twin isn't actually in the JSON
+/// today. Normalising `recording_since` to RFC 3339 would just duplicate a
+/// field that (once serialized) already carries the timezone-independent
+/// value. `last_activity` is a relative "N days ago" string.
+const NON_RFC3339_DISPLAY_FIELDS: &[&str] = &["recording_since", "last_activity"];
+
+/// True when `s` opens with the `YYYY-MM-DD` + separator shape shared by
+/// both RFC 3339 (`2026-08-25T22:20:14+00:00`) and the local display form
+/// `format_local_time` prints (`2026-08-25 22:20:14 -0600`). Pure string
+/// inspection — no parsing, no clock.
+fn looks_like_timestamp(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 11
+        && b[0..4].iter().all(u8::is_ascii_digit)
+        && b[4] == b'-'
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[7] == b'-'
+        && b[8..10].iter().all(u8::is_ascii_digit)
+        && (b[10] == b'T' || b[10] == b' ')
+}
+
+/// Walks every string leaf in a JSON value, calling `visit(key, value)` for
+/// each. `key` is the field name the string was found under; an array
+/// inherits its parent object's key for any leaf strings it contains
+/// directly (unused by the shapes this test suite produces, but kept
+/// correct rather than assumed away).
+fn walk_json_strings(value: &serde_json::Value, key: &str, visit: &mut impl FnMut(&str, &str)) {
+    match value {
+        serde_json::Value::String(s) => visit(key, s),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                walk_json_strings(item, key, visit);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                walk_json_strings(v, k, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Asserts every timestamp-shaped string anywhere in `json` parses as RFC
+/// 3339 with a `+00:00` offset, except fields named in
+/// `NON_RFC3339_DISPLAY_FIELDS` — which must instead fail that parse,
+/// proving they still carry their human display shape rather than having
+/// been silently normalised.
+fn assert_json_timestamps_are_rfc3339(json: &serde_json::Value, command: &str) {
+    let mut violations = Vec::new();
+
+    walk_json_strings(json, "$root", &mut |key, value| {
+        if !looks_like_timestamp(value) {
+            return;
+        }
+        let parsed = chrono::DateTime::parse_from_rfc3339(value);
+        if NON_RFC3339_DISPLAY_FIELDS.contains(&key) {
+            if parsed.is_ok() {
+                violations.push(format!(
+                    "field `{key}` = {value:?} is allowlisted as a non-RFC-3339 \
+                     display string, but it parses as RFC 3339 anyway — either it \
+                     was normalised (duplicating its machine-readable twin) or it \
+                     should be dropped from the allowlist"
+                ));
+            }
+        } else {
+            match parsed {
+                Ok(dt) if dt.offset().local_minus_utc() == 0 => {}
+                Ok(_) => violations.push(format!(
+                    "field `{key}` = {value:?} parses as RFC 3339 but does not \
+                     carry a +00:00 offset"
+                )),
+                Err(e) => violations.push(format!(
+                    "field `{key}` = {value:?} looks like a timestamp but is not \
+                     RFC 3339 ({e}) — was it routed through format_local_time?"
+                )),
+            }
+        }
+    });
+
+    assert!(
+        violations.is_empty(),
+        "`unf {command} --json` produced non-RFC-3339 machine timestamp field(s):\n  {}",
+        violations.join("\n  ")
+    );
+}
+
+#[test]
+fn looks_like_timestamp_shape_detection() {
+    assert!(looks_like_timestamp("2026-08-25T22:20:14+00:00"));
+    assert!(looks_like_timestamp("2026-08-25 22:20:14 -0600"));
+    assert!(!looks_like_timestamp("112 days ago"));
+    assert!(!looks_like_timestamp("0 seconds ago"));
+    assert!(!looks_like_timestamp("watching"));
+    assert!(!looks_like_timestamp(""));
+    assert!(!looks_like_timestamp("2026"));
+    // A cursor string embeds an RFC 3339 prefix but is not itself one —
+    // `looks_like_timestamp` correctly flags it as timestamp-*shaped*;
+    // telling it apart from a real timestamp is `assert_json_timestamps_are_rfc3339`'s
+    // job (via the full RFC 3339 parse), not this pure shape check's.
+    assert!(looks_like_timestamp("2026-08-25T22:20:14+00:00:5782"));
+}
+
+/// Ticket premise check: the design audit's line reference (`list.rs:481-491`)
+/// describes `oldest_snapshot_time`/`newest_snapshot_time` as
+/// "`Option<DateTime<Utc>>` serde-serialized" fields of `list --json`. They
+/// are not: both carry `#[serde(skip)]` (see `ProjectInfo` in
+/// `src/cli/list.rs`) and exist only to feed the human-readable range
+/// display. This test documents the actual contract mechanically instead of
+/// trusting that line reference — if a future change starts serializing
+/// them, this test's failure is the signal to add them to the RFC-3339 guard
+/// below rather than to the display-field allowlist.
+#[test]
+fn list_json_omits_oldest_and_newest_snapshot_time_keys() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(200));
+    fs::write(temp.path().join("a.txt"), "hello").expect("write");
+    thread::sleep(Duration::from_millis(4000));
+
+    let out = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("list")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let project = &json["projects"][0];
+
+    assert!(
+        project.get("oldest_snapshot_time").is_none(),
+        "oldest_snapshot_time should not appear in list --json (skip-serialized): {stdout}"
+    );
+    assert!(
+        project.get("newest_snapshot_time").is_none(),
+        "newest_snapshot_time should not appear in list --json (skip-serialized): {stdout}"
+    );
+    assert!(
+        project["recording_since"].is_string(),
+        "recording_since should still be present as the display twin: {stdout}"
+    );
+}
+
+/// `recording_since` must keep `format_local_time`'s display shape — the
+/// `%Y-%m-%d %H:%M:%S %z` form, 25 characters wide, offset included — and
+/// must NOT be normalised to RFC 3339. Normalising it would only duplicate
+/// `oldest_snapshot_time`, which already sits beside it in `ProjectInfo` as
+/// the (currently unserialized — see above) machine-readable twin.
+#[test]
+fn list_json_recording_since_keeps_local_display_shape_with_offset() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(200));
+    fs::write(temp.path().join("a.txt"), "hello").expect("write");
+    thread::sleep(Duration::from_millis(4000));
+
+    let out = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("list")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let recording_since = json["projects"][0]["recording_since"]
+        .as_str()
+        .expect("recording_since should be a string");
+
+    assert_eq!(
+        recording_since.len(),
+        25,
+        "recording_since should be the 25-char '%Y-%m-%d %H:%M:%S %z' form, got {recording_since:?}"
+    );
+    assert!(
+        chrono::DateTime::parse_from_str(recording_since, "%Y-%m-%d %H:%M:%S %z").is_ok(),
+        "recording_since should parse as the local display format, got {recording_since:?}"
+    );
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(recording_since).is_err(),
+        "recording_since should NOT parse as RFC 3339 — normalising it would just \
+         duplicate oldest_snapshot_time, got {recording_since:?}"
+    );
+}
+
+#[test]
+fn json_list_machine_timestamps_are_rfc3339_except_display_fields() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(200));
+    fs::write(temp.path().join("a.txt"), "hello").expect("write");
+    thread::sleep(Duration::from_millis(4000));
+
+    let out = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("list")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_json_timestamps_are_rfc3339(&json, "list");
+}
+
+#[test]
+fn json_log_machine_timestamps_are_rfc3339() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(200));
+    // A single entry stays on one page, so `next_cursor` serializes as
+    // `null` rather than a `RFC3339:id` string — keeping this test's scope
+    // to plain timestamp fields. Cursor-string parsing is covered by
+    // `log_json_cursor_pagination` elsewhere in this file.
+    fs::write(temp.path().join("a.txt"), "hello").expect("write");
+    thread::sleep(Duration::from_millis(4000));
+
+    let out = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("log")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        json["next_cursor"].is_null(),
+        "expected a single-page result with no cursor: {stdout}"
+    );
+    assert_json_timestamps_are_rfc3339(&json, "log");
+}
+
+#[test]
+fn json_status_machine_timestamps_are_rfc3339() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(200));
+    fs::write(temp.path().join("a.txt"), "hello").expect("write");
+    thread::sleep(Duration::from_millis(4000));
+
+    let out = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("status")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    // Sanity: the fields this test exists to check are actually present,
+    // so the RFC-3339 guard below isn't vacuously passing over an empty tree.
+    assert!(
+        json["since"].is_string() && json["newest"].is_string(),
+        "expected since/newest to be populated after a snapshot: {stdout}"
+    );
+    assert_json_timestamps_are_rfc3339(&json, "status");
+}
+
+#[test]
+fn json_log_density_machine_timestamps_are_rfc3339() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(200));
+    fs::write(temp.path().join("a.txt"), "hello").expect("write");
+    fs::write(temp.path().join("b.txt"), "world").expect("write");
+    thread::sleep(Duration::from_millis(4000));
+
+    let out = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("log")
+        .arg("--density")
+        .arg("--buckets")
+        .arg("5")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        json["total"].as_u64().unwrap_or(0) >= 2,
+        "expected populated buckets: {stdout}"
+    );
+    assert_json_timestamps_are_rfc3339(&json, "log --density");
+}
