@@ -18,6 +18,13 @@ use crate::storage;
 #[derive(serde::Serialize)]
 struct RestartOutput {
     status: String,
+    /// Auto-start state *after* the command ran. Absent on the `no_projects`
+    /// path, where auto-start is deliberately left alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_restart: Option<bool>,
+    /// True only when this command installed auto-start that was missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_restart_enabled: Option<bool>,
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -59,6 +66,8 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         if format == OutputFormat::Json {
             let output = RestartOutput {
                 status: "no_projects".to_string(),
+                auto_restart: None,
+                auto_restart_enabled: None,
             };
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         } else {
@@ -77,6 +86,19 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         }
     }
 
+    // Reinstall auto-start if it went missing. Runs *after* the no-projects
+    // guard (so it cannot undo `unf unwatch`) and *before* the sentinel starts:
+    // on macOS `launchctl load -w` starts the sentinel itself, so installing
+    // first leaves exactly one sentinel, owned by launchd.
+    let (autostart_enabled_now, autostart_present) = match crate::autostart::ensure_installed() {
+        Ok(pair) => pair,
+        Err(e) => {
+            // Cosmetic-tier: the daemon is already restarting. Warn, do not fail.
+            super::output::print_warning(&format!("Failed to enable auto-start: {}", e));
+            (false, false)
+        }
+    };
+
     // Start sentinel (sentinel will start daemon)
     crate::sentinel::ensure_sentinel_running()?;
 
@@ -86,10 +108,16 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     if format == OutputFormat::Json {
         let output = RestartOutput {
             status: "restarted".to_string(),
+            auto_restart: Some(autostart_present),
+            auto_restart_enabled: Some(autostart_enabled_now),
         };
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
         super::output::print_status("Restarted", "daemon");
+        // Report only when we acted *and* it worked. Silence is the healthy path.
+        if autostart_enabled_now && autostart_present {
+            super::output::print_status("Enabled", "auto-restart on login");
+        }
     }
 
     Ok(())
@@ -97,10 +125,60 @@ pub fn run(_project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
 
 #[cfg(test)]
 mod tests {
+    use super::RestartOutput;
+
     #[test]
     fn restart_no_projects() {
         // This is a basic sanity test. Full integration testing happens in WS3-08.
         // Just verify that the function signature compiles and is runnable.
         // The actual daemon behavior is tested in integration tests.
+    }
+
+    /// The `no_projects` path must not mention auto-start at all: the command
+    /// deliberately leaves it alone when nothing is registered.
+    #[test]
+    fn no_projects_json_omits_autostart_fields() {
+        let json = serde_json::to_string(&RestartOutput {
+            status: "no_projects".to_string(),
+            auto_restart: None,
+            auto_restart_enabled: None,
+        })
+        .expect("serialize");
+
+        assert!(!json.contains("auto_restart"), "got: {}", json);
+        assert!(json.contains("\"status\":\"no_projects\""), "got: {}", json);
+    }
+
+    /// Auto-start already present: state is reported, but we did not act.
+    #[test]
+    fn already_installed_json_reports_state_without_enable() {
+        let json = serde_json::to_string(&RestartOutput {
+            status: "restarted".to_string(),
+            auto_restart: Some(true),
+            auto_restart_enabled: Some(false),
+        })
+        .expect("serialize");
+
+        assert!(json.contains("\"auto_restart\":true"), "got: {}", json);
+        assert!(
+            json.contains("\"auto_restart_enabled\":false"),
+            "got: {}",
+            json
+        );
+    }
+
+    /// The `status` field is never removed or renamed — the shipped Mac app
+    /// reads it and is not being rebuilt.
+    #[test]
+    fn restarted_json_keeps_status_field() {
+        let json = serde_json::to_string(&RestartOutput {
+            status: "restarted".to_string(),
+            auto_restart: Some(true),
+            auto_restart_enabled: Some(true),
+        })
+        .expect("serialize");
+
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed["status"], "restarted");
     }
 }
