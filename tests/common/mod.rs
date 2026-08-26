@@ -72,9 +72,28 @@ pub fn unf_cmd() -> CargoCmd {
 }
 
 /// Get a Command instance with an isolated UNF_HOME.
+///
+/// Also isolates `HOME` (and `XDG_CONFIG_HOME` on Linux) to a subdirectory
+/// under `unf_home`. This matters because `autostart::launchd_dir()` (macOS)
+/// and `dirs::config_dir()` (Linux, via `XDG_CONFIG_HOME` falling back to
+/// `HOME`) resolve independently of `UNF_HOME`. Without this, every
+/// `watch`/`init` subprocess in the suite would write the developer's real
+/// `~/Library/LaunchAgents/com.unfudged.sentinel.plist` (or systemd unit) and
+/// run `launchctl`/`systemctl` against the real login session.
+///
+/// The fake home lives inside `unf_home` rather than in its own `TempDir`
+/// because `unf_home` is already owned by the caller's `TempDir` for the
+/// duration of the test — nesting avoids introducing a second temp directory
+/// that could be dropped (and thus deleted out from under the subprocess)
+/// independently of `unf_home`'s lifetime.
 pub fn isolated_cmd(unf_home: &Path) -> CargoCmd {
+    let fake_home = unf_home.join("home");
+    fs::create_dir_all(&fake_home).expect("failed to create isolated HOME dir");
+
     let mut cmd = unf_cmd();
     cmd.env("UNF_HOME", unf_home);
+    cmd.env("HOME", &fake_home);
+    cmd.env("XDG_CONFIG_HOME", fake_home.join(".config"));
     cmd
 }
 
