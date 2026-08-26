@@ -3182,8 +3182,11 @@ fn list_json_recording_since_keeps_local_display_shape_with_offset() {
     );
     assert!(
         chrono::DateTime::parse_from_rfc3339(recording_since).is_err(),
-        "recording_since should NOT parse as RFC 3339 — normalising it would just \
-         duplicate oldest_snapshot_time, got {recording_since:?}"
+        "recording_since should NOT parse as RFC 3339 — it is a display string, like \
+         its neighbour last_activity, and pinning it to UTC would change a value the \
+         CHANGELOG documents as local. Note oldest_snapshot_time is NOT the machine \
+         twin here: it is #[serde(skip)] and never reaches the JSON. Got \
+         {recording_since:?}"
     );
 }
 

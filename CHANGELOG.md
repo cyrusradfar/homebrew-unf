@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Changed
-- Human-readable timestamps now carry their UTC offset: `unf log` prints `2026-08-25 21:10:03 -0600` where it printed `2026-08-25 21:10:03`. The old output did not say which zone it meant, so you could not tell a local time from a UTC one, and you could not paste it back into `--at`. **The timestamp column in human `unf log` output is now 6 characters wider.** Anything that scrapes human output by column offset needs to move. `--json` is unchanged and stays the stable interface for scripts and agents.
+- Human-readable timestamps now carry their UTC offset: `unf log` prints `2026-08-25 21:10:03 -0600` where it printed `2026-08-25 21:10:03`. The old output did not say which zone it meant, so you could not tell a local time from a UTC one, and you could not paste it back into `--at`. **The timestamp column in human `unf log` output is now 6 characters wider.** Anything that scrapes human output by column offset needs to move.
+
+  Machine timestamps in `--json` are unchanged — every one is still RFC 3339 UTC. **One `--json` value does change:** `unf list --json` reports `recording_since` as `"2026-08-25 21:10:03 -0600"` instead of `"2026-08-25 21:10:03"`. It is a display string, like its neighbour `last_activity` (`"2 hours ago"`), and it has never been RFC 3339 — but if you parse it, widen your parser. No field was added, removed, or renamed.
 - `--at`, `--since`, `--until`, and `--older-than` now accept four forms:
   1. Relative: `5m`, `2h`, `3d`
   2. RFC 3339: `2026-08-25T21:10:03Z`, `...+00:00`, `...-06:00` — as stated
