@@ -1218,6 +1218,293 @@ fn prune_after_stop_with_data() {
         .stdout(predicate::str::contains("Nothing to prune"));
 }
 
+/// `--older-than` with an offset-less spec must resolve it in the *local*
+/// zone, not UTC. Regression guard for the widened `parse_time_spec` grammar.
+///
+/// Fixture: pick a naive spec three hours before "now", then run `prune` in a
+/// subprocess pinned to a fixed UTC-6 zone via `TZ`. Two readings of that
+/// spec disagree by six hours:
+/// - Correct (local, UTC-6): spec + 6h = now + 3h — after the snapshot we
+///   just made, so it counts as prunable.
+/// - Buggy (bare UTC): spec as-is = now - 3h — before the snapshot, so it
+///   would NOT be pruned.
+///
+/// `snapshots_removed == 1` is only reachable via the local reading, so this
+/// fails loudly if the offset-less path regresses to UTC.
+///
+/// `TZ` is set with `.env()` on the subprocess command, not via `std::env`
+/// in-process, so no lock is needed even though `cargo test` is
+/// multi-threaded — a fixed-offset POSIX form (`UTC+6`) is used instead of a
+/// named zone (e.g. `America/Chicago`) so the test has no dependency on
+/// `/usr/share/zoneinfo`, which minimal Docker images may lack.
+#[test]
+fn prune_older_than_offsetless_is_local_not_utc() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+
+    let mut init_cmd = isolated_cmd(unf_home.path());
+    init_cmd
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+    thread::sleep(Duration::from_millis(200));
+
+    // Create exactly one snapshot, timestamped at roughly "now" (UTC).
+    fs::write(temp.path().join("test.txt"), b"content").expect("write file");
+    thread::sleep(Duration::from_millis(4000)); // debounce (3s) + buffer
+
+    let mut stop_cmd = isolated_cmd(unf_home.path());
+    stop_cmd
+        .current_dir(temp.path())
+        .arg("stop")
+        .assert()
+        .success();
+
+    let now = chrono::Utc::now();
+    let spec = (now - chrono::Duration::hours(3))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let mut prune_cmd = isolated_cmd(unf_home.path());
+    // POSIX TZ semantics: the offset is what you ADD to local time to reach
+    // UTC, so "UTC+6" is a UTC-6 zone (verified against `date`).
+    prune_cmd.env("TZ", "UTC+6");
+    let output = prune_cmd
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("prune")
+        .arg("--dry-run")
+        .arg("--older-than")
+        .arg(&spec)
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        json["snapshots_removed"], 1,
+        "\"{spec}\" must resolve as a UTC-6 local time (cutoff = now+3h, snapshot \
+         prunable); a UTC misreading (cutoff = now-3h) would count 0 here. Got: {stdout}"
+    );
+}
+
+/// A dry run must report the same count the real run would remove — for both
+/// a relative spec and an offset-less absolute spec. A dry run that diverges
+/// from reality is worse than no dry run at all.
+///
+/// (T9 already pins the *echoed cutoff string* at the unit level; this is the
+/// integration-level *count* equality, which a cutoff match alone does not
+/// guarantee — e.g. a query built from the wrong column would echo the right
+/// cutoff and still delete the wrong rows.)
+#[test]
+fn prune_dry_run_matches_real_run_count() {
+    // --- Scenario A: relative spec ---
+    {
+        let temp = TempDir::new().expect("Failed to create temp dir");
+        let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+
+        let mut init_cmd = isolated_cmd(unf_home.path());
+        init_cmd
+            .current_dir(temp.path())
+            .arg("watch")
+            .assert()
+            .success();
+        let _guard = IsolatedDaemonGuard::new(unf_home.path());
+        thread::sleep(Duration::from_millis(200));
+
+        fs::write(temp.path().join("a.txt"), b"a").expect("write file");
+        thread::sleep(Duration::from_millis(4000)); // debounce (3s) + buffer
+
+        let mut stop_cmd = isolated_cmd(unf_home.path());
+        stop_cmd
+            .current_dir(temp.path())
+            .arg("stop")
+            .assert()
+            .success();
+
+        // Cutoff is 1 second ago; the snapshot is several seconds old, so it
+        // is prunable under both dry-run and real-run.
+        let mut dry_cmd = isolated_cmd(unf_home.path());
+        let dry_out = dry_cmd
+            .current_dir(temp.path())
+            .arg("--json")
+            .arg("prune")
+            .arg("--dry-run")
+            .arg("--older-than")
+            .arg("1s")
+            .assert()
+            .success();
+        let dry_json: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&dry_out.get_output().stdout))
+                .expect("valid JSON");
+
+        let mut real_cmd = isolated_cmd(unf_home.path());
+        let real_out = real_cmd
+            .current_dir(temp.path())
+            .arg("--json")
+            .arg("prune")
+            .arg("--older-than")
+            .arg("1s")
+            .assert()
+            .success();
+        let real_json: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&real_out.get_output().stdout))
+                .expect("valid JSON");
+
+        assert_eq!(dry_json["snapshots_removed"], 1, "relative spec: dry run");
+        assert_eq!(
+            dry_json["snapshots_removed"], real_json["snapshots_removed"],
+            "relative spec: dry run and real run must agree on count"
+        );
+    }
+
+    // --- Scenario B: offset-less absolute spec ---
+    {
+        let temp = TempDir::new().expect("Failed to create temp dir");
+        let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+
+        let mut init_cmd = isolated_cmd(unf_home.path());
+        init_cmd
+            .current_dir(temp.path())
+            .arg("watch")
+            .assert()
+            .success();
+        let _guard = IsolatedDaemonGuard::new(unf_home.path());
+        thread::sleep(Duration::from_millis(200));
+
+        fs::write(temp.path().join("b.txt"), b"b").expect("write file");
+        thread::sleep(Duration::from_millis(4000)); // debounce (3s) + buffer
+
+        let mut stop_cmd = isolated_cmd(unf_home.path());
+        stop_cmd
+            .current_dir(temp.path())
+            .arg("stop")
+            .assert()
+            .success();
+
+        // An hour from now in the *test process's own* local zone. No TZ
+        // override is needed here: dry-run and real-run subprocesses inherit
+        // the same host zone, so they parse this identically — the property
+        // under test is dry/real agreement, not which zone wins.
+        let spec = (chrono::Local::now() + chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        let mut dry_cmd = isolated_cmd(unf_home.path());
+        let dry_out = dry_cmd
+            .current_dir(temp.path())
+            .arg("--json")
+            .arg("prune")
+            .arg("--dry-run")
+            .arg("--older-than")
+            .arg(&spec)
+            .assert()
+            .success();
+        let dry_json: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&dry_out.get_output().stdout))
+                .expect("valid JSON");
+
+        let mut real_cmd = isolated_cmd(unf_home.path());
+        let real_out = real_cmd
+            .current_dir(temp.path())
+            .arg("--json")
+            .arg("prune")
+            .arg("--older-than")
+            .arg(&spec)
+            .assert()
+            .success();
+        let real_json: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&real_out.get_output().stdout))
+                .expect("valid JSON");
+
+        assert_eq!(
+            dry_json["snapshots_removed"], 1,
+            "offset-less spec: dry run"
+        );
+        assert_eq!(
+            dry_json["snapshots_removed"], real_json["snapshots_removed"],
+            "offset-less spec: dry run and real run must agree on count"
+        );
+    }
+}
+
+/// Backward-compatibility guard: a bare `Z` spec and an explicit `±NN:NN`
+/// offset spec naming the *same instant* must still resolve identically and
+/// prune the same snapshots after the offset-less grammar was added.
+/// Existing scripts using either form must see unchanged behavior.
+#[test]
+fn prune_z_and_offset_specs_unaffected() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+
+    let mut init_cmd = isolated_cmd(unf_home.path());
+    init_cmd
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+    thread::sleep(Duration::from_millis(200));
+
+    fs::write(temp.path().join("test.txt"), b"content").expect("write file");
+    thread::sleep(Duration::from_millis(4000)); // debounce (3s) + buffer
+
+    let mut stop_cmd = isolated_cmd(unf_home.path());
+    stop_cmd
+        .current_dir(temp.path())
+        .arg("stop")
+        .assert()
+        .success();
+
+    // One instant, one hour from now, expressed two ways.
+    let cutoff = chrono::Utc::now() + chrono::Duration::hours(1);
+    let z_spec = cutoff.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let offset_spec = format!(
+        "{}-05:00",
+        (cutoff - chrono::Duration::hours(5)).format("%Y-%m-%dT%H:%M:%S")
+    );
+
+    let mut z_cmd = isolated_cmd(unf_home.path());
+    let z_out = z_cmd
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("prune")
+        .arg("--dry-run")
+        .arg("--older-than")
+        .arg(&z_spec)
+        .assert()
+        .success();
+    let z_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&z_out.get_output().stdout))
+            .expect("valid JSON");
+
+    let mut offset_cmd = isolated_cmd(unf_home.path());
+    let offset_out = offset_cmd
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("prune")
+        .arg("--dry-run")
+        .arg("--older-than")
+        .arg(&offset_spec)
+        .assert()
+        .success();
+    let offset_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&offset_out.get_output().stdout))
+            .expect("valid JSON");
+
+    assert_eq!(
+        z_json["snapshots_removed"], 1,
+        "Z spec (\"{z_spec}\") must still prune the one snapshot older than it"
+    );
+    assert_eq!(
+        z_json["snapshots_removed"], offset_json["snapshots_removed"],
+        "\"{z_spec}\" and \"{offset_spec}\" name the same instant and must \
+         prune the same count"
+    );
+}
+
 // --- Log --stats tests ---
 
 #[test]
