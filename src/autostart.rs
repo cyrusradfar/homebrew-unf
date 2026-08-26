@@ -29,6 +29,18 @@ const LEGACY_BOOT_PLIST_NAME: &str = "com.unfudged.boot.plist";
 #[cfg(target_os = "linux")]
 const LEGACY_BOOT_SERVICE_NAME: &str = "unfudged-boot.service";
 
+/// Whether to drive the OS service manager (launchd / systemd).
+///
+/// The test harness sets `UNF_AUTOSTART_INERT` so the suite exercises the
+/// plist/unit *files* without touching the real login session. `launchctl
+/// unload` resolves jobs by the `Label` inside the plist, not by the path
+/// argument, so an unguarded call from a HOME-isolated test still unloads the
+/// developer's real sentinel.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn service_manager_enabled() -> bool {
+    std::env::var_os("UNF_AUTOSTART_INERT").is_none()
+}
+
 // --- macOS: launchd ---
 
 /// Returns the path to the LaunchAgents directory.
@@ -176,21 +188,25 @@ fn install_platform(exe_path: &std::path::Path) -> Result<(), UnfError> {
     fs::write(&sentinel_path, &sentinel_content)
         .map_err(|e| UnfError::InvalidArgument(format!("Failed to write sentinel plist: {}", e)))?;
 
-    let status = Command::new("launchctl")
-        .args(["load", "-w"])
-        .arg(&sentinel_path)
-        .output();
-    if let Err(e) = status {
-        eprintln!("Warning: Failed to load sentinel launchd agent: {}", e);
+    if service_manager_enabled() {
+        let status = Command::new("launchctl")
+            .args(["load", "-w"])
+            .arg(&sentinel_path)
+            .output();
+        if let Err(e) = status {
+            eprintln!("Warning: Failed to load sentinel launchd agent: {}", e);
+        }
     }
 
     // Migration: remove legacy boot plist if present
     let boot_path = dir.join(LEGACY_BOOT_PLIST_NAME);
     if boot_path.exists() {
-        let _ = Command::new("launchctl")
-            .args(["unload", "-w"])
-            .arg(&boot_path)
-            .output();
+        if service_manager_enabled() {
+            let _ = Command::new("launchctl")
+                .args(["unload", "-w"])
+                .arg(&boot_path)
+                .output();
+        }
         let _ = fs::remove_file(&boot_path);
     }
 
@@ -214,19 +230,23 @@ fn install_platform(exe_path: &std::path::Path) -> Result<(), UnfError> {
         UnfError::InvalidArgument(format!("Failed to write sentinel systemd service: {}", e))
     })?;
 
-    let status = Command::new("systemctl")
-        .args(["--user", "enable", SENTINEL_SERVICE_NAME])
-        .output();
-    if let Err(e) = status {
-        eprintln!("Warning: Failed to enable sentinel systemd service: {}", e);
+    if service_manager_enabled() {
+        let status = Command::new("systemctl")
+            .args(["--user", "enable", SENTINEL_SERVICE_NAME])
+            .output();
+        if let Err(e) = status {
+            eprintln!("Warning: Failed to enable sentinel systemd service: {}", e);
+        }
     }
 
     // Migration: remove legacy boot service if present
     let boot_path = service_dir.join(LEGACY_BOOT_SERVICE_NAME);
     if boot_path.exists() {
-        let _ = Command::new("systemctl")
-            .args(["--user", "disable", LEGACY_BOOT_SERVICE_NAME])
-            .output();
+        if service_manager_enabled() {
+            let _ = Command::new("systemctl")
+                .args(["--user", "disable", LEGACY_BOOT_SERVICE_NAME])
+                .output();
+        }
         let _ = fs::remove_file(&boot_path);
     }
 
@@ -252,20 +272,24 @@ fn remove_platform() -> Result<(), UnfError> {
     // Remove legacy boot plist (backwards compat)
     let boot_path = dir.join(LEGACY_BOOT_PLIST_NAME);
     if boot_path.exists() {
-        let _ = Command::new("launchctl")
-            .args(["unload", "-w"])
-            .arg(&boot_path)
-            .output();
+        if service_manager_enabled() {
+            let _ = Command::new("launchctl")
+                .args(["unload", "-w"])
+                .arg(&boot_path)
+                .output();
+        }
         let _ = fs::remove_file(&boot_path);
     }
 
     // Remove sentinel plist
     let sentinel_path = dir.join(SENTINEL_PLIST_NAME);
     if sentinel_path.exists() {
-        let _ = Command::new("launchctl")
-            .args(["unload", "-w"])
-            .arg(&sentinel_path)
-            .output();
+        if service_manager_enabled() {
+            let _ = Command::new("launchctl")
+                .args(["unload", "-w"])
+                .arg(&sentinel_path)
+                .output();
+        }
         fs::remove_file(&sentinel_path).map_err(|e| {
             UnfError::InvalidArgument(format!("Failed to remove sentinel plist: {}", e))
         })?;
@@ -282,18 +306,22 @@ fn remove_platform() -> Result<(), UnfError> {
     let service_dir = config_dir.join("systemd/user");
 
     // Remove legacy boot service (backwards compat)
-    let _ = Command::new("systemctl")
-        .args(["--user", "disable", LEGACY_BOOT_SERVICE_NAME])
-        .output();
+    if service_manager_enabled() {
+        let _ = Command::new("systemctl")
+            .args(["--user", "disable", LEGACY_BOOT_SERVICE_NAME])
+            .output();
+    }
     let boot_path = service_dir.join(LEGACY_BOOT_SERVICE_NAME);
     if boot_path.exists() {
         let _ = fs::remove_file(&boot_path);
     }
 
     // Remove sentinel service
-    let _ = Command::new("systemctl")
-        .args(["--user", "disable", SENTINEL_SERVICE_NAME])
-        .output();
+    if service_manager_enabled() {
+        let _ = Command::new("systemctl")
+            .args(["--user", "disable", SENTINEL_SERVICE_NAME])
+            .output();
+    }
     let sentinel_path = service_dir.join(SENTINEL_SERVICE_NAME);
     if sentinel_path.exists() {
         fs::remove_file(&sentinel_path).map_err(|e| {
@@ -409,6 +437,89 @@ mod tests {
             fs::read_to_string(&entry).expect("read entry"),
             "PRE-EXISTING",
             "existing entry must not be rewritten"
+        );
+    }
+
+    /// Under `UNF_AUTOSTART_INERT`, `remove()` must delete the plist file but
+    /// must NOT invoke the OS service manager.
+    ///
+    /// Verified by placing a fake `launchctl` script first on `PATH` that
+    /// records invocation to a marker file. This makes the test safe even if
+    /// `service_manager_enabled()` were buggy: `PATH` is overridden before
+    /// `remove()` runs, so no code path here can ever reach the real
+    /// `launchctl` binary — a broken guard would only touch the fake script.
+    ///
+    /// Holds `ENV_LOCK` because it overrides `HOME`/`PATH`/`UNF_AUTOSTART_INERT`.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn remove_under_inert_flag_deletes_file_without_subprocess() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let temp = tempfile::TempDir::new().expect("create temp dir");
+        let original_home = std::env::var("HOME").ok();
+        let original_path = std::env::var("PATH").ok();
+        let original_inert = std::env::var("UNF_AUTOSTART_INERT").ok();
+
+        // Fake `launchctl` on PATH that records invocation to `marker`.
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+        let marker = temp.path().join("launchctl-invoked");
+        let fake_launchctl = bin_dir.join("launchctl");
+        fs::write(
+            &fake_launchctl,
+            format!("#!/bin/sh\ntouch {}\n", marker.display()),
+        )
+        .expect("write fake launchctl");
+        let mut perms = fs::metadata(&fake_launchctl)
+            .expect("stat fake launchctl")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_launchctl, perms).expect("chmod fake launchctl");
+
+        std::env::set_var("HOME", temp.path());
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                original_path.clone().unwrap_or_default()
+            ),
+        );
+        std::env::set_var("UNF_AUTOSTART_INERT", "1");
+
+        let sentinel_path = temp
+            .path()
+            .join("Library/LaunchAgents")
+            .join(SENTINEL_PLIST_NAME);
+        fs::create_dir_all(sentinel_path.parent().expect("parent dir"))
+            .expect("create LaunchAgents dir");
+        fs::write(&sentinel_path, "PLIST").expect("write plist");
+
+        let result = remove();
+
+        // Restore env before asserting so a failure cannot leak overrides.
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match original_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        match original_inert {
+            Some(v) => std::env::set_var("UNF_AUTOSTART_INERT", v),
+            None => std::env::remove_var("UNF_AUTOSTART_INERT"),
+        }
+
+        result.expect("remove");
+        assert!(!sentinel_path.exists(), "plist file must be deleted");
+        assert!(
+            !marker.exists(),
+            "launchctl must not be invoked when UNF_AUTOSTART_INERT is set"
         );
     }
 

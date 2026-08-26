@@ -94,6 +94,7 @@ pub fn isolated_cmd(unf_home: &Path) -> CargoCmd {
     cmd.env("UNF_HOME", unf_home);
     cmd.env("HOME", &fake_home);
     cmd.env("XDG_CONFIG_HOME", fake_home.join(".config"));
+    cmd.env("UNF_AUTOSTART_INERT", "1");
     cmd
 }
 
