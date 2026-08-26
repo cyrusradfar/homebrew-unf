@@ -13,6 +13,11 @@ set -euo pipefail
 
 UNF_FORMULA="unf"
 CLI_ONLY=false
+FROM_SOURCE=false
+
+# Where --from-source installs the locally built binary. Must match the path
+# smoke-test.sh's uninstall step removes, and the Linux runner's convention.
+VM_BIN_DIR="/usr/local/bin"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -24,17 +29,35 @@ while [[ $# -gt 0 ]]; do
       CLI_ONLY=true
       shift
       ;;
+    --from-source)
+      FROM_SOURCE=true
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--staging] [--cli-only]"
+      echo "Usage: $0 [--staging] [--cli-only] [--from-source]"
       exit 1
       ;;
   esac
 done
 
+# --from-source tests the working tree, so there is no released cask to pair
+# with it. The desktop app test installs the published cask and formula, which
+# is a different question (shipped DMG against a new CLI) and belongs to the
+# release gate.
+if [[ "$FROM_SOURCE" == "true" && "$CLI_ONLY" == "false" ]]; then
+  echo "Note: --from-source implies --cli-only (no released cask to pair with a local build)"
+  CLI_ONLY=true
+fi
+
 echo "=== E2E Smoke Test: macOS (Tart VM) ==="
-echo "Formula: ${UNF_FORMULA}"
+if [[ "$FROM_SOURCE" == "true" ]]; then
+  echo "Formula: (none — building from working tree)"
+else
+  echo "Formula: ${UNF_FORMULA}"
+fi
 echo "CLI only: ${CLI_ONLY}"
+echo "From source: ${FROM_SOURCE}"
 echo ""
 
 # ============================================================================
@@ -284,7 +307,9 @@ fi
 echo ""
 
 # Check if Homebrew is already installed
-if ssh_cmd 'command -v brew' &>/dev/null; then
+if [[ "$FROM_SOURCE" == "true" ]]; then
+  echo "[SKIP] Homebrew not needed (--from-source installs a locally built binary)"
+elif ssh_cmd 'command -v brew' &>/dev/null; then
   echo "[SKIP] Homebrew already installed"
 else
   echo "Installing Homebrew..."
@@ -305,12 +330,61 @@ else
 fi
 
 # Verify Homebrew is functional
-BREW_VERSION=$(ssh_cmd 'eval "$(/opt/homebrew/bin/brew shellenv)" && brew --version | head -n1') || {
-  echo "[FAIL] Homebrew not functional"
-  exit 1
-}
-echo "[PASS] ${BREW_VERSION}"
-echo ""
+if [[ "$FROM_SOURCE" != "true" ]]; then
+  BREW_VERSION=$(ssh_cmd 'eval "$(/opt/homebrew/bin/brew shellenv)" && brew --version | head -n1') || {
+    echo "[FAIL] Homebrew not functional"
+    exit 1
+  }
+  echo "[PASS] ${BREW_VERSION}"
+  echo ""
+fi
+
+# ============================================================================
+# Build and install from the working tree (--from-source)
+# ============================================================================
+
+if [[ "$FROM_SOURCE" == "true" ]]; then
+  echo "=== Build from working tree ==="
+
+  CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+  # The VM is an Apple Silicon guest, so the host's native release build is
+  # the right artifact. Guard rather than assume, since a mismatch would fail
+  # confusingly inside the VM.
+  HOST_ARCH="$(uname -m)"
+  if [[ "$HOST_ARCH" != "arm64" ]]; then
+    echo "[FAIL] --from-source expects an arm64 host to match the Tart guest (got: $HOST_ARCH)"
+    exit 1
+  fi
+
+  echo "Building release binary on the host..."
+  (cd "$CODE_DIR" && cargo build --release) || {
+    echo "[FAIL] cargo build --release failed"
+    exit 1
+  }
+
+  BIN="$CODE_DIR/target/release/unf"
+  [[ -f "$BIN" ]] || { echo "[FAIL] built binary not found at $BIN"; exit 1; }
+  echo "[PASS] Built $(cd "$CODE_DIR" && git rev-parse --short HEAD) ($(du -h "$BIN" | cut -f1))"
+
+  echo "Copying binary to VM..."
+  scp_to "$BIN" "~/unf"
+  ssh_cmd "sudo mkdir -p ${VM_BIN_DIR} && sudo mv ~/unf ${VM_BIN_DIR}/unf && sudo chmod 755 ${VM_BIN_DIR}/unf" || {
+    echo "[FAIL] Could not install binary into the VM"
+    exit 1
+  }
+
+  # Verify through PATH, not by absolute path. A non-interactive ssh shell on
+  # macOS does not run path_helper, so /usr/local/bin is not on PATH by
+  # default — and an absolute-path check would pass while the smoke test,
+  # which resolves `unf` via PATH, still fails.
+  VM_VERSION=$(ssh_cmd "PATH=${VM_BIN_DIR}:\$PATH; command -v unf >/dev/null && unf --version") || {
+    echo "[FAIL] Installed binary is not runnable via PATH in the VM"
+    exit 1
+  }
+  echo "[PASS] Installed in VM: ${VM_VERSION}"
+  echo ""
+fi
 
 # ============================================================================
 # CLI Smoke Test
@@ -329,7 +403,7 @@ echo ""
 echo "--- Starting smoke test ---"
 TEST_START=$(date +%s)
 
-ssh_cmd "${PROXY_ENV} UNF_FORMULA=${UNF_FORMULA} bash ~/smoke-test.sh"
+ssh_cmd "${PROXY_ENV} UNF_FORMULA=${UNF_FORMULA} FROM_SOURCE=${FROM_SOURCE} PATH=${VM_BIN_DIR}:\$PATH bash ~/smoke-test.sh"
 TEST_EXIT_CODE=$?
 
 TEST_END=$(date +%s)
