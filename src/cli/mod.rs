@@ -125,7 +125,10 @@ fn resolve_local(
         // Earliest of the two. Never `.single()` or `.unwrap()`: a panic on a
         // clock edge in a recovery tool would recur twice a year, per user.
         LocalResult::Ambiguous(earlier, _later) => Ok(earlier.with_timezone(&Utc)),
-        LocalResult::None => Err(crate::error::UnfError::InvalidArgument(gap_message(spec))),
+        // Deliberately NOT the shared `invalid_time` message: this spec is
+        // well-formed, so listing the grammars would answer a question the
+        // user did not ask. It names two nearby times that do exist instead.
+        LocalResult::None => Err(crate::error::UnfError::InvalidTime(gap_message(spec))),
     }
 }
 
@@ -157,12 +160,33 @@ fn gap_message(spec: &str) -> String {
     }
 }
 
+/// Builds the one error every unparseable time spec gets.
+///
+/// Pure. Two lines: what was rejected, then the whole accepted grammar. The
+/// hint sits in the message as `\n  ` because the binary passes `None` for
+/// [`crate::cli::output::print_error`]'s hint argument; the two spaces match
+/// the indent that function applies to a real hint.
+///
+/// The quotation marks on the local example are load-bearing. An unquoted
+/// `--at 2026-08-25 21:10:03 -0600` makes clap read `-0600` as an unknown
+/// flag, so the example teaches the shell quoting by showing it.
+///
+/// One message covers every rejected form on purpose: at the point of failure
+/// we do not know which grammar the user was aiming at, and naming only one of
+/// them is what made the old message stale.
+fn invalid_time(spec: &str) -> crate::error::UnfError {
+    crate::error::UnfError::InvalidTime(format!(
+        "not a time: \"{spec}\"\n  \
+         Try 5m, 2h, 3d, \"2026-08-25 21:10:03\" (local), or 2026-08-25T21:10:03Z (UTC)."
+    ))
+}
+
 /// Parses a relative duration spec such as `30s`, `5m`, `2h` or `1d`.
 ///
 /// Pure: `now` is supplied by the caller, so the result is exact and testable.
 ///
 /// # Errors
-/// Returns `UnfError::InvalidArgument` if the suffix or the value is malformed.
+/// Returns `UnfError::InvalidTime` if the suffix or the value is malformed.
 fn parse_relative(spec: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>, crate::error::UnfError> {
     let (value_str, unit) = if let Some(value_str) = spec.strip_suffix('s') {
         (value_str, 's')
@@ -173,14 +197,10 @@ fn parse_relative(spec: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>, crate
     } else if let Some(value_str) = spec.strip_suffix('d') {
         (value_str, 'd')
     } else {
-        return Err(crate::error::UnfError::InvalidArgument(
-            "Time spec must be a relative duration (e.g., '30s', '5m', '2h', '1d') or an ISO 8601 timestamp (e.g., '2026-02-09T20:17:00Z')".to_string(),
-        ));
+        return Err(invalid_time(spec));
     };
 
-    let value: i64 = value_str.parse().map_err(|_| {
-        crate::error::UnfError::InvalidArgument(format!("Invalid time value: {}", value_str))
-    })?;
+    let value: i64 = value_str.parse().map_err(|_| invalid_time(spec))?;
 
     let secs = match unit {
         's' => value,
@@ -215,8 +235,8 @@ fn parse_relative(spec: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>, crate
 /// A DateTime in UTC
 ///
 /// # Errors
-/// Returns `UnfError::InvalidArgument` if the spec is malformed, or if it names
-/// a local time that a daylight-saving change skipped.
+/// Returns `UnfError::InvalidTime` if the spec is malformed, or if it names a
+/// local time that a daylight-saving change skipped. Both map to exit code 3.
 pub fn parse_time_spec(spec: &str) -> Result<DateTime<Utc>, crate::error::UnfError> {
     // Try absolute ISO 8601 / RFC 3339 first if it looks like a timestamp
     // Check for 'T' (ISO format) or starts with 4 digits followed by '-' (YYYY-MM-DD...)
@@ -235,10 +255,7 @@ pub fn parse_time_spec(spec: &str) -> Result<DateTime<Utc>, crate::error::UnfErr
             return resolve_local(spec, mapped);
         }
 
-        return Err(crate::error::UnfError::InvalidArgument(format!(
-            "Invalid timestamp: \"{}\". Expected format: 2026-02-09T20:17:00Z",
-            spec
-        )));
+        return Err(invalid_time(spec));
     }
 
     parse_relative(spec, Utc::now())
@@ -548,6 +565,72 @@ mod tests {
         assert!(parse_relative("abc", now).is_err());
         assert!(parse_relative("5x", now).is_err());
         assert!(parse_relative("xm", now).is_err());
+    }
+
+    // ---- invalid_time (pure) ---------------------------------------------
+
+    #[test]
+    fn invalid_time_message_is_two_lines_and_teaches_every_grammar() {
+        let msg = invalid_time("yesterday afternoon").to_string();
+        let lines: Vec<&str> = msg.lines().collect();
+        assert_eq!(lines.len(), 2, "message was: {msg}");
+        // Line 1 echoes the offending input, quoted.
+        assert_eq!(lines[0], "not a time: \"yesterday afternoon\"");
+        // Line 2 carries `print_error`'s 2-space hint indent inline, because
+        // the binary passes no separate hint.
+        assert!(lines[1].starts_with("  Try "), "hint was: {}", lines[1]);
+        // All three grammars, and the shell quoting on the one with a space.
+        assert!(lines[1].contains("5m"));
+        assert!(lines[1].contains("\"2026-08-25 21:10:03\" (local)"));
+        assert!(lines[1].contains("2026-08-25T21:10:03Z (UTC)"));
+    }
+
+    #[test]
+    fn invalid_time_message_carries_no_stacked_prefix() {
+        // `InvalidArgument` renders as `Invalid argument: {0}`, which would
+        // read `error: Invalid argument: not a time: …` at the terminal.
+        assert!(invalid_time("abc").to_string().starts_with("not a time:"));
+    }
+
+    #[test]
+    fn invalid_time_keeps_exit_code_three() {
+        // Scripts branch on 3 for a bad `--at`. This must never move.
+        use crate::error::ExitCode;
+        let err = parse_time_spec("yesterday").expect_err("not a time spec");
+        assert_eq!(ExitCode::from(&err) as i32, 3);
+    }
+
+    #[test]
+    fn every_rejected_form_gets_the_same_message() {
+        // The point of the ticket: one message, not three. Bad suffix, bad
+        // numeric value and unparseable timestamp all land in the same place.
+        let now = fixed_utc("2026-02-09T20:00:00Z");
+        assert_eq!(
+            parse_relative("5x", now).unwrap_err().to_string(),
+            invalid_time("5x").to_string()
+        );
+        assert_eq!(
+            parse_relative("xm", now).unwrap_err().to_string(),
+            invalid_time("xm").to_string()
+        );
+        assert_eq!(
+            parse_time_spec("2026-02-09T99:99:99Z")
+                .unwrap_err()
+                .to_string(),
+            invalid_time("2026-02-09T99:99:99Z").to_string()
+        );
+    }
+
+    #[test]
+    fn gap_message_stays_distinct_from_the_generic_one() {
+        // A skipped local time is a different failure: the spec is well-formed.
+        let mapped: LocalResult<DateTime<FixedOffset>> = LocalResult::None;
+        let msg = resolve_local("2026-03-08 02:30:00", mapped)
+            .expect_err("a skipped local time must not resolve")
+            .to_string();
+        assert!(!msg.starts_with("not a time:"), "message was: {msg}");
+        assert!(!msg.contains("Invalid argument"), "message was: {msg}");
+        assert!(msg.contains("daylight-saving"), "message was: {msg}");
     }
 
     // ---- parse_offset_time (pure) ----------------------------------------

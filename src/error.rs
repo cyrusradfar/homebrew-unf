@@ -32,6 +32,16 @@ pub enum UnfError {
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
+    /// A time specification could not be parsed.
+    ///
+    /// Carries its own complete text — the time messages already name the
+    /// offending input and teach the accepted grammars, so a
+    /// `Invalid argument: ` prefix would only stack a second label on top.
+    /// Shares [`ExitCode::InvalidArgument`] with [`UnfError::InvalidArgument`],
+    /// so scripts that branch on exit code 3 keep working.
+    #[error("{0}")]
+    InvalidTime(String),
+
     /// No results matched the query.
     #[error("{0}")]
     NoResults(String),
@@ -109,6 +119,7 @@ impl From<&UnfError> for ExitCode {
         match err {
             UnfError::NotInitialized => ExitCode::NotInitialized,
             UnfError::InvalidArgument(_) => ExitCode::InvalidArgument,
+            UnfError::InvalidTime(_) => ExitCode::InvalidArgument,
             UnfError::NoResults(_) => ExitCode::NoResults,
             _ => ExitCode::GeneralError,
         }
@@ -129,6 +140,14 @@ mod tests {
     fn invalid_argument_message() {
         let err = UnfError::InvalidArgument("bad --flag value".to_string());
         assert_eq!(err.to_string(), "Invalid argument: bad --flag value");
+    }
+
+    #[test]
+    fn invalid_time_message_has_no_prefix() {
+        // The time messages carry their own wording. A `Invalid argument: `
+        // prefix here would render as `error: Invalid argument: not a time: …`.
+        let err = UnfError::InvalidTime("not a time: \"abc\"".to_string());
+        assert_eq!(err.to_string(), "not a time: \"abc\"");
     }
 
     #[test]
@@ -193,6 +212,20 @@ mod tests {
         let err = UnfError::InvalidArgument("bad time".to_string());
         let code = ExitCode::from(&err);
         assert_eq!(code as i32, 3);
+    }
+
+    #[test]
+    fn exit_code_invalid_time_matches_invalid_argument() {
+        // Contract: `InvalidTime` is a rendering change only. Scripts that
+        // branch on exit code 3 for a bad `--at` value must keep working, so
+        // this must stay equal to the `InvalidArgument` code above.
+        let err = UnfError::InvalidTime("not a time: \"abc\"".to_string());
+        let code = ExitCode::from(&err);
+        assert_eq!(code as i32, 3);
+        assert_eq!(
+            code as i32,
+            ExitCode::from(&UnfError::InvalidArgument("x".to_string())) as i32
+        );
     }
 
     #[test]
