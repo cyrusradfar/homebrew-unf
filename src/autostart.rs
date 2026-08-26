@@ -355,8 +355,55 @@ fn is_installed_platform() -> Result<bool, UnfError> {
         UnfError::InvalidArgument("Cannot determine config directory".to_string())
     })?;
     let service_dir = config_dir.join("systemd/user");
-    let sentinel = service_dir.join(SENTINEL_SERVICE_NAME).exists();
-    Ok(sentinel)
+    let file_exists = service_dir.join(SENTINEL_SERVICE_NAME).exists();
+
+    // Cheap gate: `unf status` is a read path. Skip the subprocess entirely
+    // on the common negative case (no unit file at all).
+    if !file_exists {
+        return Ok(false);
+    }
+
+    // Under the test harness, do not spawn `systemctl` at all -- that would
+    // re-arm the landmine `service_manager_enabled` exists to defuse (see
+    // its doc comment). `None` below falls through to "trust the file".
+    let systemctl_enabled = if service_manager_enabled() {
+        match Command::new("systemctl")
+            .args(["--user", "is-enabled", SENTINEL_SERVICE_NAME])
+            .output()
+        {
+            // Exit status is the source of truth: 0 means `systemctl` printed
+            // "enabled"; nonzero covers disabled/static/masked and also "no
+            // user D-Bus session" -- exactly the false-positive this fixes
+            // (`systemctl --user enable` silently failed, but the unit file
+            // it wrote first still exists).
+            Ok(output) => Some(output.status.success()),
+            // `systemctl` itself could not be spawned (e.g. missing from
+            // PATH). That is not evidence the unit is disabled -- the file
+            // was written by our own install_platform -- so we choose to
+            // trust the file rather than manufacture a false negative out of
+            // an unrelated PATH problem. Documented choice, not an oversight.
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    Ok(is_installed_decision(file_exists, systemctl_enabled))
+}
+
+/// Decides whether auto-start is installed from the unit file's existence
+/// and, when consulted, whether `systemctl --user is-enabled` exited
+/// successfully.
+///
+/// Pure and platform-independent by construction, so it is unit-tested on
+/// any host regardless of whether a live systemd user session -- or even
+/// Linux -- is available. `systemctl_enabled` is `None` when the check was
+/// skipped (test harness) or could not be performed (spawn failure); both
+/// cases fall back to trusting the file, per the documented choice in
+/// `is_installed_platform`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_installed_decision(file_exists: bool, systemctl_enabled: Option<bool>) -> bool {
+    file_exists && systemctl_enabled.unwrap_or(true)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -521,6 +568,36 @@ mod tests {
             !marker.exists(),
             "launchctl must not be invoked when UNF_AUTOSTART_INERT is set"
         );
+    }
+
+    // --- is_installed_decision (pure, runs on every host) ---
+
+    #[test]
+    fn is_installed_decision_false_when_file_missing() {
+        // Even a confirmed `systemctl` "enabled" cannot outrun a missing file.
+        assert!(!is_installed_decision(false, Some(true)));
+        assert!(!is_installed_decision(false, None));
+        assert!(!is_installed_decision(false, Some(false)));
+    }
+
+    #[test]
+    fn is_installed_decision_true_when_file_present_and_systemctl_confirms_enabled() {
+        assert!(is_installed_decision(true, Some(true)));
+    }
+
+    #[test]
+    fn is_installed_decision_false_when_file_present_but_systemctl_says_disabled() {
+        // This is the bug this ticket fixes: `systemctl --user enable` failed
+        // (e.g. no user D-Bus session) but the unit file it wrote still
+        // exists. The file alone must no longer be enough to say "installed".
+        assert!(!is_installed_decision(true, Some(false)));
+    }
+
+    #[test]
+    fn is_installed_decision_trusts_file_when_systemctl_not_consulted() {
+        // Test harness (UNF_AUTOSTART_INERT) or a spawn failure (systemctl
+        // missing from PATH) both report `None` -- trust the file.
+        assert!(is_installed_decision(true, None));
     }
 
     // Sentinel plist tests
