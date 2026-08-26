@@ -630,10 +630,66 @@ pass "Stop does not cause infinite restart"
 echo ""
 
 # ============================================================================
-# Test 21: Stop daemon
+# Test 21: Auto-restart status matches the service manager
 # ============================================================================
 
-echo "=== Test 21: Stop daemon ==="
+echo "=== Test 21: Auto-restart status accuracy ==="
+
+# project-a is watched at this point, so `unf watch` has written the
+# auto-start entry. The claim under test: `unf status` must not report
+# auto-restart as on when the OS service manager disagrees.
+#
+# Before v0.21.1 the Linux check was a bare .exists() on the unit file, so a
+# `systemctl --user enable` that failed — no user D-Bus session, which is the
+# normal state inside a container — still left the file behind and `unf status`
+# reported "enabled" with nothing enabled.
+AUTO_RESTART=$(unf status --json | jq -r '.auto_restart')
+
+if [[ "$PLATFORM" == "Linux" ]]; then
+  UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/unfudged-sentinel.service"
+
+  if [[ ! -f "$UNIT_FILE" ]]; then
+    fail "Auto-restart status accuracy" "unf watch did not write $UNIT_FILE"
+  fi
+
+  # Exit status, not stdout. Nonzero covers disabled/static/masked and the
+  # no-user-D-Bus-session case.
+  if systemctl --user is-enabled unfudged-sentinel.service > /dev/null 2>&1; then
+    EXPECTED="true"
+  else
+    EXPECTED="false"
+  fi
+
+  echo "  unit file: present"
+  echo "  systemctl --user is-enabled: $EXPECTED"
+  echo "  unf status auto_restart:     $AUTO_RESTART"
+
+  if [[ "$AUTO_RESTART" != "$EXPECTED" ]]; then
+    fail "Auto-restart status accuracy" \
+      "unit file exists and systemctl reports enabled=$EXPECTED, but unf status reports auto_restart=$AUTO_RESTART"
+  fi
+else
+  PLIST="$HOME/Library/LaunchAgents/com.unfudged.sentinel.plist"
+
+  if [[ -f "$PLIST" ]]; then EXPECTED="true"; else EXPECTED="false"; fi
+
+  echo "  plist present:           $EXPECTED"
+  echo "  unf status auto_restart: $AUTO_RESTART"
+
+  if [[ "$AUTO_RESTART" != "$EXPECTED" ]]; then
+    fail "Auto-restart status accuracy" \
+      "plist present=$EXPECTED but unf status reports auto_restart=$AUTO_RESTART"
+  fi
+fi
+
+pass "Auto-restart status accuracy"
+echo ""
+
+# ============================================================================
+# Test 22: Stop daemon
+# ============================================================================
+
+echo "=== Test 22: Stop daemon ==="
 
 unf stop || fail "Stop" "unf stop failed"
 sleep 1
@@ -647,10 +703,10 @@ pass "Stop daemon"
 echo ""
 
 # ============================================================================
-# Test 22: Uninstall
+# Test 23: Uninstall
 # ============================================================================
 
-echo "=== Test 22: Uninstall ==="
+echo "=== Test 23: Uninstall ==="
 
 if [[ "$FROM_SOURCE" == "true" ]]; then
   rm -f /usr/local/bin/unf 2>/dev/null || sudo rm -f /usr/local/bin/unf || fail "Uninstall" "Failed to remove binary"
