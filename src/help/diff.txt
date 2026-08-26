@@ -6,3 +6,6 @@ Examples:
   unf diff --session 2                Changes in the 2nd most recent session
   unf diff --snapshot 42              One snapshot vs its predecessor
   unf diff --at 5m --context 10       Changes in last 5 min with 10 lines of context
+
+Time formats: 5m (minutes), 2h (hours), 1d (days),
+              "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)

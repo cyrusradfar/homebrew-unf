@@ -13,3 +13,6 @@ to see what changes.
 
 UNF always takes a safety snapshot before it restores. You can get the
 previous state back.
+
+Time formats: 5m (minutes), 2h (hours), 1d (days),
+              "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)

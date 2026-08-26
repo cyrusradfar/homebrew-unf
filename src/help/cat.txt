@@ -3,3 +3,6 @@ Examples:
   unf cat src/main.rs --at 1h         File contents from 1 hour ago
   unf cat src/main.rs --snapshot 42   File contents at a specific snapshot ID
   unf cat .env --at 5m > .env         Pipe a lost file back to disk
+
+Time formats: 5m (minutes), 2h (hours), 1d (days),
+              "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)

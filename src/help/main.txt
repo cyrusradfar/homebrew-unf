@@ -29,4 +29,5 @@ Global options:
   --json                             Machine-readable JSON output
   --project <PATH>                   Operate on a specific project directory
 
-Time formats: 5m (minutes), 2h (hours), 1d (days), or ISO 8601 timestamps
+Time formats: 5m (minutes), 2h (hours), 1d (days),
+              "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)

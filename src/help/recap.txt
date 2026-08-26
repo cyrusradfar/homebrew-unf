@@ -14,3 +14,6 @@ After a crash:
   2. Read any recently-created .md files listed in the sessions
   3. Check git state for uncommitted work
   4. Use: unf diff --session  to see detailed changes
+
+Time formats: 5m (minutes), 2h (hours), 1d (days),
+              "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)

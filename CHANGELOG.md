@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed
+- Human-readable timestamps now carry their UTC offset: `unf log` prints `2026-08-25 21:10:03 -0600` where it printed `2026-08-25 21:10:03`. The old output did not say which zone it meant, so you could not tell a local time from a UTC one, and you could not paste it back into `--at`. **The timestamp column in human `unf log` output is now 6 characters wider.** Anything that scrapes human output by column offset needs to move. `--json` is unchanged and stays the stable interface for scripts and agents.
+- `--at`, `--since`, `--until`, and `--older-than` now accept four forms:
+  1. Relative: `5m`, `2h`, `3d`
+  2. RFC 3339: `2026-08-25T21:10:03Z`, `...+00:00`, `...-06:00` — as stated
+  3. The form `unf log` prints: `"2026-08-25 21:10:03 -0600"` — as stated
+  4. No offset: `"2026-08-25 21:10:03"` or `2026-08-25T21:10:03` — read as **local** time
+
+  Form 3 closes the round trip: a timestamp you read out of `unf log` is now valid input. Quote the forms that contain a space; unquoted, the shell splits them and the trailing `-0600` is read as a flag. Date-only (`2026-08-25`) and minute-precision (`2026-08-25 21:10`) are still rejected — seconds are required.
+- Every rejected time spec now produces one error message that lists all four accepted forms. Previously the message differed depending on which parser failed last, so the advice you got depended on what you typed.
+
+### Fixed
+- `unf restart` now reinstalls the auto-start entry when it is missing, and prints `Enabled  auto-restart on login` when it does. Before, a daemon whose launchd/systemd entry had been removed restarted for that session only and went away again at the next login, with nothing in the output to say so.
+- `unf status` on Linux could report auto-start as `enabled` after `systemctl --user enable` silently failed (e.g. no active user D-Bus session, common over plain SSH) — the unit file it wrote before failing still existed, and `is_installed()` checked only that file. It now also checks `systemctl --user is-enabled`, so `unf status` may now correctly report `disabled` where it previously reported `enabled`.
 
 ## [0.19.1] - 2026-08-20
 ### Internal

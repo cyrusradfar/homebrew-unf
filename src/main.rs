@@ -114,7 +114,7 @@ struct LogArgs {
     #[arg(long)]
     since: Option<String>,
 
-    /// Only show changes until this time (e.g., "1h", ISO 8601 timestamp)
+    /// Only show changes until this time (e.g., "1h", "2026-08-25 21:10:03")
     #[arg(long)]
     until: Option<String>,
 

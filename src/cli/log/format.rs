@@ -105,10 +105,10 @@ pub fn format_cursor(cursor: &HistoryCursor) -> String {
 ///
 /// Output format with stats always shown:
 /// ```text
-///   2026-02-09 14:32:07  modified  src/engine/cas.rs       1.2 KB  +12/-3
-///   2026-02-09 14:31:44  created   src/engine/compress.rs  0.9 KB  +0/-0
-///   2026-02-09 14:30:12  deleted   src/old_engine.rs
-///   2026-02-09 14:30:11  created   src/legacy.rs           5.3 KB  -/-
+///   2026-02-09 14:32:07 -0600  modified   src/engine/cas.rs         1.2 KB  +12/-3
+///   2026-02-09 14:31:44 -0600  created    src/engine/compress.rs    0.9 KB  +0/-0
+///   2026-02-09 14:30:12 -0600  deleted    src/old_engine.rs
+///   2026-02-09 14:30:11 -0600  created    src/legacy.rs             5.3 KB  -/-
 /// ```
 ///
 /// Snapshots without recorded stats (pre-v0.5) show `-/-` instead of counts.

@@ -17,3 +17,6 @@ Cross-project (global) mode:
                                              See agent and project activity side by side
   unf log --global --exclude-project ~/tmp   Exclude a project from global view
   unf log --global --json                    Machine-readable cross-project output
+
+Time formats: 5m (minutes), 2h (hours), 1d (days),
+              "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)

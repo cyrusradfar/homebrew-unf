@@ -80,7 +80,13 @@ unf restore --at 10m         # Roll back to 10 minutes ago
 | `unf stop` | Stop the global daemon |
 | `unf restart` | Restart the global daemon |
 
-Time formats: `5m`, `2h`, `1d`, or ISO 8601 (`2026-02-09T20:17:00Z`).
+```
+Time formats: 5m (minutes), 2h (hours), 1d (days),
+              "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)
+```
+
+Quote the local form. Unquoted, your shell splits it and `unf` reads the
+trailing offset as a flag.
 
 ## How it works
 
