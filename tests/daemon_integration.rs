@@ -42,6 +42,22 @@ fn registry_path(unf_home: &Path) -> PathBuf {
     unf_home.join("projects.json")
 }
 
+/// Returns the path to the sentinel auto-start entry under the fake HOME
+/// that `isolated_cmd` sets up: the launchd plist on macOS, the systemd user
+/// unit on Linux. Mirrors `autostart::launchd_dir()` /
+/// `dirs::config_dir().join("systemd/user")`, resolved against the fake
+/// `HOME` / `XDG_CONFIG_HOME` (`<unf_home>/home`, `<unf_home>/home/.config`)
+/// that `common::isolated_cmd` exports, rather than the real ones.
+#[cfg(target_os = "macos")]
+fn autostart_entry_path(unf_home: &Path) -> PathBuf {
+    unf_home.join("home/Library/LaunchAgents/com.unfudged.sentinel.plist")
+}
+
+#[cfg(target_os = "linux")]
+fn autostart_entry_path(unf_home: &Path) -> PathBuf {
+    unf_home.join("home/.config/systemd/user/unfudged-sentinel.service")
+}
+
 /// Read the registry and return project paths as a Vec<PathBuf>.
 fn read_registry_projects(unf_home: &Path) -> Vec<PathBuf> {
     let path = registry_path(unf_home);
@@ -654,6 +670,149 @@ fn restart_after_stop_resumes_projects() {
     assert!(
         projects.contains(&canonical),
         "Project should still be registered after stop+restart"
+    );
+}
+
+/// Regression test for the auto-start reinstall added in T2 (`4858a08`).
+///
+/// Before T2, `unf restart` never called `autostart::ensure_installed()`, so
+/// a sentinel entry deleted out from under the daemon (accidentally, or by
+/// an OS reinstall wiping `~/Library/LaunchAgents`) stayed gone forever —
+/// `restart` would bring the daemon back but silently leave the machine
+/// without auto-start on next login. This test fails on the pre-T2 code
+/// (plist absent, both JSON fields absent) and passes after it.
+///
+/// Only the auto-start *file* is asserted on, never `launchctl`/`systemctl`
+/// success: `common::isolated_cmd` sets `UNF_AUTOSTART_INERT=1`, which makes
+/// `autostart` skip every service-manager subprocess so a test daemon can
+/// never unload the developer's real sentinel (see T14, `c00d9e3`).
+#[test]
+fn restart_installs_autostart_when_missing() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    // `watch` installs auto-start on its own, so the entry exists already.
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let entry = autostart_entry_path(unf_home.path());
+    assert!(
+        entry.exists(),
+        "sentinel auto-start entry should exist after watch: {}",
+        entry.display()
+    );
+
+    // Simulate the entry going missing (accidental deletion, OS reinstall).
+    fs::remove_file(&entry).expect("remove sentinel auto-start entry");
+    assert!(!entry.exists(), "entry should be gone before restart");
+
+    let output = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("restart")
+        .timeout(Duration::from_secs(10))
+        .output()
+        .expect("restart --json should run");
+    assert!(output.status.success(), "restart --json should succeed");
+
+    assert!(
+        entry.exists(),
+        "restart should reinstall the missing auto-start entry: {}",
+        entry.display()
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("restart --json should print valid JSON");
+    assert_eq!(
+        value.get("auto_restart_enabled"),
+        Some(&serde_json::Value::Bool(true)),
+        "restart should report that it just enabled auto-start: {}",
+        stdout
+    );
+    assert_eq!(
+        value.get("auto_restart"),
+        Some(&serde_json::Value::Bool(true)),
+        "restart should report auto-start present after the fix: {}",
+        stdout
+    );
+}
+
+/// When the auto-start entry is already present, `unf restart` must report
+/// its state without claiming to have just enabled it, and the human output
+/// must stay silent about auto-start (nothing changed, nothing to report).
+#[test]
+fn restart_leaves_autostart_alone_when_present() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let entry = autostart_entry_path(unf_home.path());
+    assert!(
+        entry.exists(),
+        "sentinel auto-start entry should exist after watch: {}",
+        entry.display()
+    );
+
+    // Human-readable output: no "Enabled" line, since nothing changed.
+    let human_output = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("restart")
+        .timeout(Duration::from_secs(10))
+        .output()
+        .expect("restart should run");
+    assert!(human_output.status.success(), "restart should succeed");
+    let human_stdout = String::from_utf8_lossy(&human_output.stdout);
+    assert!(
+        !human_stdout.contains("Enabled"),
+        "restart should not report enabling auto-start when it was already present: {}",
+        human_stdout
+    );
+
+    assert!(
+        entry.exists(),
+        "auto-start entry should still be present after restart"
+    );
+
+    // JSON output: state is reported, but we did not just enable it.
+    let json_output = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("restart")
+        .timeout(Duration::from_secs(10))
+        .output()
+        .expect("restart --json should run");
+    assert!(
+        json_output.status.success(),
+        "restart --json should succeed"
+    );
+
+    let stdout = String::from_utf8_lossy(&json_output.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("restart --json should print valid JSON");
+    assert_eq!(
+        value.get("auto_restart_enabled"),
+        Some(&serde_json::Value::Bool(false)),
+        "restart should not claim to have just enabled auto-start: {}",
+        stdout
+    );
+    assert_eq!(
+        value.get("auto_restart"),
+        Some(&serde_json::Value::Bool(true)),
+        "restart should report auto-start present: {}",
+        stdout
     );
 }
 
