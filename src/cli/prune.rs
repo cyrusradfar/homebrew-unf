@@ -36,9 +36,9 @@ pub fn run(
     let cutoff = super::parse_time_spec(older_than)?;
 
     if all_projects {
-        run_all_projects(cutoff, older_than, dry_run, format)
+        run_all_projects(cutoff, dry_run, format)
     } else {
-        run_single_project(project_root, cutoff, older_than, dry_run, format)
+        run_single_project(project_root, cutoff, dry_run, format)
     }
 }
 
@@ -46,7 +46,6 @@ pub fn run(
 fn run_single_project(
     project_root: &Path,
     cutoff: DateTime<chrono::Utc>,
-    _older_than: &str,
     dry_run: bool,
     format: OutputFormat,
 ) -> Result<(), UnfError> {
@@ -72,7 +71,7 @@ fn run_single_project(
     if format == OutputFormat::Json {
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        print_human_output(dry_run, &stats);
+        print_human_output(dry_run, cutoff, &stats);
     }
 
     Ok(())
@@ -81,7 +80,6 @@ fn run_single_project(
 /// Prunes all registered projects.
 fn run_all_projects(
     cutoff: DateTime<chrono::Utc>,
-    _older_than: &str,
     dry_run: bool,
     format: OutputFormat,
 ) -> Result<(), UnfError> {
@@ -153,6 +151,7 @@ fn run_all_projects(
     } else {
         print_human_output_with_registry(
             dry_run,
+            cutoff,
             total_snapshots,
             total_objects,
             total_bytes,
@@ -164,73 +163,210 @@ fn run_all_projects(
 }
 
 /// Prints human-readable prune output for a single project.
-fn print_human_output(dry_run: bool, stats: &crate::engine::PruneStats) {
+fn print_human_output(
+    dry_run: bool,
+    cutoff: DateTime<chrono::Utc>,
+    stats: &crate::engine::PruneStats,
+) {
+    print!("{}", human_output(dry_run, cutoff, stats));
+}
+
+/// Builds the human-readable prune output for a single project.
+///
+/// Pure: no I/O. Always leads with the resolved cutoff so a dry run and a
+/// real run report the identical boundary — the whole point of a preview
+/// for the tool's one destructive command.
+fn human_output(
+    dry_run: bool,
+    cutoff: DateTime<chrono::Utc>,
+    stats: &crate::engine::PruneStats,
+) -> String {
     let dry_run_prefix = if dry_run { "[dry run] " } else { "" };
+    let mut out = format!(
+        "Pruning snapshots older than {}\n",
+        super::format_local_time(cutoff)
+    );
 
     if stats.snapshots_removed == 0 && stats.objects_removed == 0 {
-        println!("{}Nothing to prune.", dry_run_prefix);
-        return;
+        out.push_str(&format!("{}Nothing to prune.\n", dry_run_prefix));
+        return out;
     }
 
     if stats.snapshots_removed > 0 {
-        println!(
-            "{}Pruned {} snapshots.",
+        out.push_str(&format!(
+            "{}Pruned {} snapshots.\n",
             dry_run_prefix,
             format_number(stats.snapshots_removed)
-        );
+        ));
     }
 
     if stats.objects_removed > 0 {
-        println!(
-            "{}Removed {} orphaned objects ({} freed).",
+        out.push_str(&format!(
+            "{}Removed {} orphaned objects ({} freed).\n",
             dry_run_prefix,
             format_number(stats.objects_removed),
             format_size(stats.bytes_freed)
-        );
+        ));
     }
+
+    out
 }
 
 /// Prints human-readable prune output for all projects.
 fn print_human_output_with_registry(
     dry_run: bool,
+    cutoff: DateTime<chrono::Utc>,
     total_snapshots: u64,
     total_objects: u64,
     total_bytes: u64,
     registry_entries: u64,
 ) {
+    print!(
+        "{}",
+        human_output_with_registry(
+            dry_run,
+            cutoff,
+            total_snapshots,
+            total_objects,
+            total_bytes,
+            registry_entries
+        )
+    );
+}
+
+/// Builds the human-readable prune output for all projects.
+///
+/// Pure: no I/O. Same cutoff-first contract as [`human_output`].
+fn human_output_with_registry(
+    dry_run: bool,
+    cutoff: DateTime<chrono::Utc>,
+    total_snapshots: u64,
+    total_objects: u64,
+    total_bytes: u64,
+    registry_entries: u64,
+) -> String {
     let dry_run_prefix = if dry_run { "[dry run] " } else { "" };
+    let mut out = format!(
+        "Pruning snapshots older than {}\n",
+        super::format_local_time(cutoff)
+    );
 
     if total_snapshots == 0 && total_objects == 0 && registry_entries == 0 {
-        println!("{}Nothing to prune.", dry_run_prefix);
-        return;
+        out.push_str(&format!("{}Nothing to prune.\n", dry_run_prefix));
+        return out;
     }
 
     if total_snapshots > 0 {
-        println!(
-            "{}Pruned {} snapshots across all projects.",
+        out.push_str(&format!(
+            "{}Pruned {} snapshots across all projects.\n",
             dry_run_prefix,
             format_number(total_snapshots)
-        );
+        ));
     }
 
     if total_objects > 0 {
-        println!(
-            "{}Removed {} orphaned objects ({} freed).",
+        out.push_str(&format!(
+            "{}Removed {} orphaned objects ({} freed).\n",
             dry_run_prefix,
             format_number(total_objects),
             format_size(total_bytes)
-        );
+        ));
     }
 
     if registry_entries > 0 {
-        println!(
-            "{}Cleaned {} stale registry entries.",
+        out.push_str(&format!(
+            "{}Cleaned {} stale registry entries.\n",
             dry_run_prefix,
             format_number(registry_entries)
-        );
+        ));
     }
+
+    out
 }
 
 use super::output::{format_number, format_size};
 
 // Tests for format_size and format_number are in output.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Extracts the "Pruning snapshots older than ..." line from output.
+    fn cutoff_line(output: &str) -> &str {
+        output
+            .lines()
+            .find(|l| l.starts_with("Pruning snapshots older than "))
+            .unwrap_or_else(|| panic!("no cutoff line found in output: {:?}", output))
+    }
+
+    /// A dry run must report the exact same resolved cutoff as a real run.
+    /// `prune` is the one destructive command in this tool — if the dry-run
+    /// preview ever drifted from what a real run would delete against, the
+    /// preview would be worse than useless.
+    #[test]
+    fn dry_run_and_real_run_report_same_cutoff() {
+        let cutoff: DateTime<chrono::Utc> = "2020-06-15T12:00:00Z"
+            .parse()
+            .expect("valid RFC3339 timestamp");
+        let stats = crate::engine::PruneStats {
+            snapshots_removed: 0,
+            objects_removed: 0,
+            bytes_freed: 0,
+        };
+
+        let dry_run_output = human_output(true, cutoff, &stats);
+        let real_run_output = human_output(false, cutoff, &stats);
+
+        assert_eq!(
+            cutoff_line(&dry_run_output),
+            cutoff_line(&real_run_output),
+            "dry-run cutoff must match the real-run cutoff exactly"
+        );
+
+        // Also sanity-check it round-trips through the shared formatter that
+        // `unf log` uses, so the printed cutoff is re-usable as `--older-than`.
+        assert!(cutoff_line(&dry_run_output).ends_with(&super::super::format_local_time(cutoff)));
+    }
+
+    /// Same equality check for the all-projects human output path.
+    #[test]
+    fn dry_run_and_real_run_report_same_cutoff_all_projects() {
+        let cutoff: DateTime<chrono::Utc> = "2020-06-15T12:00:00Z"
+            .parse()
+            .expect("valid RFC3339 timestamp");
+
+        let dry_run_output = human_output_with_registry(true, cutoff, 0, 0, 0, 0);
+        let real_run_output = human_output_with_registry(false, cutoff, 0, 0, 0, 0);
+
+        assert_eq!(
+            cutoff_line(&dry_run_output),
+            cutoff_line(&real_run_output),
+            "dry-run cutoff must match the real-run cutoff exactly"
+        );
+    }
+
+    /// The cutoff line is present even when there's something to prune, not
+    /// just on the "Nothing to prune" fast path.
+    #[test]
+    fn cutoff_line_present_when_snapshots_pruned() {
+        let cutoff: DateTime<chrono::Utc> = "2020-06-15T12:00:00Z"
+            .parse()
+            .expect("valid RFC3339 timestamp");
+        let stats = crate::engine::PruneStats {
+            snapshots_removed: 3,
+            objects_removed: 1,
+            bytes_freed: 42,
+        };
+
+        let output = human_output(false, cutoff, &stats);
+        assert_eq!(
+            cutoff_line(&output),
+            format!(
+                "Pruning snapshots older than {}",
+                super::super::format_local_time(cutoff)
+            )
+        );
+        assert!(output.contains("Pruned 3 snapshots."));
+    }
+}
