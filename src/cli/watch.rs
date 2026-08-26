@@ -293,8 +293,8 @@ pub fn run(
     }
 
     // Install auto-start
-    let auto_restart = match crate::autostart::install() {
-        Ok(()) => crate::autostart::is_installed().unwrap_or(false),
+    let auto_restart = match crate::autostart::ensure_installed() {
+        Ok((_installed_now, is_installed)) => is_installed,
         Err(e) => {
             super::output::print_warning(&format!("Failed to install auto-start: {}", e));
             false

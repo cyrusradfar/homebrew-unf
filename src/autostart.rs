@@ -336,9 +336,81 @@ fn is_installed_platform() -> Result<bool, UnfError> {
     Ok(false)
 }
 
+/// Installs auto-start only if it is not already installed.
+///
+/// Returns `(installed_now, is_installed_after)`. Pure composition over the
+/// existing `install()` / `is_installed()` pair — no new platform logic.
+pub fn ensure_installed() -> Result<(bool, bool), UnfError> {
+    if is_installed().unwrap_or(false) {
+        return Ok((false, true));
+    }
+    install()?;
+    Ok((true, is_installed().unwrap_or(false)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- ensure_installed ---
+
+    /// Path that `is_installed()` checks on this platform.
+    #[cfg(target_os = "macos")]
+    fn sentinel_entry_path() -> PathBuf {
+        launchd_dir()
+            .expect("launchd dir")
+            .join(SENTINEL_PLIST_NAME)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sentinel_entry_path() -> PathBuf {
+        dirs::config_dir()
+            .expect("config dir")
+            .join("systemd/user")
+            .join(SENTINEL_SERVICE_NAME)
+    }
+
+    /// When the entry already exists, `ensure_installed()` must report
+    /// `(false, true)` and leave the file byte-for-byte untouched — no plist
+    /// rewrite, no `launchctl`/`systemctl` call on the healthy path.
+    ///
+    /// Holds `ENV_LOCK` because it overrides `HOME`.
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn ensure_installed_leaves_existing_entry_alone() {
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let temp = tempfile::TempDir::new().expect("create temp dir");
+        let original_home = std::env::var("HOME").ok();
+        let original_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("HOME", temp.path());
+        std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+        let entry = sentinel_entry_path();
+        fs::create_dir_all(entry.parent().expect("parent dir")).expect("create entry dir");
+        fs::write(&entry, "PRE-EXISTING").expect("write entry");
+
+        let result = ensure_installed();
+
+        // Restore env before asserting so a failure cannot leak HOME.
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match original_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        assert_eq!(result.expect("ensure_installed"), (false, true));
+        assert_eq!(
+            fs::read_to_string(&entry).expect("read entry"),
+            "PRE-EXISTING",
+            "existing entry must not be rewritten"
+        );
+    }
 
     // Sentinel plist tests
 

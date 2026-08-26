@@ -120,8 +120,8 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     if let Err(e) = crate::registry::register_project(project_root, None) {
         super::output::print_warning(&format!("Failed to register project: {}", e));
     }
-    let auto_restart = match crate::autostart::install() {
-        Ok(()) => crate::autostart::is_installed().unwrap_or(false),
+    let auto_restart = match crate::autostart::ensure_installed() {
+        Ok((_installed_now, is_installed)) => is_installed,
         Err(e) => {
             super::output::print_warning(&format!("Failed to install auto-start: {}", e));
             false
