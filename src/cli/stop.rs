@@ -195,7 +195,9 @@ mod tests {
 
     #[test]
     fn stop_with_invalid_global_pid_file() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_unf_home, project) = setup_with_unf_home();
 
         let global_pid_path = storage::global_pid_path().expect("get global pid path");
@@ -210,7 +212,9 @@ mod tests {
 
     #[test]
     fn stop_with_nonexistent_global_process() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_unf_home, project) = setup_with_unf_home();
 
         let global_pid_path = storage::global_pid_path().expect("get global pid path");
@@ -225,7 +229,9 @@ mod tests {
 
     #[test]
     fn stop_no_global_pid_file_fallback_per_project() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_unf_home, project) = setup_with_unf_home();
 
         let storage_dir =

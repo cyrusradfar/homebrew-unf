@@ -169,7 +169,9 @@ mod tests {
     use tempfile::TempDir;
 
     fn with_test_home<F: FnOnce(&Path)>(f: F) {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp = TempDir::new().expect("create temp dir");
         let original = env::var("UNF_HOME").ok();
         env::set_var("UNF_HOME", temp.path());

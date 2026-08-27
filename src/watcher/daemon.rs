@@ -413,7 +413,9 @@ mod tests {
     /// an isolated registry rather than the real `~/.unfudged/projects.json`.
     /// Mirrors the `with_test_home` helper in `intent.rs`.
     fn with_test_registry<F: FnOnce()>(f: F) {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp = tempfile::TempDir::new().expect("create temp UNF_HOME");
         let original = std::env::var("UNF_HOME").ok();
         std::env::set_var("UNF_HOME", temp.path());

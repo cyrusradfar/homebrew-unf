@@ -470,7 +470,9 @@ mod tests {
     #[test]
     fn is_daemon_watching_project_no_global_daemon() {
         // Registered, but no global PID file in an isolated home -> not watching.
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let temp = tempfile::TempDir::new().expect("create temp");
         let original_home = std::env::var("HOME").ok();
@@ -493,7 +495,9 @@ mod tests {
     #[test]
     fn determine_mode_never_watched() {
         // Test Mode 0: Directory never registered, daemon not watching
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let temp = tempfile::TempDir::new().expect("create temp");
         let original_home = std::env::var("HOME").ok();
@@ -520,7 +524,9 @@ mod tests {
     #[test]
     fn determine_mode_previously_watched() {
         // Test Mode 1: Directory registered but daemon not watching
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let temp = tempfile::TempDir::new().expect("create temp");
         let original_home = std::env::var("HOME").ok();
@@ -550,7 +556,9 @@ mod tests {
 
     #[test]
     fn lookup_registry_facts_reads_force_watch_gitignore() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let temp = tempfile::TempDir::new().expect("create temp");
         let original_home = std::env::var("HOME").ok();
@@ -639,7 +647,9 @@ mod tests {
 
     #[test]
     fn lookup_registry_facts_reads_unignored_dirs() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let temp = tempfile::TempDir::new().expect("create temp");
         let original_home = std::env::var("HOME").ok();

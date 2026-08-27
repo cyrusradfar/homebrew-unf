@@ -122,7 +122,25 @@ mod tests_log {
         assert!(line.contains("deleted"));
         assert!(line.contains("src/old.rs"));
         assert!(!line.contains("KB")); // Delete events don't show size
-        assert!(!line.contains("+")); // Delete events don't show stats
+
+        // Look for the stats past the timestamp: since v0.21.1 the timestamp
+        // carries its UTC offset, so UTC and everything east of it render a `+`
+        // (`+0000`) that has nothing to do with line stats.
+        assert!(
+            !stats_segment(&snap, &line).contains('+'),
+            "delete events show no +N/-M stats, got {line:?}"
+        );
+    }
+
+    /// The part of a formatted line after the timestamp.
+    ///
+    /// `format_snapshot_line` prefixes two spaces and a 25-char local timestamp
+    /// ending in a five-char offset. Assertions about `+` or `-` must look only
+    /// past it, or they read the offset sign and pass or fail by timezone.
+    fn stats_segment<'a>(snap: &Snapshot, line: &'a str) -> &'a str {
+        let stamp = crate::cli::format_local_time(snap.timestamp);
+        line.strip_prefix(&format!("  {stamp}"))
+            .unwrap_or_else(|| panic!("line should start with the timestamp, got {line:?}"))
     }
 
     #[test]
@@ -143,7 +161,11 @@ mod tests_log {
         assert!(line.contains("created"));
         assert!(line.contains("src/legacy.rs"));
         assert!(line.contains("4.9 KB"));
-        assert!(!line.contains("+")); // Pre-migration snapshots don't show stats
+        // Past the timestamp only — the offset renders a `+` in UTC and east of it.
+        assert!(
+            !stats_segment(&snap, &line).contains('+'),
+            "pre-migration snapshots show no +N/-M stats, got {line:?}"
+        );
         assert!(!line.contains("-/-")); // No longer shows cryptic -/-
     }
 

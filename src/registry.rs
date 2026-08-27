@@ -270,7 +270,9 @@ mod tests {
     /// Helper to run registry tests with an isolated home directory.
     /// Uses the shared ENV_LOCK to prevent interference from other test modules.
     fn with_test_home<F: FnOnce(&Path)>(f: F) {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let temp = TempDir::new().expect("create temp dir");
         // Override HOME for this test

@@ -460,8 +460,16 @@ mod tests {
         let temp = tempfile::TempDir::new().expect("create temp dir");
         let original_home = std::env::var("HOME").ok();
         let original_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let original_inert = std::env::var("UNF_AUTOSTART_INERT").ok();
         std::env::set_var("HOME", temp.path());
         std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+        // Without this, `is_installed()` on Linux also asks
+        // `systemctl --user is-enabled`, which reports "not enabled" on any CI
+        // runner with no user D-Bus session. The unit file this test writes by
+        // hand was never enabled through systemd, so `is_installed()` returns
+        // false and `ensure_installed()` reinstalls instead of early-returning.
+        // The subject here is the early return, not the service manager.
+        std::env::set_var("UNF_AUTOSTART_INERT", "1");
 
         let entry = sentinel_entry_path();
         fs::create_dir_all(entry.parent().expect("parent dir")).expect("create entry dir");
@@ -477,6 +485,10 @@ mod tests {
         match original_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        match original_inert {
+            Some(v) => std::env::set_var("UNF_AUTOSTART_INERT", v),
+            None => std::env::remove_var("UNF_AUTOSTART_INERT"),
         }
 
         assert_eq!(result.expect("ensure_installed"), (false, true));

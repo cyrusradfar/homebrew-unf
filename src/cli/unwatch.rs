@@ -91,7 +91,9 @@ mod tests {
 
     #[test]
     fn unwatch_nonexistent_storage() {
-        let _guard = crate::test_util::ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let unf_home = TempDir::new().expect("create unf_home");
         let project = TempDir::new().expect("create project");
         std::env::set_var("UNF_HOME", unf_home.path());
