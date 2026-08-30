@@ -457,4 +457,40 @@ mod tests {
         let events = debouncer.force_drain().expect("should have events");
         assert_eq!(events.len(), 1);
     }
+
+    /// Proves that a sustained burst of events (each arriving faster than the
+    /// 3-second `SILENCE_WINDOW`) can starve `drain_if_ready` forever, because
+    /// every `push()` resets `last_event` and the silence gap never elapses.
+    ///
+    /// Zero drains is fatal: `sentinel.rs::check_data_freshness` force-terminates
+    /// the daemon (SIGTERM then SIGKILL) when snapshots go stale while the
+    /// filesystem is actively changing. If the debouncer never drains during a
+    /// burst, everything accumulated in the in-memory `pending` map is destroyed
+    /// when the daemon is killed, since it was never written to disk.
+    #[test]
+    fn burst_without_silence_still_drains() {
+        let mut d = Debouncer::new();
+        let t0 = Instant::now();
+        let mut drains = 0;
+
+        // 300 events at 100ms intervals = 30 virtual seconds.
+        // No gap ever reaches SILENCE_WINDOW, so the silence path never fires.
+        for i in 0..300u64 {
+            let t = t0 + Duration::from_millis(i * 100);
+            d.push(
+                PathBuf::from(format!("f{}.rs", i % 10)),
+                EventType::Modify,
+                t,
+            );
+            if d.drain_if_ready(t).is_some() {
+                drains += 1;
+            }
+        }
+
+        assert!(
+            drains >= 1,
+            "a sustained burst must drain via max-hold; got {drains} drains. \
+             Zero drains means every event sat in memory, where a SIGKILL destroys them."
+        );
+    }
 }
