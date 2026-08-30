@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `unf restart` now reinstalls the auto-start entry when it is missing, and prints `Enabled  auto-restart on login` when it does. Before, a daemon whose launchd/systemd entry had been removed restarted for that session only and went away again at the next login, with nothing in the output to say so.
 - `unf status` on Linux could report auto-start as `enabled` after `systemctl --user enable` silently failed (e.g. no active user D-Bus session, common over plain SSH) — the unit file it wrote before failing still existed, and `is_installed()` checked only that file. It now also checks `systemctl --user is-enabled`, so `unf status` may now correctly report `disabled` where it previously reported `enabled`.
 
+## [0.21.1] - 2026-08-30
+### Fixed
+- **A sustained burst of file changes could lose every pending event.** The debouncer emitted a batch only after 3 seconds of silence, and each new event reset that timer. While files kept changing faster than every 3 seconds — an AI agent rewriting a tree, a large checkout, a bulk find-and-replace — the silence window never elapsed, so nothing was ever written to disk.
+
+  The events were not merely delayed. They accumulated in memory, and the watchdog then destroyed them: `unf` force-restarts the daemon when snapshots go stale while the filesystem is visibly changing, which is exactly the state a stalled debouncer produces. Anything still pending was lost with the process.
+
+  Batches are now also flushed after a maximum hold of 15 seconds, whether or not the changes have stopped. Worst-case exposure during a burst is bounded at 15 seconds instead of the whole burst. The existing 3-second silence behaviour is unchanged for normal editing.
+
+  No configuration or output changed. If you were recording during heavy bursts, you were losing history and had no signal that it was happening.
+
 ## [0.19.1] - 2026-08-20
 ### Internal
 - Fixed a race in the `--force-watch-gitignore` integration test that failed on the Linux CI runner. The test waited a fixed 300ms after `unf watch` before asserting a file was not recorded, but `unf watch` returns as soon as it signals the daemon — it does not wait for the reload to rebuild the watcher's filter. The test now polls for direct evidence that the new filter is live.

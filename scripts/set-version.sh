@@ -1,7 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="${1:?Usage: $0 <version>}"
+# --cli-only bumps just the CLI crate, leaving app/Cargo.toml and
+# app/tauri.conf.json alone. Use it for releases that ship the CLI without
+# rebuilding the desktop app (see `just release-cli`). Bumping the app to a
+# version whose DMG was never built would misreport what the Cask points at.
+CLI_ONLY=false
+while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+        --cli-only) CLI_ONLY=true; shift ;;
+        *) echo "Error: unknown flag: $1"; exit 1 ;;
+    esac
+done
+
+VERSION="${1:?Usage: $0 [--cli-only] <version>}"
 
 # Validate semver format
 if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
@@ -21,6 +33,13 @@ fi
 
 # Update root Cargo.toml
 sed "${SED_ARGS[@]}" "s/^version = \".*\"/version = \"$VERSION\"/" "$ROOT_DIR/Cargo.toml"
+
+if [[ "$CLI_ONLY" == true ]]; then
+    echo "Version updated to $VERSION in:"
+    echo "  Cargo.toml"
+    echo "  (--cli-only: app/Cargo.toml and app/tauri.conf.json left unchanged)"
+    exit 0
+fi
 
 # Update app/Cargo.toml (only the first version line)
 # Use awk to replace only the first occurrence of version line
