@@ -468,6 +468,35 @@ pub struct Filter {
     settings: WatchSettings,
 }
 
+/// Where a path sits relative to a `.git` directory, as classified by
+/// [`Filter::git_scope`] for rule 1 of [`Filter::should_track`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GitScope {
+    /// No `.git` component in the path.
+    OutsideGit,
+    /// Inside `.git`, on an allowlisted path the project opted into.
+    Recordable,
+    /// Inside `.git`, and refused: the object store, refs, everything not
+    /// covered by an opted-in `GIT_RECORDABLE_PATHS` entry.
+    ExcludedGitInternals,
+}
+
+impl GitScope {
+    /// True when `.gitignore` rules apply to this path.
+    ///
+    /// Git never applies `.gitignore` to anything under `.git` — those
+    /// rules govern the working tree only — so applying them to a
+    /// recordable `.git` path would be wrong on git's own terms. It would
+    /// also silently defeat the opt-in: a repository whose `.gitignore`
+    /// happens to carry a `config` or `hooks/` rule would make
+    /// `--unignore-dir .git/config` record nothing, while `unf watch`
+    /// cheerfully confirmed it was recording. The allowlist in rule 1 is
+    /// what bounds a recordable `.git` path, and it has already run.
+    fn honors_gitignore(self) -> bool {
+        !matches!(self, GitScope::Recordable)
+    }
+}
+
 impl Filter {
     /// Create a new filter rooted at the given project directory.
     ///
@@ -574,137 +603,149 @@ impl Filter {
     /// 4. Hidden files (starting with .) are skipped, except .env and .gitignore
     ///    files (skipped entirely when `settings.force_watch_gitignore` is true)
     pub fn should_track(&self, path: &Path) -> bool {
-        // 1. Check if any path component matches IGNORED_DIRS, allowing for
-        // per-project opt-in via settings.unignored_dirs.
-        //
-        // `.git` gets position-aware handling, unlike every other
-        // IGNORED_DIRS entry. A bare-name entry (`target`) matches any
-        // occurrence of that exact component, but a `.git` entry in
-        // unignored_dirs is a *path* (`.git/hooks`), not a name — it must
-        // match against what comes AFTER `.git` in the path, not the
-        // `.git` component itself. So: find the first `.git` component
-        // (wherever it occurs — a nested `.git`, e.g. `sub/.git/hooks/x`,
-        // is deliberately treated identically to a top-level one, so a
-        // nested repository's hooks obey the same allowlist rather than
-        // falling through unfiltered), take everything after it as the
-        // remainder, and track only when that remainder is prefixed by an
-        // entry that is BOTH present in unignored_dirs AND independently
-        // re-checked here against GIT_RECORDABLE_PATHS. Matching is by
-        // component, never by string prefix, so `.git/hooks-evil/x` is
-        // never mistaken for a child of an allowed `.git/hooks`. A
-        // "prefixed by" match (not exact-length) is what lets children of
-        // an allowed directory, like `.git/hooks/nested/deeper.sh`, be
-        // tracked recursively.
-        //
-        // The GIT_RECORDABLE_PATHS re-check is deliberate, as a second
-        // layer on top of CLI validation (parse_unignore_dir). A
-        // hand-edited projects.json setting unignored_dirs to include
-        // ".git/objects" must not be able to make the daemon record git's
-        // object store — GIT_RECORDABLE_PATHS is consulted directly here,
-        // never assumed from what's already in unignored_dirs. Do not
-        // "simplify" this by trusting unignored_dirs alone.
         let components: Vec<&str> = path
             .components()
             .filter_map(|c| c.as_os_str().to_str())
             .collect();
 
-        let mut in_allowed_git_path = false;
-        if let Some(git_idx) = components.iter().position(|&c| c == PERMANENT_IGNORED_DIR) {
-            let remainder = &components[git_idx + 1..];
-            let allowed = GIT_RECORDABLE_PATHS.iter().any(|&allowed_path| {
-                let allowed_parts: Vec<&str> = allowed_path.split('/').collect();
-                remainder.starts_with(allowed_parts.as_slice())
-                    && self
-                        .settings
-                        .unignored_dirs
-                        .contains(&format!("{PERMANENT_IGNORED_DIR}/{allowed_path}"))
-            });
-            if !allowed {
-                return false;
-            }
-            in_allowed_git_path = true;
+        // 1. Path components against IGNORED_DIRS, with `.git` classified
+        // by position rather than matched as a bare name.
+        let git_scope = self.git_scope(&components);
+        if git_scope == GitScope::ExcludedGitInternals {
+            return false;
+        }
+        if self.has_ignored_dir_component(&components) {
+            return false;
         }
 
-        for component in path.components() {
-            if let Some(comp_str) = component.as_os_str().to_str() {
-                // `.git` components are handled entirely above — skipped
-                // here so a hand-edited bare ".git" entry in unignored_dirs
-                // can never be matched as an ordinary IGNORED_DIRS name.
-                if comp_str == PERMANENT_IGNORED_DIR {
-                    continue;
-                }
-                if IGNORED_DIRS.contains(&comp_str)
-                    && !self.settings.unignored_dirs.contains(comp_str)
-                {
-                    return false;
-                }
-            }
+        // 2. File extension against IGNORED_EXTENSIONS.
+        if has_ignored_extension(path) {
+            return false;
         }
 
-        // 2. Check file extension against IGNORED_EXTENSIONS (case-insensitive)
-        if let Some(ext) = path.extension() {
-            if let Some(ext_str) = ext.to_str() {
-                let ext_lower = ext_str.to_lowercase();
-                if IGNORED_EXTENSIONS.contains(&ext_lower.as_str()) {
-                    return false;
-                }
-            }
+        // 3. .gitignore rules, where they apply.
+        if git_scope.honors_gitignore() && self.is_gitignored(path) {
+            return false;
         }
 
-        // 3. If .gitignore loaded, check if path is ignored.
-        //
-        // Skipped inside an allowed `.git` path. Git never applies
-        // .gitignore to anything under .git — those rules govern the
-        // working tree only — so applying them here would be wrong on
-        // git's own terms. It would also silently defeat the opt-in: a
-        // repository whose .gitignore happens to carry a `config` or
-        // `hooks/` rule would make `--unignore-dir .git/config` record
-        // nothing, while `unf watch` cheerfully confirmed it was
-        // recording. The allowlist in rule 1 is what bounds this, and it
-        // has already run.
-        if let Some(gitignore) = self.gitignore.as_ref().filter(|_| !in_allowed_git_path) {
-            // Convert to relative path if it starts with project_root.
-            // If strip_prefix fails, the path is absolute and outside the project root,
-            // so we use the absolute path directly. The gitignore matcher handles both
-            // relative and absolute paths correctly.
-            let check_path = path.strip_prefix(&self.project_root).unwrap_or(path);
-
-            // Check if the path itself is ignored
-            let matched = gitignore.matched(check_path, false);
-            if matched.is_ignore() {
-                return false;
-            }
-
-            // Also check if any parent directory is ignored
-            // This handles cases like "tmp/" where we need to check the parent
-            if let Some(parent) = check_path.parent() {
-                let parent_matched = gitignore.matched(parent, true);
-                if parent_matched.is_ignore() {
-                    return false;
-                }
-            }
-        }
-
-        // 4. Skip hidden files (starting with .) EXCEPT .gitignore and .env files.
-        // Skipped entirely when settings.force_watch_gitignore is true, so
-        // dotfiles like .env.local are tracked.
-        if !self.settings.force_watch_gitignore {
-            if let Some(filename) = path.file_name() {
-                if let Some(name_str) = filename.to_str() {
-                    if name_str.starts_with('.') {
-                        // Allow .gitignore and .env files
-                        if name_str == ".gitignore" || name_str == ".env" {
-                            return true;
-                        }
-                        return false;
-                    }
-                }
-            }
+        // 4. Hidden files, unless the project opted out of hidden-file
+        // filtering, so dotfiles like .env.local are tracked.
+        if !self.settings.force_watch_gitignore && is_filtered_hidden_file(path) {
+            return false;
         }
 
         // Path passes all filters
         true
     }
+
+    /// Rule 1's position-aware half: classifies where `components` sit
+    /// relative to a `.git` directory.
+    ///
+    /// `.git` gets position-aware handling, unlike every other
+    /// IGNORED_DIRS entry. A bare-name entry (`target`) matches any
+    /// occurrence of that exact component, but a `.git` entry in
+    /// unignored_dirs is a *path* (`.git/hooks`), not a name — it must
+    /// match against what comes AFTER `.git` in the path, not the `.git`
+    /// component itself. So: find the first `.git` component (wherever it
+    /// occurs — a nested `.git`, e.g. `sub/.git/hooks/x`, is deliberately
+    /// treated identically to a top-level one, so a nested repository's
+    /// hooks obey the same allowlist rather than falling through
+    /// unfiltered), take everything after it as the remainder, and report
+    /// [`GitScope::Recordable`] only when that remainder is prefixed by an
+    /// entry that is BOTH present in unignored_dirs AND independently
+    /// re-checked here against GIT_RECORDABLE_PATHS. Matching is by
+    /// component, never by string prefix, so `.git/hooks-evil/x` is never
+    /// mistaken for a child of an allowed `.git/hooks`. A "prefixed by"
+    /// match (not exact-length) is what lets children of an allowed
+    /// directory, like `.git/hooks/nested/deeper.sh`, be tracked
+    /// recursively.
+    ///
+    /// The GIT_RECORDABLE_PATHS re-check is deliberate, as a second layer
+    /// on top of CLI validation (parse_unignore_dir). A hand-edited
+    /// projects.json setting unignored_dirs to include ".git/objects" must
+    /// not be able to make the daemon record git's object store —
+    /// GIT_RECORDABLE_PATHS is consulted directly here, never assumed from
+    /// what's already in unignored_dirs. Do not "simplify" this by
+    /// trusting unignored_dirs alone.
+    fn git_scope(&self, components: &[&str]) -> GitScope {
+        let Some(git_idx) = components.iter().position(|&c| c == PERMANENT_IGNORED_DIR) else {
+            return GitScope::OutsideGit;
+        };
+
+        let remainder = &components[git_idx + 1..];
+        let recordable = GIT_RECORDABLE_PATHS.iter().any(|&allowed_path| {
+            let allowed_parts: Vec<&str> = allowed_path.split('/').collect();
+            remainder.starts_with(allowed_parts.as_slice())
+                && self
+                    .settings
+                    .unignored_dirs
+                    .contains(&format!("{PERMANENT_IGNORED_DIR}/{allowed_path}"))
+        });
+
+        if recordable {
+            GitScope::Recordable
+        } else {
+            GitScope::ExcludedGitInternals
+        }
+    }
+
+    /// Rule 1's by-name half: true when any component is an IGNORED_DIRS
+    /// entry the project has not opted back into via
+    /// `settings.unignored_dirs`.
+    ///
+    /// `.git` components are excluded from this check — they are handled
+    /// entirely by [`Filter::git_scope`], so a hand-edited bare ".git"
+    /// entry in unignored_dirs can never be matched as an ordinary
+    /// IGNORED_DIRS name.
+    fn has_ignored_dir_component(&self, components: &[&str]) -> bool {
+        components.iter().any(|&comp| {
+            comp != PERMANENT_IGNORED_DIR
+                && IGNORED_DIRS.contains(&comp)
+                && !self.settings.unignored_dirs.contains(comp)
+        })
+    }
+
+    /// Rule 3: true when a loaded `.gitignore` excludes `path`, either
+    /// directly or through an ignored parent directory — the parent check
+    /// is what catches directory patterns like `tmp/`.
+    ///
+    /// Always false when no `.gitignore` is loaded: either
+    /// `settings.force_watch_gitignore` is set (the matcher is never
+    /// built), or the project has no `.gitignore` file.
+    fn is_gitignored(&self, path: &Path) -> bool {
+        let Some(gitignore) = self.gitignore.as_ref() else {
+            return false;
+        };
+
+        // Convert to relative path if it starts with project_root.
+        // If strip_prefix fails, the path is absolute and outside the project root,
+        // so we use the absolute path directly. The gitignore matcher handles both
+        // relative and absolute paths correctly.
+        let check_path = path.strip_prefix(&self.project_root).unwrap_or(path);
+
+        gitignore.matched(check_path, false).is_ignore()
+            || check_path
+                .parent()
+                .is_some_and(|parent| gitignore.matched(parent, true).is_ignore())
+    }
+}
+
+/// Rule 2: true when the file extension is in IGNORED_EXTENSIONS
+/// (case-insensitive). Paths with no extension, or a non-UTF-8 one, are
+/// not filtered here.
+fn has_ignored_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| IGNORED_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+}
+
+/// Rule 4: true when the file name marks it hidden (a leading `.`) and it
+/// is not one of the two hidden names always kept, `.gitignore` and
+/// `.env`.
+fn is_filtered_hidden_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') && name != ".gitignore" && name != ".env")
 }
 
 #[cfg(test)]

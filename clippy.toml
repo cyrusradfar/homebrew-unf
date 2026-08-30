@@ -1,1 +1,9 @@
+# Cognitive complexity gate. Enabled as a hard error via [lints.clippy] in
+# Cargo.toml -- the lint is nursery/allow-by-default, so this threshold does
+# nothing on its own. It sat here inert for months before that was noticed.
 cognitive-complexity-threshold = 12
+
+# Function length. Read by scripts/check-function-sizes.sh, which turns on
+# clippy::too_many_lines explicitly (it is pedantic, so off by default) and
+# compares against .function-size-baseline.
+too-many-lines-threshold = 50

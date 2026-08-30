@@ -13,6 +13,20 @@ homepage = "https://github.com/cyrusradfar/homebrew-unf"
 name = "unf"
 path = "src/main.rs"
 
+# Cognitive complexity is a HARD ERROR at the threshold in clippy.toml (12).
+# The lint is nursery/allow-by-default, so `cognitive-complexity-threshold`
+# sat in clippy.toml doing nothing at all until this section was added.
+#
+# Declared here rather than as `#![warn(...)]` in lib.rs so it covers the bins
+# too. `code/` is not a workspace -- app/ is a separate crate with its own
+# lockfile -- so this cannot leak into the desktop app.
+#
+# No baseline and no ratchet: only one violation ever existed, and it is fixed.
+# File and function length are the metrics that need a baseline; see
+# scripts/check-code-size.sh.
+[lints.clippy]
+cognitive_complexity = "warn"
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive"] }
