@@ -66,10 +66,39 @@ cargo tauri dev
 Never use broad `pkill -f 'target/debug/unf'` — this kills the production daemon. Test daemons use `UNF_HOME` for isolation. Use `just kill-test-daemons` to clean up test processes. If the production daemon is killed, run `unf restart`.
 
 ### Code Submission
-- `cargo fmt -- --check` ✓
-- `cargo clippy -- -D warnings` ✓ (zero warnings)
+- `just lint` ✓ (clippy `-D warnings`, fmt, code-size gates)
 - `cargo test` ✓ (100% pass rate)
 - Update `CHANGELOG.md` under `Unreleased`
+
+### Size and Complexity Gates
+
+Three limits, none of which demand a rewrite of existing code:
+
+| Limit | Enforced by | Baseline? |
+|---|---|---|
+| Cognitive complexity ≤ 12 | `[lints.clippy]` in `Cargo.toml` + `clippy.toml` | No — hard error |
+| File ≤ 300 production lines | `scripts/check-code-size.sh` | Yes |
+| Function ≤ 50 lines | `scripts/check-code-size.sh` | Yes |
+
+Existing offenders live in `.code-size-baseline` and only warn. CI fails on new
+debt, on a baselined file getting worse, and — on PRs — on changing a baselined
+file without improving it.
+
+Three things worth knowing:
+
+- **File length counts production lines only**, everything before the module-level
+  `#[cfg(test)]`. Counting inline tests would penalise test coverage. It matters:
+  31 files exceed 300 *total* lines, but only 18 exceed 300 *production* lines.
+- **A file may grow if its over-long-function count fell.** Extracting a helper adds
+  a signature and doc comment while reducing complexity; failing that would
+  discourage the refactoring the gate exists to cause.
+- **`cargo clippy` alone will not show complexity or function-length violations.**
+  `cognitive_complexity` is nursery and `too_many_lines` is pedantic, both
+  allow-by-default. `cognitive-complexity-threshold` sat in `clippy.toml` doing
+  nothing for months before `[lints.clippy]` was added. Run `just lint`.
+
+After legitimately improving a file, run `just write-size-baseline` to lock the
+gain in, and commit the updated baseline.
 
 ## Design Principles
 

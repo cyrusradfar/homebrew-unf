@@ -43,3 +43,17 @@ test-e2e-staging:
 # Test that release/staging workflow push logic handles diverged main
 test-workflow-push:
     ./scripts/test-workflow-push.sh
+
+# File and function length gates (baselined — see scripts/check-code-size.sh)
+check-size *ARGS:
+    ./scripts/check-code-size.sh {{ARGS}}
+
+# Re-record the size baseline after legitimately improving a file
+write-size-baseline:
+    ./scripts/check-code-size.sh --write-baseline
+
+# Everything CI runs, locally
+lint:
+    cargo clippy --all-targets -- -D warnings
+    cargo fmt -- --check
+    ./scripts/check-code-size.sh

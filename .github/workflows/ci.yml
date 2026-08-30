@@ -19,6 +19,26 @@ jobs:
         run: cargo test --test integration --test migration_test --test daemon_integration -- --test-threads=1
       - run: cargo clippy -- -D warnings
       - run: cargo fmt -- --check
+
+      # File and function length, against .code-size-baseline. Existing
+      # offenders warn; new debt fails. See scripts/check-code-size.sh.
+      - name: Code size gates
+        run: ./scripts/check-code-size.sh
+
+      # "Touch it, fix it": a file you changed must come off the baseline, or
+      # at least move toward it. Only meaningful on a PR, where there is a
+      # base branch to diff against.
+      - name: Code size gates (changed files)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/**/*.rs' | tr '\n' ' ')
+          if [ -z "$CHANGED" ]; then
+            echo "No Rust source files changed."
+          else
+            echo "Changed: $CHANGED"
+            ./scripts/check-code-size.sh --changed $CHANGED
+          fi
   lint-app:
     name: Lint app (Biome)
     runs-on: ubuntu-latest
