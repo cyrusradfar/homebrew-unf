@@ -1340,3 +1340,81 @@ fn unignore_git_paths_end_to_end() {
     wait_past_debounce();
     assert_not_recorded(unf_home.path(), temp_b.path(), ".git/objects/ab/cdef");
 }
+
+/// HOTFIX-01 system test: a sustained burst of events (no gap ever wide
+/// enough to reach the 3s `SILENCE_WINDOW`) must still produce snapshots on
+/// disk WHILE the burst is still running, via the debouncer's `MAX_HOLD`
+/// (15s) drain path.
+///
+/// The bug: before the fix, `drain_if_ready` only fired after a silence
+/// window. A sustained burst never goes silent, so nothing ever drained —
+/// every pending path sat in memory for the life of the burst (and beyond),
+/// which is exactly the state `sentinel.rs::check_data_freshness` reads as
+/// stale. `debounce.rs`'s own unit tests (`burst_without_silence_still_drains`,
+/// `max_hold_caps_drain_latency`) already prove the pure debouncer logic in
+/// isolation; this test proves the same property through the real CLI and
+/// daemon process, on disk.
+///
+/// Timing: writes land every 300ms (well under the 3s silence window) for
+/// 20s total (5s past `MAX_HOLD`'s 15s, for scheduler margin on a loaded
+/// CI runner). The on-disk check happens at the 17s mark: after `MAX_HOLD`
+/// must have fired at least once, but before the writer thread's 20s loop
+/// finishes — proving the snapshot appeared DURING the burst, not merely
+/// after it stopped and the trailing silence window closed it out normally.
+#[test]
+fn burst_produces_snapshots_before_it_ends() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_millis(500));
+
+    let target = temp.path().join("burst.txt");
+    fs::write(&target, "seed\n").expect("seed burst.txt");
+
+    const BURST_SECS: u64 = 20;
+    const CHECK_AFTER_SECS: u64 = 17; // > MAX_HOLD (15s), still mid-burst
+
+    let burst_finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_finished = burst_finished.clone();
+    let writer_target = target.clone();
+    let writer = thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let mut i: u64 = 0;
+        while start.elapsed() < Duration::from_secs(BURST_SECS) {
+            i += 1;
+            fs::write(&writer_target, format!("burst line {}\n", i))
+                .unwrap_or_else(|e| panic!("write during burst: {}", e));
+            thread::sleep(Duration::from_millis(300));
+        }
+        writer_finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    thread::sleep(Duration::from_secs(CHECK_AFTER_SECS));
+
+    // Sanity check on the test's own timing assumptions: if the writer
+    // already finished, the mid-burst assertion below would prove nothing
+    // (it would also pass on the pre-fix code once the trailing silence
+    // window closed).
+    assert!(
+        !burst_finished.load(std::sync::atomic::Ordering::SeqCst),
+        "writer thread finished before the mid-burst check point ({}s); \
+         adjust BURST_SECS/CHECK_AFTER_SECS so the check happens mid-burst",
+        CHECK_AFTER_SECS
+    );
+
+    assert!(
+        is_recorded(unf_home.path(), temp.path(), "burst.txt"),
+        "burst.txt should already have a snapshot from the MAX_HOLD-triggered \
+         drain while the burst is still running (HOTFIX-01); without the fix, \
+         a sustained burst starves drain_if_ready and nothing lands on disk \
+         until the burst goes quiet"
+    );
+
+    writer.join().expect("writer thread should not panic");
+}
