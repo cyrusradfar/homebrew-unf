@@ -14,6 +14,21 @@ use crate::types::EventType;
 /// Duration of silence (no new events) required before emitting a batch.
 const SILENCE_WINDOW: Duration = Duration::from_secs(3);
 
+/// Maximum time a batch may be held before it is drained, even if events
+/// are still arriving and the silence window never elapses.
+///
+/// A debouncer that never drains makes snapshots stale while the filesystem
+/// is moving. `sentinel.rs::check_data_freshness` reads that as `Stale` and
+/// force-terminates the daemon, destroying everything still pending in
+/// memory. `MAX_HOLD` is what prevents it.
+///
+/// Hard constraint: must stay above 5.5 seconds. The test
+/// `new_event_resets_timer` walks from `t0` to `t0 + 5.5s` and asserts no
+/// drain happens before then; a `MAX_HOLD` at or below 5.5s breaks it.
+/// 15 seconds clears that with wide margin and stays far below
+/// `sentinel.rs`'s `STALENESS_THRESHOLD_SECS` (300s).
+const MAX_HOLD: Duration = Duration::from_secs(15);
+
 /// A pure filesystem event debouncer.
 ///
 /// Accumulates events for multiple files and emits them as a batch once
@@ -31,6 +46,10 @@ pub struct Debouncer {
     /// Timestamp of the most recent event received.
     /// Used to determine when the silence window has elapsed.
     last_event: Option<Instant>,
+    /// Timestamp of the first event in the current batch (since the last drain).
+    /// Used to determine when `MAX_HOLD` has elapsed, so a sustained burst of
+    /// events (each arriving inside the silence window) still drains eventually.
+    first_event: Option<Instant>,
 }
 
 impl Debouncer {
@@ -46,6 +65,7 @@ impl Debouncer {
         Debouncer {
             pending: HashMap::new(),
             last_event: None,
+            first_event: None,
         }
     }
 
@@ -75,17 +95,23 @@ impl Debouncer {
     pub fn push(&mut self, path: PathBuf, event_type: EventType, now: Instant) {
         self.pending.insert(path, event_type);
         self.last_event = Some(now);
+        if self.first_event.is_none() {
+            self.first_event = Some(now);
+        }
     }
 
-    /// Checks if the silence window has elapsed and returns pending events if ready.
+    /// Checks if the silence window or the max-hold window has elapsed, and
+    /// returns pending events if ready.
     ///
-    /// Returns `Some(events)` if:
-    /// - There are pending events AND
-    /// - At least `SILENCE_WINDOW` (3 seconds) have passed since the last event.
+    /// Returns `Some(events)` if there are pending events AND EITHER:
+    /// - At least `SILENCE_WINDOW` (3 seconds) have passed since the last event, OR
+    /// - At least `MAX_HOLD` (15 seconds) have passed since the first event in
+    ///   the current batch (this bounds worst-case latency during a sustained
+    ///   burst, where the silence window never elapses).
     ///
     /// Returns `None` if:
     /// - There are no pending events, OR
-    /// - The silence window has not yet elapsed.
+    /// - Neither window has elapsed yet.
     ///
     /// When returning `Some`, the debouncer is reset to an empty state.
     /// Subsequent calls to `drain_if_ready` will return `None` until new events
@@ -121,9 +147,15 @@ impl Debouncer {
 
         match self.last_event {
             Some(last) => {
-                if now.duration_since(last) >= SILENCE_WINDOW {
+                let silence_elapsed = now.duration_since(last) >= SILENCE_WINDOW;
+                let max_hold_elapsed = self
+                    .first_event
+                    .is_some_and(|first| now.duration_since(first) >= MAX_HOLD);
+
+                if silence_elapsed || max_hold_elapsed {
                     let events: Vec<(PathBuf, EventType)> = self.pending.drain().collect();
                     self.last_event = None;
+                    self.first_event = None;
                     Some(events)
                 } else {
                     None
@@ -184,6 +216,7 @@ impl Debouncer {
         }
         let events: Vec<(PathBuf, EventType)> = self.pending.drain().collect();
         self.last_event = None;
+        self.first_event = None;
         Some(events)
     }
 }
@@ -491,6 +524,42 @@ mod tests {
             drains >= 1,
             "a sustained burst must drain via max-hold; got {drains} drains. \
              Zero drains means every event sat in memory, where a SIGKILL destroys them."
+        );
+    }
+
+    /// Proves that worst-case drain latency during a sustained burst is
+    /// *bounded* by `MAX_HOLD`, not merely non-zero. `burst_without_silence_still_drains`
+    /// only proves a drain eventually happens; this test proves it happens no
+    /// later than `t0 + MAX_HOLD`, which is what keeps snapshots from going
+    /// stale long enough for `sentinel.rs::check_data_freshness` to force-kill
+    /// the daemon.
+    #[test]
+    fn max_hold_caps_drain_latency() {
+        let mut d = Debouncer::new();
+        let t0 = Instant::now();
+        let mut first_drain_at: Option<Instant> = None;
+
+        // Same sustained burst as burst_without_silence_still_drains: events
+        // every 100ms, so the silence window never elapses on its own.
+        for i in 0..300u64 {
+            let t = t0 + Duration::from_millis(i * 100);
+            d.push(
+                PathBuf::from(format!("f{}.rs", i % 10)),
+                EventType::Modify,
+                t,
+            );
+            if d.drain_if_ready(t).is_some() && first_drain_at.is_none() {
+                first_drain_at = Some(t);
+            }
+        }
+
+        let first_drain_at = first_drain_at.expect("burst must drain at least once");
+        assert!(
+            first_drain_at <= t0 + MAX_HOLD,
+            "first drain happened at {:?} after t0, which exceeds MAX_HOLD ({:?}); \
+             worst-case loss during a burst must be bounded by MAX_HOLD",
+            first_drain_at.duration_since(t0),
+            MAX_HOLD
         );
     }
 }

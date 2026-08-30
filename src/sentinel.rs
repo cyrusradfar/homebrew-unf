@@ -161,6 +161,8 @@ pub enum FreshnessVerdict {
 }
 
 /// Duration after which missing snapshots with recent FS activity is considered stale.
+/// See `watcher::debounce::MAX_HOLD`: it bounds debounce latency well below this
+/// threshold so a sustained burst of events can never look stale here.
 const STALENESS_THRESHOLD_SECS: u64 = 300;
 
 /// Freshness check interval in sentinel ticks (4 * 15s = 60s).
