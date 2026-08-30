@@ -173,8 +173,15 @@ for BOOT_ATTEMPT in $(seq 1 "$MAX_BOOT_ATTEMPTS"); do
     echo "                         # address even when the VM is unreachable"
     echo "If the bridge is up and the VM answers ping, networking is fine and the VM"
     echo "is simply slow to start sshd — re-run before touching system networking."
-    echo "Otherwise: reboot, or restart the DHCP daemon with"
+    echo ""
+    echo "Otherwise the DHCP server that hands the VM its address is not running."
+    echo "bootps.plist ships with Disabled => true, so 'kickstart' alone fails with"
+    echo "  Could not find service \"com.apple.bootpd\" in domain for system"
+    echo "because there is no loaded service to kick. Enable it first:"
+    echo "  sudo launchctl enable system/com.apple.bootpd"
     echo "  sudo launchctl kickstart -k system/com.apple.bootpd"
+    echo "That starts a DHCP server on this host — it serves the vmnet bridge the"
+    echo "VMs use. A reboot usually clears stuck vmnet without enabling it for good."
     exit 1
   fi
   echo "[PASS] VM IP: ${VM_IP}"
