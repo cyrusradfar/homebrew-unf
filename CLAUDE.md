@@ -15,7 +15,7 @@ Guidance for Claude Code (claude.ai/code) when contributing to this repository.
 ## Architecture
 
 Client-Daemon model in Rust:
-- **Daemon** (`src/daemon/`): OS-native watcher (FSEvents/inotify/ReadDirectoryChangesW). 3-second debounce. Magic-number binary detection.
+- **Daemon** (`src/watcher/`): OS-native watcher (FSEvents on macOS, inotify on Linux). 3-second debounce with a 15-second max hold, so a sustained burst cannot starve the drain. Magic-number binary detection.
 - **Engine** (`src/engine/`): Content-Addressable Storage with BLAKE3, SQLite metadata, flat-file objects.
 - **CLI** (`src/cli/`): Time-oriented commands (not commit-oriented).
 - **Desktop App** (`app/`): Tauri-based macOS menu bar app.
@@ -124,7 +124,7 @@ In practice:
 - `src/main.rs` — thin entry point (arg parsing, dispatch)
 - `src/lib.rs` — library logic and submodules
 - `src/cli/` — command handlers
-- `src/daemon/` — OS watcher implementations
+- `src/watcher/` — OS watcher implementations
 - `src/engine/` — storage engine
 - `tests/` — integration and E2E tests
 - `app/` — Tauri desktop app

@@ -69,6 +69,9 @@ unf restore --at 10m         # Roll back to 10 minutes ago
 | `unf log --since <time> --until <time>` | Filter log to a time range |
 | `unf diff --at <time>` | Show changes since a point in time |
 | `unf log --include <glob>` | Filter log to matching files |
+| `unf log --global` | Timeline across every watched project, not just this one |
+| `unf log --global --include-project <path>` | Restrict a global log to specific projects (repeatable) |
+| `unf log --global --exclude-project <path>` | Drop specific projects from a global log (repeatable) |
 | `unf restore --at <time>` | Restore files to a point in time |
 | `unf restore --at <time> <file>` | Restore a specific file |
 | `unf cat --at <time> <file>` | Print a file's contents at a point in time |
@@ -90,10 +93,10 @@ trailing offset as a flag.
 
 ## How it works
 
-- **Daemon model** — `unf watch` starts a global daemon that watches all registered directories using OS-native APIs (FSEvents/inotify/ReadDirectoryChangesW).
+- **Daemon model** — `unf watch` starts a global daemon that watches all registered directories using OS-native APIs (FSEvents on macOS, inotify on Linux).
 - **Content-Addressable Storage** — Files are hashed with BLAKE3. Identical content is stored once; snapshots reference it by hash.
 - **SQLite metadata** — Timestamps, paths, and hashes in SQLite with WAL mode for concurrent access.
-- **Smart batching** — 3-second debounce window prevents rapid saves from bloating storage.
+- **Smart batching** — 3-second debounce window prevents rapid saves from bloating storage, with a 15-second maximum hold so a sustained burst still gets recorded as it happens.
 - **Text-only** — Binary files are detected and skipped. Only text snapshots are kept.
 - **Respects `.gitignore`** — Files your `.gitignore` excludes are not recorded, and hidden dotfiles are skipped. Run `unf watch --force-watch-gitignore` to record them anyway. The setting stays on for that project until you run plain `unf watch` again. Warning: secrets in ignored files, such as `.env.local`, go into the recording.
 - **Excluded directories** — UNF skips `.git`, `node_modules`, `target`, `.next`, `__pycache__`, `.venv`, `venv`, `.tox`, `dist`, and `build` in every project. These directories are large and they change on every build. Run `unf watch --unignore-dir target` to record one of them in a project; repeat the flag for more. UNF skips `.git` as a whole directory, and the flag refuses that bare name. Recording git's object store while git rewrites it could damage the repository.

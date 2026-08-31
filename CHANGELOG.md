@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `unf restart` now reinstalls the auto-start entry when it is missing, and prints `Enabled  auto-restart on login` when it does. Before, a daemon whose launchd/systemd entry had been removed restarted for that session only and went away again at the next login, with nothing in the output to say so.
 - `unf status` on Linux could report auto-start as `enabled` after `systemctl --user enable` silently failed (e.g. no active user D-Bus session, common over plain SSH) — the unit file it wrote before failing still existed, and `is_installed()` checked only that file. It now also checks `systemctl --user is-enabled`, so `unf status` may now correctly report `disabled` where it previously reported `enabled`.
 
+## [0.21.2] - 2026-08-30
+### Internal
+- No user-facing change. `Filter::should_track` — the function that decides which files get recorded — was refactored from one branching body into five named guards, one per documented rule. Behaviour is identical and all tests pass unmodified; the extraction exists so the next change to recording policy is readable rather than archaeological.
+- Added file-length, function-length, and cognitive-complexity gates to CI, with existing code baselined so nothing is forced into a rewrite. The complexity threshold had been sitting in `clippy.toml` for months with nothing enabling it, so it was silently doing nothing.
+
 ## [0.21.1] - 2026-08-30
 ### Fixed
 - **A sustained burst of file changes could lose every pending event.** The debouncer emitted a batch only after 3 seconds of silence, and each new event reset that timer. While files kept changing faster than every 3 seconds — an AI agent rewriting a tree, a large checkout, a bulk find-and-replace — the silence window never elapsed, so nothing was ever written to disk.
