@@ -77,8 +77,8 @@ unf restore --at 10m         # Roll back to 10 minutes ago
 | `unf cat --at <time> <file>` | Print a file's contents at a point in time |
 | `unf list` | List all watched projects |
 | `unf prune --older-than <time>` | Remove snapshots older than a threshold, in this project |
-| `unf prune --all-projects` | Same, across every registered project. Asks first; cannot be undone |
-| `unf prune --all-projects --yes` | Confirm an all-projects prune. Required when there is no terminal to ask on |
+| `unf prune --all-projects` | Same, across every registered project. Cannot be undone |
+| `unf prune --all-projects --yes` | Confirm a prune that would leave a project with no snapshots at all |
 | `unf config` | Show storage location and disk usage |
 | `unf config --move-storage <path>` | Move storage to a new location |
 | `unf recap` | Summarize recent session activity |

@@ -7,17 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Changed
-- **`unf prune --all-projects` no longer deletes anything without your say-so.** It reaches every registered project at once, it writes no safety snapshot, and there is no trash directory to recover from — so it now asks before it deletes, and shows you what it would take: per project, the snapshots and objects going, the bytes freed, and the date range that survives.
+- **`unf prune` now stops before it erases a project's entire recorded history.** Prune writes no safety snapshot and there is no trash directory, so a snapshot it deletes is gone. It now measures what a run would actually do and steps in only when the answer is "this project ends up with nothing left".
 
-  - On a terminal, it prints that preview and waits for `y`.
-  - With **no terminal and no `--yes`** — a script, a CI job, a coding agent — it now **fails with exit code 3** and deletes nothing, naming `--yes` in the error.
-  - `--json` without `--yes` fails the same way, since there is no way to ask.
-  - `--dry-run` prints the preview and exits 0, as before.
-  - `--yes` proceeds unattended, exactly as `--all-projects` used to.
+  - If the prune would leave at least one project with **zero snapshots**, it stops. On a terminal it prints the per-project preview, names the projects it would empty, and waits for `y`. With no terminal — a script, a cron job, a CI step, a coding agent — it **fails with exit code 3**, deletes nothing, and names both the affected projects and `--yes` in the error.
+  - **Every other prune is unaffected.** `unf prune --all-projects --older-than 30d` that trims aged-out snapshots and leaves history behind runs unattended exactly as before, in any output format, terminal or not. Nothing to add to existing scripts.
+  - Single-project `unf prune` is unchanged in every case.
+  - `--yes` proceeds without asking, whatever the impact. `--dry-run` prints the preview and exits 0, as before.
 
-  **If you script `unf prune --all-projects`, add `--yes` or it will now fail.** That break is the point: this shipped because a non-interactive run of that command erased 155,783 snapshots across 14 projects, irreversibly, with nothing on screen to stop it.
+  The preview shown before a confirmation lists, per project, the snapshots and objects going, the bytes freed, and the date range that survives — or `keep nothing: this removes the project's entire history` for a project that would be emptied.
 
-  Single-project `unf prune` is unchanged. Its blast radius is the one project you are standing in, and it earns no new friction.
+  This exists because a non-interactive `unf prune --all-projects` erased 155,783 snapshots across 14 projects, irreversibly, with nothing on screen to stop it. Eleven of those projects were left with no history at all. That is the exact shape now refused.
 - Human-readable timestamps now carry their UTC offset: `unf log` prints `2026-08-25 21:10:03 -0600` where it printed `2026-08-25 21:10:03`. The old output did not say which zone it meant, so you could not tell a local time from a UTC one, and you could not paste it back into `--at`. **The timestamp column in human `unf log` output is now 6 characters wider.** Anything that scrapes human output by column offset needs to move.
 
   Machine timestamps in `--json` are unchanged — every one is still RFC 3339 UTC. **One `--json` value does change:** `unf list --json` reports `recording_since` as `"2026-08-25 21:10:03 -0600"` instead of `"2026-08-25 21:10:03"`. It is a display string, like its neighbour `last_activity` (`"2 hours ago"`), and it has never been RFC 3339 — but if you parse it, widen your parser. No field was added, removed, or renamed.

@@ -4,8 +4,9 @@
 //! Supports both single-project and all-projects modes.
 //!
 //! Prune is the only command here that destroys history with no undo, so
-//! `--all-projects` runs through the confirmation gate in
-//! [`gate`] before anything is deleted. Rendering lives in [`render`];
+//! `--all-projects` runs through the confirmation gate in [`gate`] before
+//! anything is deleted. The gate reads the prune's measured impact, which
+//! this module computes from a dry-run pass. Rendering lives in [`render`];
 //! this module is orchestration and I/O only.
 
 pub mod gate;
@@ -46,20 +47,15 @@ pub fn run(
 ) -> Result<(), UnfError> {
     // Parse older_than using the existing parse_time_spec
     let cutoff = super::parse_time_spec(older_than)?;
-
-    let gate = gate::decide(
-        all_projects,
-        yes,
-        dry_run,
-        io::stdout().is_terminal(),
-        format,
-    );
+    let is_tty = io::stdout().is_terminal();
 
     if all_projects {
-        run_all_projects(cutoff, gate, format)
+        run_all_projects(cutoff, yes, dry_run, is_tty, format)
     } else {
-        // The gate never prompts or refuses for a single project, so this is
-        // exactly the old behaviour: preview on --dry-run, delete otherwise.
+        // The gate never prompts or refuses for a single project, whatever the
+        // impact, so this is exactly the old behaviour: preview on --dry-run,
+        // delete otherwise.
+        let gate = gate::decide(false, yes, dry_run, is_tty, format, false);
         run_single_project(project_root, cutoff, gate == PruneGate::DryRunOnly, format)
     }
 }
@@ -101,28 +97,49 @@ fn run_single_project(
 
 /// Prunes all registered projects, behind the confirmation gate.
 ///
-/// The preview is computed by running every project's prune in dry-run mode,
-/// so what the user is shown is produced by the same code path that will do
-/// the deleting.
+/// One dry-run pass over every project serves two purposes: it is the preview
+/// the user reads, and it is what tells the gate whether this prune would
+/// leave any project with zero snapshots. So what the user is shown is
+/// produced by the same code path that will do the deleting, and the gate
+/// judges the same numbers.
+///
+/// `--yes` is consent whatever the impact, so it skips that pass rather than
+/// scanning every project twice.
 fn run_all_projects(
     cutoff: DateTime<Utc>,
-    gate: PruneGate,
+    yes: bool,
+    dry_run: bool,
+    is_tty: bool,
     format: OutputFormat,
 ) -> Result<(), UnfError> {
-    match gate {
-        PruneGate::RefuseNoTty => return Err(gate::refusal()),
-        PruneGate::DryRunOnly => {
-            let projects = prune_every_project(cutoff, true)?;
-            return report(&projects, cutoff, true, 0, format);
-        }
+    if yes && !dry_run {
+        debug_assert_eq!(
+            gate::decide(true, yes, dry_run, is_tty, format, true),
+            PruneGate::Proceed,
+            "--yes must proceed whatever the impact"
+        );
+        return prune_and_report(cutoff, format);
+    }
+
+    let preview = prune_every_project(cutoff, true)?;
+    let emptied = render::emptied_projects(&preview);
+
+    match gate::decide(true, yes, dry_run, is_tty, format, !emptied.is_empty()) {
+        PruneGate::DryRunOnly => return report(&preview, cutoff, true, 0, format),
+        PruneGate::RefuseNoTty => return Err(gate::refusal(&emptied)),
         PruneGate::Prompt => {
-            let projects = prune_every_project(cutoff, true)?;
-            print!("{}", render::preview(&projects, cutoff));
+            print!("{}", render::preview(&preview, cutoff));
+            print!("{}", gate::prompt_warning(&emptied));
             gate::confirm()?;
         }
         PruneGate::Proceed => {}
     }
 
+    prune_and_report(cutoff, format)
+}
+
+/// Does the deleting, then reports it. Reached only past the gate.
+fn prune_and_report(cutoff: DateTime<Utc>, format: OutputFormat) -> Result<(), UnfError> {
     let projects = prune_every_project(cutoff, false)?;
     let registry_entries_cleaned = registry::prune_stale_entries()? as u64;
     report(&projects, cutoff, false, registry_entries_cleaned, format)

@@ -1090,12 +1090,18 @@ fn snapshot_count(unf_home: &std::path::Path, project: &std::path::Path) -> u64 
 ///
 /// `assert_cmd` never allocates a TTY, so this reproduces that exact shape:
 /// no terminal, no `--yes`, and a cutoff far enough in the future that a real
-/// prune would take every snapshot the project has. The run must fail, and the
+/// prune would take every snapshot the project has — which makes it
+/// catastrophic, the one thing the gate stops. The run must fail, and the
 /// count must come back identical. The second half re-runs the same cutoff
 /// with `--yes` to prove the guard is what saved them, not a harmless cutoff.
+///
+/// Its companion is `prune_all_projects_without_yes_still_trims_old_snapshots`,
+/// which proves the same unattended command still works when it is not
+/// catastrophic.
 #[test]
 fn prune_all_projects_without_yes_leaves_snapshots_intact() {
-    // A cutoff in the far future means "delete everything on record".
+    // A cutoff in the far future means "delete everything on record", which is
+    // what makes this prune catastrophic rather than routine.
     const DELETE_EVERYTHING: &str = "2099-01-01T00:00:00Z";
 
     let temp = TempDir::new().expect("Failed to create temp dir");
@@ -1135,6 +1141,23 @@ fn prune_all_projects_without_yes_leaves_snapshots_intact() {
         "the refusal must name --yes so a script can act on it: {}",
         stderr
     );
+    assert!(
+        stderr.contains("would erase the entire recorded history"),
+        "the refusal must say what actually triggered it: {}",
+        stderr
+    );
+    let project_name = temp
+        .path()
+        .file_name()
+        .expect("temp dir has a name")
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        stderr.contains(&project_name),
+        "the refusal must name the project it would empty ({}): {}",
+        project_name,
+        stderr
+    );
 
     assert_eq!(
         snapshot_count(unf_home.path(), temp.path()),
@@ -1157,6 +1180,73 @@ fn prune_all_projects_without_yes_leaves_snapshots_intact() {
     assert!(
         snapshot_count(unf_home.path(), temp.path()) < before,
         "--yes must still prune; otherwise the refusal guarded nothing"
+    );
+}
+
+/// THE TEST THAT PROVES CRON JOBS STILL WORK, driven through the real binary.
+///
+/// A nightly `unf prune --all-projects --older-than 30d` has no terminal and no
+/// `--yes`. It is not the incident: it trims what has aged out and leaves every
+/// project with history. It must run unattended and it must actually delete,
+/// exactly as it did before the gate existed.
+///
+/// The cutoff is taken between two rounds of edits, so the first round is older
+/// than it and the second is newer. That makes the prune genuinely
+/// non-catastrophic — snapshots go, but none of the project's history goes.
+#[test]
+fn prune_all_projects_without_yes_still_trims_old_snapshots() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_secs(2));
+
+    fs::write(temp.path().join("aged-out.txt"), b"first round").expect("Failed to write file");
+    thread::sleep(Duration::from_secs(4));
+
+    let old_snapshots = snapshot_count(unf_home.path(), temp.path());
+    assert!(old_snapshots > 0, "this test needs snapshots to age out");
+
+    // Everything recorded so far is older than this instant; everything after
+    // it survives the prune.
+    let cutoff = chrono::Utc::now().to_rfc3339();
+
+    fs::write(temp.path().join("still-current.txt"), b"second round")
+        .expect("Failed to write file");
+    thread::sleep(Duration::from_secs(4));
+
+    let before = snapshot_count(unf_home.path(), temp.path());
+    assert!(
+        before > old_snapshots,
+        "the second round must add snapshots the prune will keep"
+    );
+
+    // No terminal, no --yes: exactly what cron and CI give you.
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("prune")
+        .arg("--all-projects")
+        .arg("--older-than")
+        .arg(&cutoff)
+        .assert()
+        .success();
+
+    let remaining = snapshot_count(unf_home.path(), temp.path());
+    assert!(
+        remaining < before,
+        "an unattended routine prune must still delete the aged-out snapshots \
+         (before={}, remaining={})",
+        before,
+        remaining
+    );
+    assert!(
+        remaining > 0,
+        "a routine prune must leave the project's recent history in place"
     );
 }
 

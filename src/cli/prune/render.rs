@@ -28,6 +28,24 @@ pub struct ProjectPrune {
     pub retained: Option<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
+/// The projects this prune would leave with zero snapshots.
+///
+/// Returns their registered root paths, in registry order, formatted the same
+/// way [`preview`] lists them. This is the gate's whole safety judgement: a
+/// prune that trims old snapshots is routine, but one that takes a project's
+/// last snapshot erases a recording that has no other copy.
+///
+/// A project that was already empty is not counted. Nothing is lost when
+/// nothing was there, so `snapshots_removed` must be non-zero for the project
+/// to qualify.
+pub fn emptied_projects(projects: &[ProjectPrune]) -> Vec<String> {
+    projects
+        .iter()
+        .filter(|p| p.stats.snapshots_removed > 0 && p.snapshots_kept == 0)
+        .map(|p| p.path.display().to_string())
+        .collect()
+}
+
 /// The window that survives a prune at `cutoff`.
 ///
 /// Pure. `delete_snapshots_before` removes `timestamp < cutoff`, so everything
@@ -373,5 +391,40 @@ mod tests {
     #[test]
     fn retained_range_is_none_for_an_empty_project() {
         assert_eq!(retained_range(None, None, at("2026-08-23T12:00:00Z")), None);
+    }
+
+    /// The gate's input: a project whose last snapshot goes is named, one that
+    /// keeps history is not.
+    #[test]
+    fn emptied_projects_names_only_the_ones_left_with_nothing() {
+        let projects = vec![
+            sample("/p/keeps", 900, 12, Some("2026-08-25T12:00:00Z")),
+            sample("/p/emptied", 900, 0, None),
+        ];
+
+        assert_eq!(emptied_projects(&projects), vec!["/p/emptied".to_string()]);
+    }
+
+    /// A routine prune names nobody, which is what lets it run unattended.
+    #[test]
+    fn emptied_projects_is_empty_for_a_routine_prune() {
+        let projects = vec![
+            sample("/p/one", 900, 12, Some("2026-08-25T12:00:00Z")),
+            sample("/p/two", 4, 90, Some("2026-08-25T12:00:00Z")),
+        ];
+
+        assert!(emptied_projects(&projects).is_empty());
+    }
+
+    /// A project that had no snapshots to begin with loses nothing, so it must
+    /// not turn a routine prune into a refusal.
+    #[test]
+    fn emptied_projects_ignores_an_already_empty_project() {
+        let projects = vec![sample("/p/never-recorded", 0, 0, None)];
+
+        assert!(
+            emptied_projects(&projects).is_empty(),
+            "an already-empty project has no history to erase"
+        );
     }
 }

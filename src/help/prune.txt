@@ -2,17 +2,18 @@ By default, prunes snapshots older than 7 days for the current project.
 After deleting snapshots, garbage-collects unreferenced blobs.
 
 Pruning cannot be undone. Unlike restore, it writes no safety snapshot and
-there is no trash directory. So --all-projects, which reaches every registered
-project at once, needs confirmation: on a terminal it asks, and with no
-terminal it refuses unless you pass --yes. A single-project prune is unchanged.
+there is no trash directory. So a prune that would leave a project with zero
+snapshots — erasing its whole recording — asks first on a terminal, and with
+no terminal it refuses unless you pass --yes, naming the projects at stake.
+Every other prune runs as it always has, terminal or not.
 
 Examples:
   unf prune                          Prune current project (7-day default)
   unf prune --older-than 30d         Keep only last 30 days
   unf prune --dry-run                Preview what would be deleted
   unf prune --all-projects --dry-run Preview every registered project
-  unf prune --all-projects           Prune every project (asks first)
-  unf prune --all-projects --yes     Prune every project, unattended
+  unf prune --all-projects           Prune every project
+  unf prune --all-projects --yes     Confirm even if it empties a project
 
 Time formats: 5m (minutes), 2h (hours), 1d (days),
               "2026-08-25 21:10:03" (local), or 2026-08-25T21:10:03Z (UTC)
