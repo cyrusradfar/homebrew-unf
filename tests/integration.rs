@@ -1062,7 +1062,152 @@ fn prune_help_shows_flags() {
     cmd.arg("prune").arg("--help").assert().success().stdout(
         predicate::str::contains("--older-than")
             .and(predicate::str::contains("--dry-run"))
-            .and(predicate::str::contains("--all-projects")),
+            .and(predicate::str::contains("--all-projects"))
+            .and(predicate::str::contains("--yes")),
+    );
+}
+
+/// Reads a project's snapshot count out of `unf status --json`.
+fn snapshot_count(unf_home: &std::path::Path, project: &std::path::Path) -> u64 {
+    let out = isolated_cmd(unf_home)
+        .current_dir(project)
+        .arg("--json")
+        .arg("status")
+        .output()
+        .expect("Failed to run status");
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("status --json must emit JSON");
+    json["snapshots"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("status --json had no snapshot count: {}", json))
+}
+
+/// THE REGRESSION TEST FOR THE INCIDENT, driven through the real binary.
+///
+/// `unf prune --all-projects` took no confirmation and wrote no safety
+/// snapshot. An agent ran it with no terminal attached and 155,783 snapshots
+/// across 14 real projects were gone, with no undo and no trash directory.
+///
+/// `assert_cmd` never allocates a TTY, so this reproduces that exact shape:
+/// no terminal, no `--yes`, and a cutoff far enough in the future that a real
+/// prune would take every snapshot the project has. The run must fail, and the
+/// count must come back identical. The second half re-runs the same cutoff
+/// with `--yes` to prove the guard is what saved them, not a harmless cutoff.
+#[test]
+fn prune_all_projects_without_yes_leaves_snapshots_intact() {
+    // A cutoff in the far future means "delete everything on record".
+    const DELETE_EVERYTHING: &str = "2099-01-01T00:00:00Z";
+
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_secs(2));
+
+    fs::write(temp.path().join("irreplaceable.txt"), b"no other copy")
+        .expect("Failed to write file");
+    thread::sleep(Duration::from_secs(4));
+
+    let before = snapshot_count(unf_home.path(), temp.path());
+    assert!(before > 0, "this test needs real snapshots to protect");
+
+    let refused = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("prune")
+        .arg("--all-projects")
+        .arg("--older-than")
+        .arg(DELETE_EVERYTHING)
+        .output()
+        .expect("Failed to run prune");
+
+    assert!(
+        !refused.status.success(),
+        "a non-interactive --all-projects prune must exit non-zero, not proceed"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("--yes"),
+        "the refusal must name --yes so a script can act on it: {}",
+        stderr
+    );
+
+    assert_eq!(
+        snapshot_count(unf_home.path(), temp.path()),
+        before,
+        "a refused prune must leave every snapshot in place"
+    );
+
+    // Same cutoff, now confirmed. If this did not delete anything, the check
+    // above would have proven nothing.
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("prune")
+        .arg("--all-projects")
+        .arg("--older-than")
+        .arg(DELETE_EVERYTHING)
+        .arg("--yes")
+        .assert()
+        .success();
+
+    assert!(
+        snapshot_count(unf_home.path(), temp.path()) < before,
+        "--yes must still prune; otherwise the refusal guarded nothing"
+    );
+}
+
+/// `--dry-run` on every project reports what would go and deletes none of it,
+/// exiting 0 so a script can read the preview without tripping the guard.
+#[test]
+fn prune_all_projects_dry_run_previews_and_deletes_nothing() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+    thread::sleep(Duration::from_secs(2));
+
+    fs::write(temp.path().join("irreplaceable.txt"), b"no other copy")
+        .expect("Failed to write file");
+    thread::sleep(Duration::from_secs(4));
+
+    let before = snapshot_count(unf_home.path(), temp.path());
+    assert!(before > 0, "this test needs real snapshots to protect");
+
+    let preview = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("prune")
+        .arg("--all-projects")
+        .arg("--dry-run")
+        .arg("--older-than")
+        .arg("2099-01-01T00:00:00Z")
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&preview.get_output().stdout);
+    assert!(
+        stdout.contains("delete") && stdout.contains("Total:"),
+        "the preview must show per-project counts and a total: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Nothing was deleted"),
+        "the preview must say plainly that it deleted nothing: {}",
+        stdout
+    );
+
+    assert_eq!(
+        snapshot_count(unf_home.path(), temp.path()),
+        before,
+        "a dry run must leave every snapshot in place"
     );
 }
 

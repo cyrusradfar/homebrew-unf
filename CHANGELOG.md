@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Changed
+- **`unf prune --all-projects` no longer deletes anything without your say-so.** It reaches every registered project at once, it writes no safety snapshot, and there is no trash directory to recover from — so it now asks before it deletes, and shows you what it would take: per project, the snapshots and objects going, the bytes freed, and the date range that survives.
+
+  - On a terminal, it prints that preview and waits for `y`.
+  - With **no terminal and no `--yes`** — a script, a CI job, a coding agent — it now **fails with exit code 3** and deletes nothing, naming `--yes` in the error.
+  - `--json` without `--yes` fails the same way, since there is no way to ask.
+  - `--dry-run` prints the preview and exits 0, as before.
+  - `--yes` proceeds unattended, exactly as `--all-projects` used to.
+
+  **If you script `unf prune --all-projects`, add `--yes` or it will now fail.** That break is the point: this shipped because a non-interactive run of that command erased 155,783 snapshots across 14 projects, irreversibly, with nothing on screen to stop it.
+
+  Single-project `unf prune` is unchanged. Its blast radius is the one project you are standing in, and it earns no new friction.
 - Human-readable timestamps now carry their UTC offset: `unf log` prints `2026-08-25 21:10:03 -0600` where it printed `2026-08-25 21:10:03`. The old output did not say which zone it meant, so you could not tell a local time from a UTC one, and you could not paste it back into `--at`. **The timestamp column in human `unf log` output is now 6 characters wider.** Anything that scrapes human output by column offset needs to move.
 
   Machine timestamps in `--json` are unchanged — every one is still RFC 3339 UTC. **One `--json` value does change:** `unf list --json` reports `recording_since` as `"2026-08-25 21:10:03 -0600"` instead of `"2026-08-25 21:10:03"`. It is a display string, like its neighbour `last_activity` (`"2 hours ago"`), and it has never been RFC 3339 — but if you parse it, widen your parser. No field was added, removed, or renamed.

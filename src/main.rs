@@ -288,6 +288,9 @@ struct PruneArgs {
     /// Prune all registered projects (default: current project only)
     #[arg(long)]
     all_projects: bool,
+    /// Confirm an --all-projects prune (it has no undo, and no safety snapshot)
+    #[arg(long, short = 'y')]
+    yes: bool,
 }
 
 #[derive(Args, Debug)]
@@ -634,6 +637,7 @@ fn main() {
                 &args.older_than,
                 args.dry_run,
                 args.all_projects,
+                args.yes,
                 format,
             )
         }),
@@ -687,42 +691,26 @@ fn main() {
     };
 
     if let Err(e) = result {
+        // Every arm exits with the same code and differs only in what it
+        // prints first. NoResults stays silent in JSON mode by design.
+        let code = ExitCode::from(&e) as i32;
         match &e {
             UnfError::NoResults(msg) => {
-                if format == OutputFormat::Json {
-                    // In JSON mode, NoResults exit code 4 without additional output
-                    process::exit(ExitCode::from(&e) as i32);
-                } else if !msg.is_empty() {
+                if format != OutputFormat::Json && !msg.is_empty() {
                     eprintln!("{}", msg);
                 }
-                process::exit(ExitCode::from(&e) as i32);
+            }
+            _ if format == OutputFormat::Json => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"error": e.to_string(), "code": code})
+                );
             }
             UnfError::NotInitialized => {
-                if format == OutputFormat::Json {
-                    let code = ExitCode::from(&e) as i32;
-                    let err_json = serde_json::json!({
-                        "error": e.to_string(),
-                        "code": code,
-                    });
-                    eprintln!("{}", err_json);
-                } else {
-                    cli::output::print_error("not watching", Some("Run `unf watch` to start."));
-                }
-                process::exit(ExitCode::from(&e) as i32);
+                cli::output::print_error("not watching", Some("Run `unf watch` to start."));
             }
-            _ => {
-                if format == OutputFormat::Json {
-                    let code = ExitCode::from(&e) as i32;
-                    let err_json = serde_json::json!({
-                        "error": e.to_string(),
-                        "code": code,
-                    });
-                    eprintln!("{}", err_json);
-                } else {
-                    cli::output::print_error(&e.to_string(), None);
-                }
-                process::exit(ExitCode::from(&e) as i32);
-            }
+            _ => cli::output::print_error(&e.to_string(), None),
         }
+        process::exit(code);
     }
 }
