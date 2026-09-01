@@ -16,7 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
   The preview shown before a confirmation lists, per project, the snapshots and objects going, the bytes freed, and the date range that survives — or `keep nothing: this removes the project's entire history` for a project that would be emptied.
 
-  This exists because a non-interactive `unf prune --all-projects` erased 155,783 snapshots across 14 projects, irreversibly, with nothing on screen to stop it. Eleven of those projects were left with no history at all. That is the exact shape now refused.
+  This exists because the unattended form had no brake. A single `unf prune --all-projects` whose threshold is wider than a project's history removes that project's entire recording, irreversibly, with nothing on screen between the command and the deletion. That is the exact shape now refused.
+
+## [0.21.2] - 2026-08-30
+### Internal
+- No user-facing change. `Filter::should_track` — the function that decides which files get recorded — was refactored from one branching body into five named guards, one per documented rule. Behaviour is identical and all tests pass unmodified; the extraction exists so the next change to recording policy is readable rather than archaeological.
+- Added file-length, function-length, and cognitive-complexity gates to CI, with existing code baselined so nothing is forced into a rewrite. The complexity threshold had been sitting in `clippy.toml` for months with nothing enabling it, so it was silently doing nothing.
+
+## [0.21.1] - 2026-08-30
+### Changed
 - Human-readable timestamps now carry their UTC offset: `unf log` prints `2026-08-25 21:10:03 -0600` where it printed `2026-08-25 21:10:03`. The old output did not say which zone it meant, so you could not tell a local time from a UTC one, and you could not paste it back into `--at`. **The timestamp column in human `unf log` output is now 6 characters wider.** Anything that scrapes human output by column offset needs to move.
 
   Machine timestamps in `--json` are unchanged — every one is still RFC 3339 UTC. **One `--json` value does change:** `unf list --json` reports `recording_since` as `"2026-08-25 21:10:03 -0600"` instead of `"2026-08-25 21:10:03"`. It is a display string, like its neighbour `last_activity` (`"2 hours ago"`), and it has never been RFC 3339 — but if you parse it, widen your parser. No field was added, removed, or renamed.
@@ -30,16 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Every rejected time spec now produces one error message that lists all four accepted forms. Previously the message differed depending on which parser failed last, so the advice you got depended on what you typed.
 
 ### Fixed
-- `unf restart` now reinstalls the auto-start entry when it is missing, and prints `Enabled  auto-restart on login` when it does. Before, a daemon whose launchd/systemd entry had been removed restarted for that session only and went away again at the next login, with nothing in the output to say so.
-- `unf status` on Linux could report auto-start as `enabled` after `systemctl --user enable` silently failed (e.g. no active user D-Bus session, common over plain SSH) — the unit file it wrote before failing still existed, and `is_installed()` checked only that file. It now also checks `systemctl --user is-enabled`, so `unf status` may now correctly report `disabled` where it previously reported `enabled`.
-
-## [0.21.2] - 2026-08-30
-### Internal
-- No user-facing change. `Filter::should_track` — the function that decides which files get recorded — was refactored from one branching body into five named guards, one per documented rule. Behaviour is identical and all tests pass unmodified; the extraction exists so the next change to recording policy is readable rather than archaeological.
-- Added file-length, function-length, and cognitive-complexity gates to CI, with existing code baselined so nothing is forced into a rewrite. The complexity threshold had been sitting in `clippy.toml` for months with nothing enabling it, so it was silently doing nothing.
-
-## [0.21.1] - 2026-08-30
-### Fixed
 - **A sustained burst of file changes could lose every pending event.** The debouncer emitted a batch only after 3 seconds of silence, and each new event reset that timer. While files kept changing faster than every 3 seconds — an AI agent rewriting a tree, a large checkout, a bulk find-and-replace — the silence window never elapsed, so nothing was ever written to disk.
 
   The events were not merely delayed. They accumulated in memory, and the watchdog then destroyed them: `unf` force-restarts the daemon when snapshots go stale while the filesystem is visibly changing, which is exactly the state a stalled debouncer produces. Anything still pending was lost with the process.
@@ -47,6 +45,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Batches are now also flushed after a maximum hold of 15 seconds, whether or not the changes have stopped. Worst-case exposure during a burst is bounded at 15 seconds instead of the whole burst. The existing 3-second silence behaviour is unchanged for normal editing.
 
   No configuration or output changed. If you were recording during heavy bursts, you were losing history and had no signal that it was happening.
+- `unf restart` now reinstalls the auto-start entry when it is missing, and prints `Enabled  auto-restart on login` when it does. Before, a daemon whose launchd/systemd entry had been removed restarted for that session only and went away again at the next login, with nothing in the output to say so.
+- `unf status` on Linux could report auto-start as `enabled` after `systemctl --user enable` silently failed (e.g. no active user D-Bus session, common over plain SSH) — the unit file it wrote before failing still existed, and `is_installed()` checked only that file. It now also checks `systemctl --user is-enabled`, so `unf status` may now correctly report `disabled` where it previously reported `enabled`.
+
+## [0.21.0] - 2026-08-24
+### Added
+- `unf watch --unignore-dir <NAME>` records a directory UNF normally skips. Repeat the flag for more; plain `unf watch` turns it back off. Works with `node_modules`, `target`, `.next`, `__pycache__`, `.venv`, `venv`, `.tox`, `dist`, and `build`.
+- The same flag opens three paths inside `.git`: `.git/hooks`, `.git/config`, and `.git/info/exclude`. Git does not track the files inside `.git`, so git cannot recover them — this covers the case where an agent writes a hook or changes a remote. Every other `.git` path stays refused, in the flag and again in the recorder, and the refusal gives the reason. `.gitignore` never applies inside `.git`, so these need no `--force-watch-gitignore`.
+- `unf watch` and `unf status` name the excluded directories they find in your project, and warn when a directory is excluded by `.gitignore` as well — that is a separate rule, and `--unignore-dir` alone does not lift it.
+
+### Fixed
+- Rust build archives (`.rlib`, `.rmeta`, `.d`) are now detected as binary and skipped. Closes #5 — thanks to @edwardsnjd for the report.
+- Non-interactive `unf restore` no longer claimed `-y` was required when it was not.
+
+## [0.20.0] - 2026-08-22
+### Fixed
+- `brew install` failed on a `conflicts_with` rule in the argument parser. Removed.
 
 ## [0.19.1] - 2026-08-20
 ### Internal
