@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
   This exists because the unattended form had no brake. A single `unf prune --all-projects` whose threshold is wider than a project's history removes that project's entire recording, irreversibly, with nothing on screen between the command and the deletion. That is the exact shape now refused.
 
+### Fixed
+- The "not a time" error now names the offset form, `"2026-08-25 21:10:03 -0600"`. It listed the other three and skipped that one — the exact form `unf log` prints — so a user who pasted a timestamp out of their own log got an error whose advice did not mention what they had typed.
+
 ## [0.21.2] - 2026-08-30
 ### Internal
 - No user-facing change. `Filter::should_track` — the function that decides which files get recorded — was refactored from one branching body into five named guards, one per documented rule. Behaviour is identical and all tests pass unmodified; the extraction exists so the next change to recording policy is readable rather than archaeological.
@@ -35,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   4. No offset: `"2026-08-25 21:10:03"` or `2026-08-25T21:10:03` — read as **local** time
 
   Form 3 closes the round trip: a timestamp you read out of `unf log` is now valid input. Quote the forms that contain a space; unquoted, the shell splits them and the trailing `-0600` is read as a flag. Date-only (`2026-08-25`) and minute-precision (`2026-08-25 21:10`) are still rejected — seconds are required.
-- Every rejected time spec now produces one error message that lists all four accepted forms. Previously the message differed depending on which parser failed last, so the advice you got depended on what you typed.
+- Every rejected time spec now produces the same error message, instead of one that differed depending on which parser failed last — so the advice you got no longer depends on what you typed. (The message named three of the four accepted forms; the offset form was added in the next release.)
 
 ### Fixed
 - **A sustained burst of file changes could lose every pending event.** The debouncer emitted a batch only after 3 seconds of silence, and each new event reset that timer. While files kept changing faster than every 3 seconds — an AI agent rewriting a tree, a large checkout, a bulk find-and-replace — the silence window never elapsed, so nothing was ever written to disk.

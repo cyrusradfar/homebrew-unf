@@ -7,7 +7,6 @@ src/cli/list.rs 529 2
 src/cli/log/display.rs 370 3
 src/cli/log/mod.rs 999 2
 src/cli/migrate.rs 951 1
-src/cli/mod.rs 358 0
 src/cli/recap.rs 695 4
 src/cli/restart.rs 125 1
 src/cli/restore.rs 363 1
