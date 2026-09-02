@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.21.3] - 2026-09-01
 ### Changed
 - **`unf prune` now stops before it erases a project's entire recorded history.** Prune writes no safety snapshot and there is no trash directory, so a snapshot it deletes is gone. It now measures what a run would actually do and steps in only when the answer is "this project ends up with nothing left".
 
@@ -20,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - The "not a time" error now names the offset form, `"2026-08-25 21:10:03 -0600"`. It listed the other three and skipped that one — the exact form `unf log` prints — so a user who pasted a timestamp out of their own log got an error whose advice did not mention what they had typed.
+
+### Internal
+- `src/cli/mod.rs` held two unrelated jobs. Time parsing and rendering moved to `src/cli/time.rs`, leaving `mod.rs` with `OutputFormat` and the human formatters — 359 production lines down to 133. Call sites are unchanged; `parse_time_spec` and `format_local_time` are re-exported.
+- Two `shorten_home` tests read `HOME` without holding the shared env lock, so they raced any test that overrode it. The race was latent for months and only surfaced when a new module shifted test ordering.
 
 ## [0.21.2] - 2026-08-30
 ### Internal
