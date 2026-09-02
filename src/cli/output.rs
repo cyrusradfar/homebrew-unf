@@ -360,8 +360,17 @@ mod tests {
         let _result: bool = use_color();
     }
 
+    /// Holds `ENV_LOCK` because it reads `HOME` twice: once here and once
+    /// inside `shorten_home`. Without the lock a test that overrides `HOME`
+    /// between those two reads makes the two disagree, and the assertion
+    /// fails with the unshortened path. That is a scheduling race, not a
+    /// bug in `shorten_home`, so it surfaces only when test ordering shifts.
     #[test]
     fn shorten_home_with_home_prefix() {
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         if let Some(home_dir) = dirs::home_dir() {
             let home_str = home_dir.display().to_string();
             let path = format!("{}/code/unfudged", home_str);
@@ -370,8 +379,13 @@ mod tests {
         }
     }
 
+    /// Holds `ENV_LOCK` for the same reason as the test above.
     #[test]
     fn shorten_home_exact_home_dir() {
+        let _guard = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         if let Some(home_dir) = dirs::home_dir() {
             let home_str = home_dir.display().to_string();
             let result = shorten_home(&home_str);
