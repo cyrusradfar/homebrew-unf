@@ -8,7 +8,6 @@ cask "unfudged" do
   homepage "https://unfudged.io"
 
   depends_on formula: "cyrusradfar/unf/unf"
-  depends_on macos: :catalina
 
   app "UNFUDGED.app"
 end
