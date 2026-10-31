@@ -11,7 +11,7 @@ src/cli/recap.rs 695 4
 src/cli/restart.rs 125 1
 src/cli/restore.rs 363 1
 src/cli/session.rs 237 1
-src/cli/status.rs 410 1
+src/cli/status.rs 405 1
 src/cli/stop.rs 181 1
 src/cli/watch.rs 442 1
 src/engine/cas.rs 481 0

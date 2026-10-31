@@ -5,15 +5,17 @@
 //! - Snapshot count, tracked files, and store size
 //! - Time since recording started
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use chrono::Utc;
 
+use crate::cli::prune_advice;
+use crate::cli::status_report::{self, Mode2Report};
 use crate::cli::OutputFormat;
 use crate::engine::Engine;
 use crate::error::UnfError;
 use crate::process::PidFile;
+use crate::registry::Registry;
 use crate::storage;
 use crate::types::WatchSettings;
 use crate::watcher::filter;
@@ -94,9 +96,14 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
 
-    // One registry load serves the mode decision and every settings-derived
-    // line and field below.
-    let facts = lookup_registry_facts(&canonical_project_root);
+    // One registry load serves the mode decision, every settings-derived
+    // line and field below, and the prune-usage scan. A load failure keeps
+    // the previous behaviour: default facts and no scan.
+    let registry = crate::registry::load().ok();
+    let facts = registry
+        .as_ref()
+        .map(|registry| lookup_registry_facts(registry, &canonical_project_root))
+        .unwrap_or_default();
     let force_watch_gitignore = facts.settings.force_watch_gitignore;
     let unignored_dirs: Vec<String> = facts.settings.unignored_dirs.iter().cloned().collect();
 
@@ -109,6 +116,18 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
         excluded_present.iter().map(|d| (*d).to_string()).collect();
 
     let mode = determine_status_mode(&facts);
+
+    // Human output only: the desktop app polls `--json` every 5 s and the scan
+    // walks every registered store. Mode 0 has no store and no registry entry,
+    // so there is nothing to prune.
+    let advice = if should_scan(format, mode) {
+        registry.as_ref().and_then(|registry| {
+            let usages = prune_advice::collect(registry, &canonical_project_root);
+            prune_advice::evaluate(&usages, Utc::now())
+        })
+    } else {
+        None
+    };
 
     // Step 2: Handle each mode
     match mode {
@@ -160,6 +179,11 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
             } else {
                 println!("This directory was previously watched but is not currently active.");
                 println!("Run 'unf watch' to resume recording. Your history is safe.");
+                if let Some(advice) = &advice {
+                    for line in prune_advice::human_lines(advice) {
+                        println!("{}", line);
+                    }
+                }
             }
             return Ok(());
         }
@@ -200,56 +224,31 @@ pub fn run(project_root: &Path, format: OutputFormat) -> Result<(), UnfError> {
     if format == OutputFormat::Json {
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        println!("Watching since {}", duration_str);
-        println!("  Snapshots:  {}", format_number(snapshot_count));
-        println!("  Files tracked:  {}", format_number(file_count));
-        println!("  Store size:  {}", super::format_size(store_size));
-        // Mode 2 only, and each line only when it applies. Modes 0 and 1
-        // record nothing, so these lines would be noise there.
-        for line in unignore_report_lines(&excluded_present, &facts.settings.unignored_dirs) {
+        let report = Mode2Report {
+            duration: &duration_str,
+            snapshot_count,
+            file_count,
+            store_size,
+            excluded_present: &excluded_present,
+            unignored: &facts.settings.unignored_dirs,
+            force_watch_gitignore,
+            auto_restart,
+            advice: advice.as_ref(),
+        };
+        for line in status_report::mode2_lines(&report) {
             println!("{}", line);
         }
-        // Only the non-default state earns a line. Respecting .gitignore is
-        // what users expect, so silence means "respected".
-        if force_watch_gitignore {
-            println!("  Gitignore:  not applied (--force-watch-gitignore)");
-        }
-        println!(
-            "  Auto-restart: {}",
-            if auto_restart { "enabled" } else { "disabled" }
-        );
     }
 
     Ok(())
 }
 
-/// The un-ignore lines of the human status report, indented and ready to
-/// print in order.
+/// Whether this invocation should scan every registered store for the advisory.
 ///
-/// Line 1 names what this project also records. Line 2 names what it still
-/// skips, and line 3 is the paste-ready hint for opting one of them in —
-/// naming a real directory rather than a `<NAME>` placeholder, so the reader
-/// does no substitution.
-///
-/// Each line appears only when it applies, matching the `Gitignore:`
-/// precedent: the default state is the expected state and earns no line. A
-/// project with an empty set and no excluded directories in its root — the
-/// common case — gets an empty `Vec` and prints nothing.
-fn unignore_report_lines(present: &[&str], unignored: &BTreeSet<String>) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    if !unignored.is_empty() {
-        let names: Vec<&str> = unignored.iter().map(String::as_str).collect();
-        lines.push(format!("  Un-ignored:  {}", names.join(", ")));
-    }
-
-    let not_recorded = filter::not_recorded_dirs(present, unignored);
-    if let Some(first) = not_recorded.first() {
-        lines.push(format!("  Not recorded:  {}", not_recorded.join(", ")));
-        lines.push(format!("    {}", super::output::unignore_hint(first)));
-    }
-
-    lines
+/// `--json` is polled by the desktop app every 5 seconds, and Mode 0 has no
+/// store to measure.
+fn should_scan(format: OutputFormat, mode: StatusMode) -> bool {
+    format == OutputFormat::Human && mode != StatusMode::NeverWatched
 }
 
 /// What the global registry says about one project.
@@ -268,13 +267,11 @@ struct RegistryFacts {
 
 /// Looks up a canonicalized project path in the global registry.
 ///
-/// Returns the default (`registered: false`) when the registry cannot be read
-/// or the project has no entry.
-fn lookup_registry_facts(canonical_project_root: &Path) -> RegistryFacts {
-    let Ok(registry) = crate::registry::load() else {
-        return RegistryFacts::default();
-    };
-
+/// The registry is passed in so the mode decision, the settings lines, and the
+/// prune-usage scan all share one load of `projects.json`.
+///
+/// Returns the default (`registered: false`) when the project has no entry.
+fn lookup_registry_facts(registry: &Registry, canonical_project_root: &Path) -> RegistryFacts {
     match registry
         .projects
         .iter()
@@ -332,8 +329,6 @@ fn is_daemon_watching_project(facts: &RegistryFacts) -> bool {
 
     crate::process::is_alive(pid)
 }
-
-use super::output::format_number;
 
 /// Formats the duration since recording started as a human-readable string.
 ///
@@ -411,6 +406,7 @@ fn get_duration_string(engine: &Engine) -> Result<String, UnfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn format_duration_seconds() {
@@ -508,7 +504,7 @@ mod tests {
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
 
-        let facts = lookup_registry_facts(&canonical);
+        let facts = lookup_registry_facts(&Registry::default(), &canonical);
 
         // Cleanup
         if let Some(h) = original_home {
@@ -542,7 +538,8 @@ mod tests {
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
 
-        let facts = lookup_registry_facts(&canonical);
+        let registry = crate::registry::load().expect("load registry");
+        let facts = lookup_registry_facts(&registry, &canonical);
         assert!(facts.registered);
         assert_eq!(determine_status_mode(&facts), StatusMode::PreviouslyWatched);
 
@@ -576,7 +573,8 @@ mod tests {
         .expect("register project");
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
-        let facts = lookup_registry_facts(&canonical);
+        let registry = crate::registry::load().expect("load registry");
+        let facts = lookup_registry_facts(&registry, &canonical);
 
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
@@ -667,7 +665,8 @@ mod tests {
         .expect("register project");
 
         let canonical = project_dir.canonicalize().expect("canonicalize");
-        let facts = lookup_registry_facts(&canonical);
+        let registry = crate::registry::load().expect("load registry");
+        let facts = lookup_registry_facts(&registry, &canonical);
 
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
@@ -683,87 +682,26 @@ mod tests {
     }
 
     #[test]
-    fn not_recorded_dirs_omits_unignored_ones() {
-        let present = ["node_modules", "target", "dist"];
+    fn should_scan_only_for_human_output_in_modes_one_and_two() {
+        // Mode 0 has no store, and `--json` is polled by the app every 5 s.
+        assert!(!should_scan(OutputFormat::Human, StatusMode::NeverWatched));
+        assert!(!should_scan(OutputFormat::Json, StatusMode::NeverWatched));
+        assert!(!should_scan(
+            OutputFormat::Json,
+            StatusMode::PreviouslyWatched
+        ));
+        assert!(!should_scan(
+            OutputFormat::Json,
+            StatusMode::ActivelyWatching
+        ));
 
-        assert_eq!(
-            filter::not_recorded_dirs(&present, &unignored(&["target"])),
-            vec!["node_modules", "dist"]
-        );
-    }
-
-    #[test]
-    fn not_recorded_dirs_empty_when_everything_is_unignored() {
-        let present = ["target", "dist"];
-
-        assert!(filter::not_recorded_dirs(&present, &unignored(&["target", "dist"])).is_empty());
-    }
-
-    #[test]
-    fn unignore_report_lines_silent_in_the_default_case() {
-        // Nothing opted in and nothing excluded present: silence means the
-        // default, exactly like the `Gitignore:` line.
-        assert!(unignore_report_lines(&[], &BTreeSet::new()).is_empty());
-    }
-
-    #[test]
-    fn unignore_report_lines_reports_only_the_unignored_list() {
-        // Everything present is already opted in, so no "Not recorded" line
-        // and no hint.
-        let lines = unignore_report_lines(&["target"], &unignored(&["target"]));
-
-        assert_eq!(lines, vec!["  Un-ignored:  target".to_string()]);
-    }
-
-    /// The `Un-ignored:` line carries `.git` paths beside bare names.
-    /// Entries sort `.git` first and are `, `-joined, so the slashes inside
-    /// an entry never read as the separator between two entries.
-    #[test]
-    fn unignore_report_lines_render_git_paths_beside_names() {
-        let lines = unignore_report_lines(&["target"], &unignored(&["target", ".git/hooks"]));
-
-        assert_eq!(lines[0], "  Un-ignored:  .git/hooks, target");
-        // `.git` is never in `present`, so it adds no "Not recorded" line.
-        assert_eq!(lines.len(), 1);
-    }
-
-    #[test]
-    fn unignore_report_lines_reports_only_the_remainder() {
-        let lines = unignore_report_lines(&["node_modules", "dist"], &BTreeSet::new());
-
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "  Not recorded:  node_modules, dist");
-        assert_eq!(
-            lines[1],
-            "    Record one with `unf watch --unignore-dir node_modules`. See `unf watch --help`."
-        );
-    }
-
-    #[test]
-    fn unignore_report_lines_full_report_is_ordered() {
-        let lines =
-            unignore_report_lines(&["node_modules", "target", "dist"], &unignored(&["target"]));
-
-        assert_eq!(
-            lines,
-            vec![
-                "  Un-ignored:  target".to_string(),
-                "  Not recorded:  node_modules, dist".to_string(),
-                "    Record one with `unf watch --unignore-dir node_modules`. See `unf watch --help`."
-                    .to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn unignore_report_hint_names_a_real_directory() {
-        // A `<NAME>` placeholder would make the reader do the substitution.
-        let lines = unignore_report_lines(&["dist"], &BTreeSet::new());
-
-        assert!(
-            lines[1].contains("--unignore-dir dist"),
-            "hint was not paste-ready: {}",
-            lines[1]
-        );
+        assert!(should_scan(
+            OutputFormat::Human,
+            StatusMode::PreviouslyWatched
+        ));
+        assert!(should_scan(
+            OutputFormat::Human,
+            StatusMode::ActivelyWatching
+        ));
     }
 }

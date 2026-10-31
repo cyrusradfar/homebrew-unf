@@ -21,6 +21,7 @@ pub mod restart;
 pub mod restore;
 pub mod session;
 pub mod status;
+pub mod status_report;
 pub mod stop;
 mod time;
 pub mod unwatch;
