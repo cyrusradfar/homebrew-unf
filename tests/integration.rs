@@ -3625,6 +3625,16 @@ fn status_shows_prune_advice_in_modes_one_and_two() {
         "only the non-empty store is measured: {}",
         mode2_out
     );
+    assert!(
+        mode2_out.contains("--older-than 30d"),
+        "the advice must name the retention cutoff: {}",
+        mode2_out
+    );
+    assert!(
+        mode2_out.contains("delete versions older than 30 days"),
+        "the advice must say what prune keeps: {}",
+        mode2_out
+    );
 
     // Mode 1: stop the daemon, keep the history and the registry entry.
     isolated_cmd(&unf_home)
@@ -3653,6 +3663,11 @@ fn status_shows_prune_advice_in_modes_one_and_two() {
     assert!(
         mode1_out.contains("501.0 MB"),
         "the total should survive the daemon stop: {}",
+        mode1_out
+    );
+    assert!(
+        mode1_out.contains("--older-than 30d"),
+        "mode 1 carries the same corrected advice: {}",
         mode1_out
     );
 }

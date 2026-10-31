@@ -19,6 +19,12 @@ pub const SIZE_THRESHOLD_BYTES: u64 = 500 * 1024 * 1024;
 /// Days without a prune that make a project overdue. Inclusive.
 pub const STALE_DAYS: i64 = 60;
 
+/// Retention the advisory recommends. The command's own default is 7 days,
+/// but the product documents 30 days as the manual pruning policy. Naming the
+/// cutoff matters: prune keeps newer history, so the reported total is not
+/// what a prune would reclaim.
+pub const ADVISED_RETENTION_DAYS: i64 = 30;
+
 const SECONDS_PER_DAY: i64 = 86_400;
 
 /// How loudly the advisory speaks.
@@ -139,7 +145,11 @@ fn suggest_lines(advice: &PruneAdvice) -> Vec<String> {
             crate::cli::format_size(advice.total_store_bytes),
             project_count(advice.projects_measured)
         ),
-        "    Run `unf prune --all-projects` to delete old versions.".to_string(),
+        format!(
+            "    Run `{}` to delete versions older than {} days.",
+            retention_command(),
+            ADVISED_RETENTION_DAYS
+        ),
     ]
 }
 
@@ -152,7 +162,11 @@ fn strong_lines(advice: &PruneAdvice) -> Vec<String> {
             project_count(advice.projects_measured)
         ));
     }
-    action.push_str("Run `unf prune --all-projects` to reclaim space.");
+    action.push_str(&format!(
+        "Run `{}` to delete versions older than {} days.",
+        retention_command(),
+        ADVISED_RETENTION_DAYS
+    ));
 
     vec![
         format!("  Warning:  {}", overdue_sentence(advice)),
@@ -171,6 +185,14 @@ fn overdue_sentence(advice: &PruneAdvice) -> String {
             advice.oldest_overdue_days
         ),
     }
+}
+
+/// The command the advisory recommends, with the retention cutoff spelled out.
+fn retention_command() -> String {
+    format!(
+        "unf prune --all-projects --older-than {}d",
+        ADVISED_RETENTION_DAYS
+    )
 }
 
 fn project_count(count: usize) -> String {
@@ -282,6 +304,7 @@ mod tests {
         // Hardcoded on purpose: comparing a constant to itself proves nothing.
         assert_eq!(SIZE_THRESHOLD_BYTES, 500 * 1024 * 1024);
         assert_eq!(STALE_DAYS, 60);
+        assert_eq!(ADVISED_RETENTION_DAYS, 30);
     }
 
     #[test]
@@ -489,7 +512,9 @@ mod tests {
             lines
         );
         assert!(
-            lines.iter().any(|line| line.contains("reclaim space")),
+            lines
+                .iter()
+                .any(|line| line.contains("delete versions older than 30 days")),
             "{:?}",
             lines
         );

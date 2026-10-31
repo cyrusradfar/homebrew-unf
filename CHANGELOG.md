@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.21.4] - 2026-10-31
 ### Added
-- **`unf status` now reminds you to prune.** Human output gains a `Prune:` line when the registered stores total more than 500 MB, and a `Warning:` line when any project has gone 60 days without a prune. Both name `unf prune --all-projects`; the warning adds `--dry-run`, because pruning every project at once is irreversible. Nothing is pruned automatically, and `--json` is unchanged — the desktop app polls it every 5 seconds, so the advisory is human output only. `store_bytes` still means this project's object store, not the total.
+- **`unf status` now reminds you to prune.** Human output gains a `Prune:` line when the registered stores total more than 500 MB, and a `Warning:` line when any project has gone 60 days without a prune. Both name `unf prune --all-projects --older-than 30d` and say that it deletes versions older than 30 days — the reported total is storage, not the amount a prune would reclaim, because newer history is kept. The warning adds `--dry-run`, because pruning every project at once is irreversible. Nothing is pruned automatically, and `--json` is unchanged — the desktop app polls it every 5 seconds, so the advisory is human output only. `store_bytes` still means this project's object store, not the total.
 
 ## [0.21.3] - 2026-09-01
 ### Changed
