@@ -15,6 +15,7 @@ pub mod log;
 pub mod migrate;
 pub mod output;
 pub mod prune;
+pub mod prune_advice;
 pub mod recap;
 pub mod restart;
 pub mod restore;
