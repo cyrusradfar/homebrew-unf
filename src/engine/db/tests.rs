@@ -25,7 +25,7 @@ mod all_tests {
         let version: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .expect("Schema version should be set");
-        assert_eq!(version, 2); // SCHEMA_VERSION = 2
+        assert_eq!(version, 3); // SCHEMA_VERSION = 3
     }
 
     // --- Helper Function Tests ---
@@ -1658,5 +1658,260 @@ mod all_tests {
         assert_eq!(snapshots.len(), 2);
         assert_eq!(snapshots[0].timestamp, t4);
         assert_eq!(snapshots[1].timestamp, t3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Schema v3, the meta table, and read-only facts
+    // -----------------------------------------------------------------------
+
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// DDL a v1 binary created: no line-statistics columns.
+    const V1_SNAPSHOTS: &str = r#"
+        CREATE TABLE snapshots (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path    TEXT    NOT NULL,
+            content_hash TEXT    NOT NULL,
+            size_bytes   INTEGER NOT NULL,
+            timestamp    TEXT    NOT NULL,
+            event_type   TEXT    NOT NULL
+        );
+    "#;
+
+    /// DDL a v2 binary created: the v1 table plus the three ALTER columns.
+    const V2_SNAPSHOTS: &str = r#"
+        CREATE TABLE snapshots (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path     TEXT    NOT NULL,
+            content_hash  TEXT    NOT NULL,
+            size_bytes    INTEGER NOT NULL,
+            timestamp     TEXT    NOT NULL,
+            event_type    TEXT    NOT NULL,
+            line_count    INTEGER NOT NULL DEFAULT 0,
+            lines_added   INTEGER NOT NULL DEFAULT 0,
+            lines_removed INTEGER NOT NULL DEFAULT 0
+        );
+    "#;
+
+    fn snapshot_table_ddl(version: i64) -> &'static str {
+        if version == 1 {
+            V1_SNAPSHOTS
+        } else {
+            V2_SNAPSHOTS
+        }
+    }
+
+    /// Creates a real database as an older binary left it: the DDL of that
+    /// release plus its version row. A struct round-trip would not prove that
+    /// `init_schema` upgrades a database it has never seen.
+    fn write_legacy_database(path: &Path, version: i64) {
+        let conn = Connection::open(path).expect("open legacy database");
+        conn.execute_batch(&format!(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES ({version});
+             {}",
+            snapshot_table_ddl(version)
+        ))
+        .expect("create legacy schema");
+        conn.execute(
+            "INSERT INTO snapshots (file_path, content_hash, size_bytes, timestamp, event_type)
+             VALUES ('legacy.txt', 'abc', 3, '2026-01-01T00:00:00+00:00', 'Create')",
+            [],
+        )
+        .expect("insert legacy snapshot");
+    }
+
+    fn schema_version(conn: &Connection) -> i64 {
+        conn.query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .expect("read schema version")
+    }
+
+    fn has_table(conn: &Connection, name: &str) -> bool {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .expect("query sqlite_master");
+        count > 0
+    }
+
+    #[test]
+    fn new_database_has_meta_table() {
+        let conn = open_test_db();
+        assert!(has_table(&conn, "meta"));
+    }
+
+    #[test]
+    fn meta_round_trip() {
+        let conn = open_test_db();
+        meta::set_meta(&conn, "answer", "42").expect("write meta");
+        assert_eq!(
+            meta::get_meta(&conn, "answer").expect("read meta"),
+            Some("42".to_string())
+        );
+    }
+
+    #[test]
+    fn meta_missing_key_is_none() {
+        let conn = open_test_db();
+        assert_eq!(
+            meta::get_meta(&conn, "never_written").expect("read meta"),
+            None
+        );
+    }
+
+    #[test]
+    fn meta_set_overwrites_existing_key() {
+        let conn = open_test_db();
+        meta::set_meta(&conn, "answer", "42").expect("first write");
+        meta::set_meta(&conn, "answer", "43").expect("second write");
+        assert_eq!(
+            meta::get_meta(&conn, "answer").expect("read meta"),
+            Some("43".to_string())
+        );
+    }
+
+    #[test]
+    fn v2_database_gains_meta_keeps_snapshots_and_reports_v3() {
+        let temp = TempDir::new().expect("create temp dir");
+        let path = temp.path().join("db.sqlite3");
+        write_legacy_database(&path, 2);
+
+        let conn = Connection::open(&path).expect("open v2 database");
+        schema::init_schema(&conn).expect("v2 database must migrate without re-running ALTERs");
+
+        assert_eq!(schema_version(&conn), 3);
+        assert!(has_table(&conn, "meta"));
+        assert_eq!(
+            query::get_snapshot_count(&conn).expect("count"),
+            1,
+            "migration must keep existing snapshots"
+        );
+    }
+
+    #[test]
+    fn v1_database_gains_line_columns_and_ends_at_v3() {
+        let temp = TempDir::new().expect("create temp dir");
+        let path = temp.path().join("db.sqlite3");
+        write_legacy_database(&path, 1);
+
+        let conn = Connection::open(&path).expect("open v1 database");
+        schema::init_schema(&conn).expect("v1 database must migrate");
+
+        assert_eq!(schema_version(&conn), 3);
+
+        // The columns exist, so an insert that names them succeeds.
+        write::insert_snapshot(
+            &conn,
+            "added.txt",
+            &ContentHash("def".to_string()),
+            3,
+            chrono::Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+            &EventType::Create,
+            2,
+            1,
+            0,
+        )
+        .expect("line statistics columns must exist after migration");
+        assert_eq!(query::get_snapshot_count(&conn).expect("count"), 2);
+    }
+
+    #[test]
+    fn version_update_is_monotonic() {
+        let conn = Connection::open(":memory:").expect("open database");
+        conn.execute_batch(V2_SNAPSHOTS).expect("create snapshots");
+        conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+            .expect("create version table");
+        conn.execute("INSERT INTO schema_version (version) VALUES (4)", [])
+            .expect("write future version");
+
+        schema::init_schema(&conn).expect("future database must open");
+
+        assert_eq!(
+            schema_version(&conn),
+            4,
+            "an older binary must never downgrade a newer database"
+        );
+    }
+
+    #[test]
+    fn read_storage_facts_missing_database_returns_none_without_creating_it() {
+        let temp = TempDir::new().expect("create temp dir");
+        let db_path = crate::storage::db_path(temp.path());
+
+        let facts = crate::engine::facts::read_storage_facts(temp.path())
+            .expect("missing database is not an error");
+
+        assert!(facts.is_none());
+        assert!(
+            !db_path.exists(),
+            "reading facts must never create the database"
+        );
+    }
+
+    #[test]
+    fn read_storage_facts_v2_database_reports_no_prune() {
+        let temp = TempDir::new().expect("create temp dir");
+        write_legacy_database(&crate::storage::db_path(temp.path()), 2);
+
+        let facts = crate::engine::facts::read_storage_facts(temp.path())
+            .expect("v2 database without a meta table must be readable")
+            .expect("database exists");
+
+        assert_eq!(facts.last_prune_at, None);
+        assert!(facts.oldest_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn read_storage_facts_parses_a_valid_timestamp() {
+        let temp = TempDir::new().expect("create temp dir");
+        let db_path = crate::storage::db_path(temp.path());
+        {
+            let conn = Connection::open(&db_path).expect("open database");
+            schema::init_schema(&conn).expect("init schema");
+            meta::set_meta(&conn, "last_prune_at", "2026-01-01T12:00:00+00:00")
+                .expect("write prune time");
+        }
+
+        let facts = crate::engine::facts::read_storage_facts(temp.path())
+            .expect("read facts")
+            .expect("database exists");
+
+        assert_eq!(
+            facts.last_prune_at,
+            Some(chrono::Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn read_storage_facts_malformed_timestamp_is_none() {
+        let temp = TempDir::new().expect("create temp dir");
+        let db_path = crate::storage::db_path(temp.path());
+        {
+            let conn = Connection::open(&db_path).expect("open database");
+            schema::init_schema(&conn).expect("init schema");
+            meta::set_meta(&conn, "last_prune_at", "not a time").expect("write corrupt value");
+        }
+
+        let facts = crate::engine::facts::read_storage_facts(temp.path())
+            .expect("a corrupt value must not fail the read")
+            .expect("database exists");
+
+        assert_eq!(
+            facts.last_prune_at, None,
+            "an unparseable value means 'never pruned', not an error"
+        );
+    }
+
+    #[test]
+    fn read_storage_facts_non_sqlite_bytes_is_an_error() {
+        let temp = TempDir::new().expect("create temp dir");
+        std::fs::write(crate::storage::db_path(temp.path()), b"not a database")
+            .expect("write corrupt database");
+
+        assert!(crate::engine::facts::read_storage_facts(temp.path()).is_err());
     }
 }

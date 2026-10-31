@@ -13,6 +13,7 @@ use std::path::Path;
 
 // Private submodules
 mod helpers;
+pub(crate) mod meta;
 mod schema;
 
 // Public submodules (re-exported below)

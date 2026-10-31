@@ -34,6 +34,7 @@ pub struct PruneStats {
 
 pub mod cas;
 pub mod db;
+pub mod facts;
 
 /// SQLite database filename.
 const DB_FILENAME: &str = "db.sqlite3";
@@ -43,23 +44,6 @@ const OBJECTS_DIR: &str = "objects";
 
 /// Sentinel hash value for deleted files (all zeros).
 const EMPTY_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-
-/// Recursively walks a directory tree and sums the size of all files.
-///
-/// Used by [`Engine::get_store_size`] to calculate total object store size.
-/// Accumulates file sizes into the provided mutable reference.
-fn walk_dir_sum(path: &Path, total: &mut u64) -> Result<(), UnfError> {
-    if path.is_file() {
-        let metadata = fs::metadata(path).map_err(CasError::Io)?;
-        *total += metadata.len();
-    } else if path.is_dir() {
-        for entry in fs::read_dir(path).map_err(CasError::Io)? {
-            let entry = entry.map_err(CasError::Io)?;
-            walk_dir_sum(&entry.path(), total)?;
-        }
-    }
-    Ok(())
-}
 
 /// The main storage engine for UNFUDGED.
 ///
@@ -649,9 +633,7 @@ impl Engine {
     ///
     /// Returns `UnfError::Cas` if directory traversal fails.
     pub fn get_store_size(&self) -> Result<u64, UnfError> {
-        let mut total_size = 0u64;
-        walk_dir_sum(&self.objects_path, &mut total_size)?;
-        Ok(total_size)
+        facts::dir_size(&self.objects_path)
     }
 
     /// Prunes old snapshots and garbage-collects unreferenced CAS objects.
@@ -687,6 +669,14 @@ impl Engine {
         // Get current referenced hashes and garbage-collect unreferenced objects
         let referenced = db::get_referenced_hashes(&self.conn)?;
         let gc_stats = cas::gc_unreferenced(&self.objects_path, &referenced, dry_run)?;
+
+        // A dry run is a preview: it must not reset the staleness clock, or a
+        // refused `--all-projects` gate (which previews first) would suppress
+        // the reminder for every project. Only a real prune counts.
+        if !dry_run {
+            let now = Utc::now().to_rfc3339();
+            db::meta::set_meta(&self.conn, db::meta::LAST_PRUNE_AT, &now)?;
+        }
 
         Ok(PruneStats {
             snapshots_removed,
@@ -1521,5 +1511,142 @@ mod tests {
         assert_eq!(delete_snap.line_count, 0);
         assert_eq!(delete_snap.lines_added, 0);
         assert_eq!(delete_snap.lines_removed, 7);
+    }
+
+    // --- Prune timestamp and size tests ---
+
+    /// Reads the recorded prune time straight out of the database.
+    fn last_prune_at(engine: &Engine) -> Option<DateTime<Utc>> {
+        let value = db::meta::get_meta(&engine.conn, db::meta::LAST_PRUNE_AT).expect("read meta");
+        value.map(|raw| DateTime::parse_from_rfc3339(&raw).unwrap().to_utc())
+    }
+
+    #[test]
+    fn real_prune_records_a_timestamp() {
+        let (project, storage) = setup_test_project();
+        let engine = Engine::init(project.path(), storage.path()).expect("Init should succeed");
+
+        assert_eq!(last_prune_at(&engine), None, "fresh store is never pruned");
+
+        let cutoff = Utc::now() + chrono::Duration::seconds(1);
+        engine.prune(cutoff, false).expect("Prune should succeed");
+
+        let recorded = last_prune_at(&engine).expect("a real prune records the time");
+        assert!(
+            Utc::now().signed_duration_since(recorded).num_seconds() < 60,
+            "recorded timestamp should be close to now: {}",
+            recorded
+        );
+    }
+
+    #[test]
+    fn dry_run_prune_records_nothing() {
+        let (project, storage) = setup_test_project();
+        let engine = Engine::init(project.path(), storage.path()).expect("Init should succeed");
+
+        let cutoff = Utc::now() + chrono::Duration::seconds(1);
+        engine.prune(cutoff, true).expect("Dry run should succeed");
+
+        assert_eq!(
+            last_prune_at(&engine),
+            None,
+            "a preview must not reset the staleness clock"
+        );
+    }
+
+    #[test]
+    fn second_real_prune_advances_the_timestamp() {
+        let (project, storage) = setup_test_project();
+        let engine = Engine::init(project.path(), storage.path()).expect("Init should succeed");
+
+        let cutoff = Utc::now() + chrono::Duration::seconds(1);
+        engine.prune(cutoff, false).expect("First prune");
+        let first = last_prune_at(&engine).expect("First timestamp");
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        engine.prune(cutoff, false).expect("Second prune");
+        let second = last_prune_at(&engine).expect("Second timestamp");
+
+        assert!(second > first, "second prune must advance the clock");
+    }
+
+    #[test]
+    fn prune_updates_only_the_pruned_project() {
+        let (project_a, storage_a) = setup_test_project();
+        let (project_b, storage_b) = setup_test_project();
+        let engine_a = Engine::init(project_a.path(), storage_a.path()).expect("Init A");
+        let engine_b = Engine::init(project_b.path(), storage_b.path()).expect("Init B");
+
+        let cutoff = Utc::now() + chrono::Duration::seconds(1);
+        engine_a.prune(cutoff, false).expect("Prune A");
+
+        assert!(
+            last_prune_at(&engine_a).is_some(),
+            "the pruned project records the time"
+        );
+        assert_eq!(
+            last_prune_at(&engine_b),
+            None,
+            "a sibling project's clock must not move"
+        );
+    }
+
+    #[test]
+    fn failed_prune_records_no_timestamp() {
+        let (project, storage) = setup_test_project();
+        let engine = Engine::init(project.path(), storage.path()).expect("Init should succeed");
+
+        // Make `objects/` a regular file so CAS listing fails with NotADirectory.
+        // Deterministic on macOS and in a root container, unlike `chmod 000`.
+        fs::remove_dir_all(&engine.objects_path).expect("remove objects dir");
+        fs::write(&engine.objects_path, b"not a directory").expect("write objects file");
+
+        let cutoff = Utc::now() + chrono::Duration::seconds(1);
+        assert!(engine.prune(cutoff, false).is_err(), "prune must fail");
+
+        assert_eq!(
+            last_prune_at(&engine),
+            None,
+            "a failed prune must not claim success"
+        );
+    }
+
+    #[test]
+    fn dir_size_matches_get_store_size() {
+        let (project, storage) = setup_test_project();
+        let engine = Engine::init(project.path(), storage.path()).expect("Init should succeed");
+
+        fs::write(project.path().join("sized.txt"), b"hello").expect("write file");
+        engine
+            .create_snapshot("sized.txt", EventType::Create)
+            .expect("Snapshot should succeed")
+            .expect("Should be Some");
+
+        assert_eq!(
+            facts::dir_size(&engine.objects_path).expect("walk"),
+            engine.get_store_size().expect("store size"),
+        );
+
+        // Deleting the tree is measured too, not cached.
+        fs::remove_dir_all(&engine.objects_path).expect("remove objects");
+        assert_eq!(facts::dir_size(&engine.objects_path).expect("walk"), 0);
+        assert_eq!(engine.get_store_size().expect("store size"), 0);
+    }
+
+    #[test]
+    fn dir_size_of_missing_path_is_zero() {
+        let missing = PathBuf::from("/tmp/unfudged-missing-dir-12345");
+        assert!(!missing.exists());
+        assert_eq!(facts::dir_size(&missing).expect("missing path is 0"), 0);
+    }
+
+    #[test]
+    fn dir_size_sums_nested_directories() {
+        let root = TempDir::new().expect("create dir");
+        fs::create_dir_all(root.path().join("a/b")).expect("create nested dirs");
+        fs::write(root.path().join("a/one"), b"12345").expect("write one");
+        fs::write(root.path().join("a/b/two"), b"123").expect("write two");
+
+        assert_eq!(facts::dir_size(root.path()).expect("walk"), 8);
     }
 }
