@@ -5,21 +5,21 @@ class Unf < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://downloads.unfudged.io/releases/v0.21.3/unf-v0.21.3-aarch64-apple-darwin.tar.gz"
-      sha256 "7e3c9f5752ee2bf29bc813243636b957bc4b275b612eb8157642a0bf0fc8efd8"
+      url "https://downloads.unfudged.io/releases/v0.21.4/unf-v0.21.4-aarch64-apple-darwin.tar.gz"
+      sha256 "7489daa55d5524436a5e5b5ede7e5d83c416e14d9b397dd22158003dfbda4ae0"
     else
-      url "https://downloads.unfudged.io/releases/v0.21.3/unf-v0.21.3-x86_64-apple-darwin.tar.gz"
-      sha256 "e0f860965d040dd665d7e8bb7a118c9409b9e2f0a63e8d5b5ed3266c5814c7aa"
+      url "https://downloads.unfudged.io/releases/v0.21.4/unf-v0.21.4-x86_64-apple-darwin.tar.gz"
+      sha256 "cfa4781d25c3545d57b0a30829b7fb1f5170f21adc97af5def57654511d5539b"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://downloads.unfudged.io/releases/v0.21.3/unf-v0.21.3-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "fa4ebd090ac2fa8f8963d333b61e10479e9270c6146d067ac7145029b62d6298"
+      url "https://downloads.unfudged.io/releases/v0.21.4/unf-v0.21.4-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "98dd085e07b522a66bbc3e5eace011b67b9ae2666786c067c2c58211e595ef3c"
     else
-      url "https://downloads.unfudged.io/releases/v0.21.3/unf-v0.21.3-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "01876fa5053c15e20e565c37bc18fe84933b95c3bc0c8e968596df4feddacefb"
+      url "https://downloads.unfudged.io/releases/v0.21.4/unf-v0.21.4-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "ba05aedcfed7f5b5761a43623e209a9ab744bca92060ada7522dbede1770090c"
     end
   end
 
