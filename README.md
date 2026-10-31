@@ -64,7 +64,7 @@ unf restore --at 10m         # Roll back to 10 minutes ago
 | `unf watch --force-watch-gitignore` | Also record gitignored files and hidden dotfiles |
 | `unf watch --unignore-dir <NAME>` | Also record an excluded directory, such as `target`, or a git path, such as `.git/hooks` (repeatable) |
 | `unf unwatch` | Stop watching the current directory |
-| `unf status` | Watcher status and recent snapshot stats |
+| `unf status` | Watcher status, recent snapshot stats, and prune reminders |
 | `unf log <file>` | Timeline of all recorded versions of a file |
 | `unf log --since <time> --until <time>` | Filter log to a time range |
 | `unf diff --at <time>` | Show changes since a point in time |

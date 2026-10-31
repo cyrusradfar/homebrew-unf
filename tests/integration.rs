@@ -3550,3 +3550,184 @@ fn json_log_density_machine_timestamps_are_rfc3339() {
     );
     assert_json_timestamps_are_rfc3339(&json, "log --density");
 }
+
+// ---------------------------------------------------------------------------
+// Prune advisory in `unf status`
+// ---------------------------------------------------------------------------
+
+/// The advisory is the whole point of the feature, so prove it appears in
+/// both human modes through the real binary. One sparse fixture in a second
+/// registered project keeps the test off the 500 MiB allocation path.
+#[test]
+fn status_shows_prune_advice_in_modes_one_and_two() {
+    use std::os::unix::fs::MetadataExt;
+
+    // 501 MiB: just over the 500 MiB threshold, allocated sparsely.
+    const FIXTURE_LEN: u64 = 501 * 1024 * 1024;
+
+    let root = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = root.path().join("unf-home");
+    let project_a = root.path().join("a");
+    let project_b = root.path().join("b");
+    fs::create_dir_all(&unf_home).expect("create UNF_HOME");
+    fs::create_dir_all(&project_a).expect("create project A");
+    fs::create_dir_all(&project_b).expect("create project B");
+
+    // Before the first watch: a panic must still kill the daemon.
+    let _guard = IsolatedDaemonGuard::new(&unf_home);
+
+    for project in [&project_a, &project_b] {
+        isolated_cmd(&unf_home)
+            .current_dir(project)
+            .arg("watch")
+            .assert()
+            .success();
+    }
+    thread::sleep(Duration::from_millis(500));
+
+    // One fixture, in the project the user is *not* standing in.
+    let objects_b = resolve_storage_dir_isolated(&unf_home, &project_b).join("objects");
+    let fixture = objects_b.join("advisory-fixture");
+    let file = fs::File::create(&fixture).expect("create sparse fixture");
+    file.set_len(FIXTURE_LEN).expect("size sparse fixture");
+    drop(file);
+
+    let metadata = fs::metadata(&fixture).expect("stat sparse fixture");
+    assert_eq!(metadata.len(), FIXTURE_LEN);
+    let allocated = metadata.blocks() * 512;
+    assert!(
+        allocated < FIXTURE_LEN / 2,
+        "the filesystem materialised the sparse fixture: {} allocated of {} bytes",
+        allocated,
+        FIXTURE_LEN
+    );
+
+    // Mode 2: A's daemon is running.
+    let mode2 = isolated_cmd(&unf_home)
+        .current_dir(&project_a)
+        .arg("status")
+        .output()
+        .expect("run status in mode 2");
+    assert!(mode2.status.success(), "status failed: {:?}", mode2);
+    let mode2_out = String::from_utf8_lossy(&mode2.stdout);
+    assert!(
+        mode2_out.contains("Prune:"),
+        "mode 2 should suggest a prune: {}",
+        mode2_out
+    );
+    assert!(
+        mode2_out.contains("501.0 MB"),
+        "the total should include the sibling store: {}",
+        mode2_out
+    );
+    assert!(
+        mode2_out.contains("across 1 project"),
+        "only the non-empty store is measured: {}",
+        mode2_out
+    );
+
+    // Mode 1: stop the daemon, keep the history and the registry entry.
+    isolated_cmd(&unf_home)
+        .current_dir(&project_a)
+        .arg("stop")
+        .assert()
+        .success();
+
+    let mode1 = isolated_cmd(&unf_home)
+        .current_dir(&project_a)
+        .arg("status")
+        .output()
+        .expect("run status in mode 1");
+    assert!(mode1.status.success(), "status failed: {:?}", mode1);
+    let mode1_out = String::from_utf8_lossy(&mode1.stdout);
+    assert!(
+        mode1_out.contains("previously watched"),
+        "expected mode 1: {}",
+        mode1_out
+    );
+    assert!(
+        mode1_out.contains("Prune:"),
+        "mode 1 should still suggest a prune: {}",
+        mode1_out
+    );
+    assert!(
+        mode1_out.contains("501.0 MB"),
+        "the total should survive the daemon stop: {}",
+        mode1_out
+    );
+}
+
+/// The advisory is human output only. `--json status` keeps every key it had,
+/// and `store_bytes` still measures this project rather than the total.
+#[test]
+fn status_json_surface_is_unchanged_and_store_bytes_is_this_project() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    let unf_home = TempDir::new().expect("Failed to create UNF_HOME");
+    let _guard = IsolatedDaemonGuard::new(unf_home.path());
+
+    isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("watch")
+        .assert()
+        .success();
+
+    // After the watcher is live: the initial scan does not snapshot existing
+    // files, and the debouncer needs the silence window to flush.
+    thread::sleep(Duration::from_millis(500));
+    fs::write(temp.path().join("known.txt"), b"known content").expect("write file");
+    thread::sleep(Duration::from_secs(4));
+
+    let output = isolated_cmd(unf_home.path())
+        .current_dir(temp.path())
+        .arg("--json")
+        .arg("status")
+        .output()
+        .expect("run status --json");
+    assert!(
+        output.status.success(),
+        "status --json failed: {:?}",
+        output
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status --json must emit JSON");
+
+    for key in [
+        "recording",
+        "since",
+        "snapshots",
+        "files_tracked",
+        "store_bytes",
+        "newest",
+        "status_mode",
+        "auto_restart",
+        "force_watch_gitignore",
+        "excluded_dirs_present",
+        "unignored_dirs",
+    ] {
+        assert!(
+            json.get(key).is_some(),
+            "status --json lost the `{}` key: {}",
+            key,
+            json
+        );
+    }
+
+    assert!(
+        !json.to_string().contains("\"prune\"") && !json.to_string().contains("\"advice\""),
+        "the advisory must not leak into JSON: {}",
+        json
+    );
+
+    let objects = resolve_storage_dir_isolated(unf_home.path(), temp.path()).join("objects");
+    let expected = unfudged::engine::facts::dir_size(&objects).expect("measure objects");
+    assert!(
+        expected > 0,
+        "the fixture should have produced at least one CAS object"
+    );
+    assert_eq!(
+        json["store_bytes"].as_u64().expect("store_bytes"),
+        expected,
+        "store_bytes must stay this project's object size, not the total"
+    );
+}

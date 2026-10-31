@@ -1,6 +1,9 @@
 By default, prunes snapshots older than 7 days for the current project.
 After deleting snapshots, garbage-collects unreferenced blobs.
 
+`unf status` reminds you when the registered stores total more than 500 MB,
+or when a project has gone 60 days without a prune.
+
 Pruning cannot be undone. Unlike restore, it writes no safety snapshot and
 there is no trash directory. So a prune that would leave a project with zero
 snapshots — erasing its whole recording — asks first on a terminal, and with
