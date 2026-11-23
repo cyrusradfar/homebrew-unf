@@ -705,9 +705,9 @@ impl Filter {
         })
     }
 
-    /// Rule 3: true when a loaded `.gitignore` excludes `path`, either
-    /// directly or through an ignored parent directory — the parent check
-    /// is what catches directory patterns like `tmp/`.
+    /// Rule 3: true when a loaded `.gitignore` excludes `path`, directly or
+    /// through any ignored ancestor — git never descends into an excluded
+    /// directory, so a bare `/whtree/currentinstall` must cover nested files.
     ///
     /// Always false when no `.gitignore` is loaded: either
     /// `settings.force_watch_gitignore` is set (the matcher is never
@@ -717,16 +717,16 @@ impl Filter {
             return false;
         };
 
-        // Convert to relative path if it starts with project_root.
-        // If strip_prefix fails, the path is absolute and outside the project root,
-        // so we use the absolute path directly. The gitignore matcher handles both
-        // relative and absolute paths correctly.
+        // Relative to project_root when under it; otherwise the matcher
+        // handles the absolute path itself.
         let check_path = path.strip_prefix(&self.project_root).unwrap_or(path);
 
         gitignore.matched(check_path, false).is_ignore()
             || check_path
-                .parent()
-                .is_some_and(|parent| gitignore.matched(parent, true).is_ignore())
+                .ancestors()
+                .skip(1)
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .any(|dir| gitignore.matched(dir, true).is_ignore())
     }
 }
 
@@ -944,6 +944,45 @@ mod tests {
 
         // The file should be ignored because it's in tmp/
         assert!(!filter.should_track(&tmp_file));
+    }
+
+    /// Regression test for issue #7: a bare directory pattern (no trailing
+    /// slash, no wildcard) must exclude files nested several levels below
+    /// it, as git does. Only the immediate parent used to be checked, so
+    /// `/whtree/currentinstall` let `whtree/currentinstall/cache/x.js`
+    /// through while `/whtree/currentinstall/*` did not.
+    #[test]
+    fn gitignore_bare_directory_pattern_covers_nested_files() {
+        let (filter, temp) = filter_with_gitignore("/whtree/currentinstall\n", false);
+
+        let nested_dir = temp.path().join("whtree/currentinstall/cache.typescript");
+        fs::create_dir_all(&nested_dir).expect("create nested dir");
+        let nested_file = nested_dir.join("bc82dc60.js");
+        fs::write(&nested_file, b"js").expect("write nested file");
+
+        let direct_file = temp.path().join("whtree/currentinstall/direct.js");
+        fs::write(&direct_file, b"js").expect("write direct file");
+
+        let sibling = temp.path().join("whtree/other.js");
+        fs::write(&sibling, b"js").expect("write sibling");
+
+        assert!(!filter.should_track(&nested_file));
+        assert!(!filter.should_track(&direct_file));
+        assert!(filter.should_track(&sibling));
+    }
+
+    /// A trailing-slash directory pattern must likewise reach past the
+    /// immediate child directory.
+    #[test]
+    fn gitignore_directory_pattern_covers_deeply_nested_files() {
+        let (filter, temp) = filter_with_gitignore("tmp/\n", false);
+
+        let deep_dir = temp.path().join("tmp/a/b/c");
+        fs::create_dir_all(&deep_dir).expect("create deep dir");
+        let deep_file = deep_dir.join("file.txt");
+        fs::write(&deep_file, b"data").expect("write file");
+
+        assert!(!filter.should_track(&deep_file));
     }
 
     #[test]
