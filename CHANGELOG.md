@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- **A `.gitignore` directory pattern now excludes everything beneath it, as git does.** A bare entry such as `/whtree/currentinstall` (no trailing slash, no wildcard) only took effect for files directly inside that directory; anything nested deeper, like `whtree/currentinstall/cache.typescript/x.js`, was still recorded. The filter checked the file and its immediate parent only. It now checks every ancestor directory, so the `/*` workaround is no longer needed. Fixes [#7](https://github.com/cyrusradfar/homebrew-unf/issues/7).
 
 ## [0.21.4] - 2026-10-31
 ### Added
